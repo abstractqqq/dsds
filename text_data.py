@@ -63,7 +63,7 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
 
     print("Perfoming stemming...")
     ps = PorterStemmer()
-    memo = {}
+    memo = {} # perform memoization for stemming
     # Use a match statment in the future
     if vectorize_method == "tfidf":
         vectorizer:TfidfVectorizer = TfidfVectorizer(max_df = max_df, min_df = min_df, stop_words=list(stop))
@@ -81,7 +81,7 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
                     if w not in memo:
                         memo[w] = ps.stem(w)
                     new_tokens.append(memo[w])
-
+                # re-map the tokens into sentences, in order to use scikit-learn builtin vectorize methods
                 new_list.append(" ".join(new_tokens))
             else:
                 new_list.append("Unknown")
