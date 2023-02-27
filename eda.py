@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Categorical EDA methods
 
-def entropy_cat_eda(df:pl.DataFrame, cat:str, target:str, tot:int) -> Tuple[pl.DataFrame, str]:
+def entropy_cat_eda(df:pl.DataFrame, cat:str, target:str) -> Tuple[pl.DataFrame, str]:
     '''
         Perform entrypy categorical EDA for one variable.
 
@@ -14,6 +14,7 @@ def entropy_cat_eda(df:pl.DataFrame, cat:str, target:str, tot:int) -> Tuple[pl.D
         target: name of the target column
     
     '''
+    tot = len(df)
 
     output = df.rename({cat:"value"})\
         .select([target, "value"])\
@@ -45,13 +46,11 @@ def entropy_cat_eda_summary(df:pl.DataFrame, cat_columns:list[str], target:str, 
         target: must be a binary variable. 
         n_threads: 
     '''
-
-    tot = len(df)
     cat_dfs = []
     n = len(cat_columns)
     df2 = df.select(cat_columns + [target])
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
-        futures = (ex.submit(entropy_cat_eda, df2, c, target, tot) for c in cat_columns)
+        futures = (ex.submit(entropy_cat_eda, df2, c, target) for c in cat_columns)
         for i,f in enumerate(as_completed(futures)):
             cat_df, cat = f.result()
             cat_dfs.append(cat_df)
