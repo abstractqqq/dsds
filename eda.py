@@ -1,62 +1,59 @@
 import polars as pl
+import os 
 from typing import Tuple
 from scipy.stats import chi2_contingency
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Categorical EDA methods
 
-def entropy_cat_eda(df:pl.DataFrame, cat:str, target:str) -> Tuple[pl.DataFrame, str]:
-    '''
-        Perform entrypy categorical EDA for one variable.
+def _information_gain(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
+    temp = df.groupby([predictive]).agg([
+        pl.count().alias("prob(predictive)")
+    ]).with_columns([
+        pl.col("prob(predictive)") / len(df)
+    ])
 
-        df
-        cat: name of the categorical column
-        target: name of the target column
-    
-    '''
-    tot = len(df)
+    target_entropy = df.groupby([target]).agg([
+        pl.count().alias("prob(target)")
+    ]).with_columns([
+        pl.col("prob(target)") / len(df)
+    ]).select(pl.col("prob(target)").entropy()).to_numpy()[0,0]
 
-    output = df.rename({cat:"value"})\
-        .select([target, "value"])\
-        .groupby(["value", target])\
-        .agg([
-            pl.count().alias("cnt")
-        ]).with_columns(
-            pl.col("cnt").sum().over("value").alias("sum_value")
-        ).with_columns([
-            (pl.col("cnt")/tot).alias("prob_target|value"),
-            (pl.col("sum_value")/tot).alias("prob_value")
-        ]).with_columns(
-            (pl.col("prob_target|value")*((pl.col("prob_target|value")/pl.col("prob_value")).log())).alias("unit_entropy")
-        ).with_columns([
-            -pl.col("unit_entropy").sum().alias("entropy"),
-            pl.col("value").cast(pl.Utf8).alias("value"),
-            pl.lit(cat).alias("column")
-        ]).rename({"literal":"entropy"})\
-        .sort(by="value").fill_null("")
+    return df.groupby([target, predictive]).agg([
+        pl.count()
+    ]).with_columns([
+        (pl.col("count") / pl.col("count").sum()).alias("prob(target,predictive)")
+    ]).join(
+        temp, on=predictive
+    ).select([
+        pl.lit(predictive).alias("Predictive Variable"),
+        pl.lit(target_entropy).alias("Target Entropy"),
+        (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("Conditional Entropy")
+    ]).with_columns(
+        (pl.col("Target Entropy") - pl.col("Conditional Entropy")).alias("Information Gain")
+    )
 
-    return output, cat
+def information_gain(df:pl.DataFrame, target:str, cat_cols:list[str]=None) -> pl.DataFrame:
+    output = []
+    cats = []
+    if cat_cols:
+        cats.extend(cat_cols)
+    else: # If cat_cols is not passed, infer it
+        for c,t in zip(df.columns, df.dtypes):
+            if t == pl.Utf8 and c != target:
+                cats.append(c)
 
-def entropy_cat_eda_summary(df:pl.DataFrame, cat_columns:list[str], target:str, n_threads:int=4) -> pl.DataFrame:
-    ''' 
-        Perform entrypy categorical EDA for each variable in cat_columns.
+    if len(cats) == 0:
+        return pl.DataFrame() 
 
-        df
-        cat_columns
-        target: must be a binary variable. 
-        n_threads: 
-    '''
-    cat_dfs = []
-    n = len(cat_columns)
-    df2 = df.select(cat_columns + [target])
-    with ThreadPoolExecutor(max_workers=n_threads) as ex:
-        futures = (ex.submit(entropy_cat_eda, df2, c, target) for c in cat_columns)
-        for i,f in enumerate(as_completed(futures)):
-            cat_df, cat = f.result()
-            cat_dfs.append(cat_df)
-            print(f"Finished processing for {cat}, {i+1}/{n}.")
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as ex:
+        futures = ( ex.submit(_information_gain, df, target, predictive) for predictive in cats )
+        for i,res in enumerate(as_completed(futures)):
+            ig = res.result()
+            print(f"Finished processing for {cats[i]}. {i+1}/{len(cats)}")
+            output.append(ig)
 
-    return pl.concat(cat_dfs)
+    return pl.concat(output)
 
 def get_contigency_table(df:pl.DataFrame, a:str, b:str) -> pl.DataFrame:
     '''
