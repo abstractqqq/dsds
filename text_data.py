@@ -10,10 +10,11 @@ from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 stop = stopwords.words('english')
 
 def _reverse_memo(memo:dict[str, str]) -> dict[str, list[str]]:
-    '''Reverse the memo used in transform_text_data. 
+    '''
+    Reverse the memo used in transform_text_data. 
         
-        Returns: 
-            the mapping between stemmed words and the many versions of the word that get stemmed to the same "root".
+    Returns: 
+        the mapping between stemmed words and the many versions of the word that get stemmed to the same "root".
     
     '''
     output:dict[str, list[str]] = {}
@@ -28,20 +29,21 @@ def _reverse_memo(memo:dict[str, str]) -> dict[str, list[str]]:
 def transform_text_data(df:pl.DataFrame|pd.DataFrame
     , one_hot_cols:list[str], text_cols:list[str], drop_first:bool = False
     , vectorize_method:str = "count"
-    , max_df:float=0.95, min_df:float=0.05
+    , max_df:float=0.95, min_df:float=0.05,
 ) -> Tuple[pl.DataFrame, dict[str, list[str]]]:
-    ''' Given a dataframe, perform one-hot encoding and TFIDF/count transformation for the respective columns.
-        Arguments:
-            df: input Pandas/Polars dataframe
-            one_hot_cols: a list of str representing columns that will be one-hot-encoded
-            text_cols: a list of str representing column names that need to be TFIDF/count vectorized
-            drop_first: bool, whether to drop_first when one-hot encoding.
-            vectorizer: str, either "count" or "tfidf"
-            max_df: do not consider words with document frequency > max_df. Default 0.95.
-            min_df: do not consider words with document frequency < min_df. Default 0.05.
+    ''' 
+    Given a dataframe, perform one-hot encoding and TFIDF/count transformation for the respective columns.
+    Arguments:
+        df: input Pandas/Polars dataframe
+        one_hot_cols: a list of str representing columns that will be one-hot-encoded
+        text_cols: a list of str representing column names that need to be TFIDF/count vectorized
+        drop_first: bool, whether to drop_first when one-hot encoding.
+        vectorizer: str, either "count" or "tfidf"
+        max_df: do not consider words with document frequency > max_df. Default 0.95.
+        min_df: do not consider words with document frequency < min_df. Default 0.05.
 
-        Returns:
-            transformed polars dataframe, and a memo of what is being mapped to what.
+    Returns:
+        transformed polars dataframe, and a memo of what is being mapped to what.
 
     '''
 

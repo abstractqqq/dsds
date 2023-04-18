@@ -6,18 +6,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Categorical EDA methods
 
-def _information_gain(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
+def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
     temp = df.groupby([predictive]).agg([
         pl.count().alias("prob(predictive)")
     ]).with_columns([
         pl.col("prob(predictive)") / len(df)
     ])
-
-    target_entropy = df.groupby([target]).agg([
-        pl.count().alias("prob(target)")
-    ]).with_columns([
-        pl.col("prob(target)") / len(df)
-    ]).select(pl.col("prob(target)").entropy()).to_numpy()[0,0]
 
     return df.groupby([target, predictive]).agg([
         pl.count()
@@ -27,11 +21,9 @@ def _information_gain(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFra
         temp, on=predictive
     ).select([
         pl.lit(predictive).alias("Predictive Variable"),
-        pl.lit(target_entropy).alias("Target Entropy"),
         (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("Conditional Entropy")
-    ]).with_columns(
-        (pl.col("Target Entropy") - pl.col("Conditional Entropy")).alias("Information Gain")
-    )
+    ])
+
 
 def information_gain(df:pl.DataFrame, target:str, cat_cols:list[str]=None) -> pl.DataFrame:
     output = []
@@ -44,16 +36,28 @@ def information_gain(df:pl.DataFrame, target:str, cat_cols:list[str]=None) -> pl
                 cats.append(c)
 
     if len(cats) == 0:
+        print("No columns are provided or can be inferred.")
         return pl.DataFrame() 
+    
+    # Compute target entropy. This only needs to be done once.
+    target_entropy = df.groupby([target]).agg([
+                        pl.count().alias("prob(target)")
+                    ]).with_columns([
+                        pl.col("prob(target)") / len(df)
+                    ]).select(pl.col("prob(target)").entropy())\
+                        .to_numpy()[0,0]
 
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as ex:
-        futures = ( ex.submit(_information_gain, df, target, predictive) for predictive in cats )
+        futures = ( ex.submit(_conditional_entropy, df, target, predictive) for predictive in cats )
         for i,res in enumerate(as_completed(futures)):
             ig = res.result()
-            print(f"Finished processing for {cats[i]}. {i+1}/{len(cats)}")
             output.append(ig)
+            print(f"Finished processing for {cats[i]}. {i+1}/{len(cats)}")
 
-    return pl.concat(output)
+    return pl.concat(output).with_columns([
+        pl.lit(target_entropy).alias("Target Entropy"),
+        (pl.lit(target_entropy) - pl.col("Conditional Entropy")).alias("Information Gain")
+    ])
 
 def get_contigency_table(df:pl.DataFrame, a:str, b:str) -> pl.DataFrame:
     '''
