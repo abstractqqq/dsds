@@ -27,7 +27,7 @@ def _reverse_memo(memo:dict[str, str]) -> dict[str, list[str]]:
     return output 
 
 def transform_text_data(df:pl.DataFrame|pd.DataFrame
-    , one_hot_cols:list[str], text_cols:list[str], drop_first:bool = False
+    , text_cols:list[str]
     , vectorize_method:str = "count"
     , max_df:float=0.95, min_df:float=0.05,
 ) -> Tuple[pl.DataFrame, dict[str, list[str]]]:
@@ -35,9 +35,7 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
     Given a dataframe, perform one-hot encoding and TFIDF/count transformation for the respective columns.
     Arguments:
         df: input Pandas/Polars dataframe
-        one_hot_cols: a list of str representing columns that will be one-hot-encoded
         text_cols: a list of str representing column names that need to be TFIDF/count vectorized
-        drop_first: bool, whether to drop_first when one-hot encoding.
         vectorizer: str, either "count" or "tfidf"
         max_df: do not consider words with document frequency > max_df. Default 0.95.
         min_df: do not consider words with document frequency < min_df. Default 0.05.
@@ -47,17 +45,7 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
 
     '''
 
-    print("Performing one-hot encoding and basic cleaning...")
-    df2 = pl.from_pandas(
-                pd.get_dummies( 
-                    # polars has to_dummies, but does not have drop_first option. 
-                    # Also no way to customize prefix_sep at this time.
-                    df.to_pandas() if isinstance(df, pl.DataFrame) else df
-                    , columns=one_hot_cols, drop_first=drop_first
-                    , prefix_sep = "::"
-                )
-            )\
-            .with_columns([
+    df2 = df.with_columns([
                 # first step in cleaning the data, perform split, so now it is a []
                 pl.col(t).str.replace_all('[^\s\w\d%]', '').str.to_lowercase().str.split(by=" ")
                 for t in text_cols
@@ -94,7 +82,7 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
         # Remove the text column.
         df2.drop_in_place(c)
         # Add this new dataframe to a list 
-        new_columns.append(pl.from_numpy(X.toarray(), columns=names))
+        new_columns.append(pl.from_numpy(X.toarray(), schema=names))
 
     df_final = pl.concat(new_columns, how="horizontal")
     return df_final, _reverse_memo(memo)
