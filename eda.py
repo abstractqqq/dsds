@@ -1,7 +1,8 @@
 import polars as pl
-import os 
+import os
 from typing import Tuple, Optional
 from scipy.stats import chi2_contingency
+from scipy.special import fdtrc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Categorical EDA methods
@@ -24,28 +25,40 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
         (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("Conditional Entropy")
     ])
 
-def information_gain(df:pl.DataFrame, target:str, cat_cols:list[str]=[]) -> Optional[pl.DataFrame]:
+def information_gain(df:pl.DataFrame, target:str
+    , cat_cols:list[str]=None
+    , n_threads:int=os.cpu_count()) -> pl.DataFrame:
     '''
         Computes the information gain: Entropy(target) - Conditional_Entropy(target | c), where c is a column in cat_cols.
         For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
 
+        Arguments:
+            df:
+            target:
+            cat_cols: Note that you may use numeric columns as categorical columns provided the column has 
+                a reasonably small number of distinct values.
+            n_threads: 4, 8 ,16 will not make any real difference. But 0 there is a difference between 0 and 4 threads. 
+        
+        Returns:
+            a poalrs dataframe with information gain computed for each categorical column. 
 
     '''
     output = []
     cats = []
-    if cat_cols:
+    if isinstance(cat_cols, list):
         cats.extend(cat_cols)
     else: # If cat_cols is not passed, infer it
         for c,t in zip(df.columns, df.dtypes):
             if t == pl.Utf8 and c != target:
                 cats.append(c)
 
-    if target in cat_cols:
-        cat_cols.remove(target)
+    if target in cats:
+        cats.remove(target)
 
     if len(cats) == 0 or not (target in df.columns):
-        print(f"No columns are provided or can be inferred, or {target} not in input df.")
-        return None
+        print(f"No columns are provided or can be inferred, or {target} is not in input df.")
+        print("Returned empty dataframe.")
+        return pl.DataFrame()
     
     # Compute target entropy. This only needs to be done once.
     target_entropy = df.groupby([target]).agg([
@@ -55,7 +68,7 @@ def information_gain(df:pl.DataFrame, target:str, cat_cols:list[str]=[]) -> Opti
                     ]).select(pl.col("prob(target)").entropy())\
                         .to_numpy()[0,0]
 
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as ex:
+    with ThreadPoolExecutor(max_workers=n_threads) as ex:
         futures = ( ex.submit(_conditional_entropy, df, target, predictive) for predictive in cats )
         for i,res in enumerate(as_completed(futures)):
             ig = res.result()
@@ -66,6 +79,69 @@ def information_gain(df:pl.DataFrame, target:str, cat_cols:list[str]=[]) -> Opti
         pl.lit(target_entropy).alias("Target Entropy"),
         (pl.lit(target_entropy) - pl.col("Conditional Entropy")).alias("Information Gain")
     ])
+
+def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
+    '''
+        Computes ANOVA one way test, the f value/score and the p value. 
+        Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
+        and performs better on bigger data. (Because NumPy is not parallelized while Polars will use all
+        available CPUs on the machine.)
+
+        Arguments:
+            df: input Polars dataframe.
+            target: the target column.
+            num_cols: if provided, will run the ANOVA one way test for each column in num_cols. If none,
+                will try to infer from df according to data types. Note that num_cols should be numeric!
+
+        Returns:
+            A polars dataframe with f score and p value.
+    
+    '''
+    
+    num_list = []
+    if isinstance(num_cols, list):
+        num_list.extend(num_cols)
+    else:
+        for c,t in zip(df.columns, df.dtypes):
+            if t != pl.Utf8 and t != pl.Struct and c != target: # Improve this in the future
+                num_list.append(c)
+    
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # Get average within group and sample variance within group.
+    step_two_expr:list[pl.Expr] = [] # Get true average for each column
+    step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
+    for n in num_list:
+        n_avg = n + "_avg"
+        n_tavg = n + "_tavg"
+        n_var = n + "_var"
+        step_one_expr.append(
+            pl.col(n).mean().alias(n_avg)
+        )
+        step_one_expr.append(
+            pl.col(n).var(ddof=0).alias(n_var)
+        )
+        step_two_expr.append(
+            # True average of this column
+            (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
+        )
+        step_three_expr.append(
+            # Between class var (without diving by df_btw_class) / Within class var (without dividng by df_in_class) 
+            (pl.col(n_avg) - pl.col(n_tavg)).pow(2).dot(pl.col("cnt"))/ pl.col(n_var).dot(pl.col("cnt"))
+        )
+
+    # Get in class average and var
+    ref = df.groupby(target).agg(step_one_expr)
+    n_samples = len(df)
+    n_classes = len(ref)
+    df_btw_class = n_classes - 1 
+    df_in_class = n_samples - n_classes
+    
+    f_scores = ref.with_columns(step_two_expr).select(step_three_expr)\
+            .to_numpy().ravel() * (df_in_class / df_btw_class)
+    # We should scale this by (df_in_class / df_btw_class)
+
+    p_values = fdtrc(df_btw_class, df_in_class, f_scores) # get p values 
+    return pl.from_records([num_list, f_scores, p_values], schema=["feature","f_score","p_value"])
+
 
 # def get_contigency_table(df:pl.DataFrame, a:str, b:str) -> pl.DataFrame:
 #     '''
@@ -127,7 +203,12 @@ def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     '''
         Removes columns with more than threshold% null values.
 
-        returns the df without those columns
+        Arguments:
+            df:
+            threshold:
+
+        Returns:
+            the df without those columns
     '''
 
     remove_cols = (df.null_count()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
@@ -149,7 +230,12 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
         If include_null = True, then if a column has two distinct values {value_1, null}, then this will be considered a 
         constant column.
 
-        returns the df without constant columns
+        Arguments:
+            df:
+            include_null: 
+
+        Returns: 
+            the df without constant columns
     '''
 
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)
@@ -168,7 +254,7 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     print(f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
-def binary_transform(df:pl.DataFrame, binary_cols:list[str]=[], exclude:list[str]=[]) -> Tuple[pl.DataFrame, pl.DataFrame]:
+def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
     '''
         The goal of this function is to map binary categorical values into [0, 1], therefore reducing the amount of encoding
         you will have to do later. This is important when you want to keep feature dimension low when you have many binary categorical
@@ -176,7 +262,7 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=[], exclude:list[str
             if value_1 < value_2, value_1 --> 0, value_2 --> 1. E.g. 'N' < 'Y' ==> 'N' --> 0 and 'Y' --> 1
         
         In case the two distinct values are [None, value_1], and you decide to treat this variable as a binary category, then
-        None will be mapped to 0 and value_1 will always be mapped to 1.
+        None --> 0 and value_1 --> 1.
         
         Using one-hot-encoding will map binary categorical values to 2 columns (except when you specify drop_first=True in pd.get_dummies),
         therefore introducing unnecessary dimension. So it is better to prevent it. 
@@ -184,18 +270,30 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=[], exclude:list[str
         binary_cols: the binary_cols you wish to convert. If no input, will infer (might take time because counting unique values for each column is not cheap).
         exclude: the columns you wish to exclude in this transformation.
 
-        returns (the transformed dataframe, mapping table between old values to [0,1])
+        Arguments:
+            df:
+            binary_cols:
+            exclude: 
+
+        Returns: 
+            (the transformed dataframe, mapping table between old values to [0,1])
     '''
     mapping = {"feature":[], "to_0":[], "to_1":[], "dtype":[]}
     exprs = []
-    if len(binary_cols) == 0:
+    binary_list = []
+    if binary_cols is None:
         binary_columns = get_unique_count(df).filter(pl.col("n_unique") == 2).get_column("column").to_list()
+
         print(f"Found the following binary columns: {binary_columns}.")
-        binary_cols.extend(binary_columns)
+        binary_list.extend(binary_columns)
     
+    
+    exclude_list = [] if exclude is None else exclude.copy()
     # Doing some repetitive operations here, but I am not sure how I can get all the data in one go.
-    for b in binary_cols:
-        if b not in exclude:
+    for b in binary_list:
+        if b in exclude_list:
+            print(f"Found {b} is in exclude list. Ignored.")
+        else:
             vals = df.get_column(b).unique().to_list()
             if vals[0] is None: # Weird code, but we need this case.
                 pass 
