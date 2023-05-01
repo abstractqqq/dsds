@@ -1,11 +1,12 @@
 import polars as pl
 import os
+import numpy as np 
 from typing import Tuple, Optional
 from scipy.stats import chi2_contingency
 from scipy.special import fdtrc
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# Categorical EDA methods
+# from sklearn.ensemble import RandomForestClassifier
+# from sklearn.tree import DecisionTreeClassifier
 
 POLARS_NUMERICAL_TYPES = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
 
@@ -14,7 +15,7 @@ def get_numeric_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
     
     '''
     output = []
-    exclude_list = [] if exclude is None else exclude.copy()
+    exclude_list = [] if exclude is None else exclude
     for c,t in zip(df.columns, df.dtypes):
         if t in POLARS_NUMERICAL_TYPES and c not in exclude_list:
             output.append(c)
@@ -22,24 +23,24 @@ def get_numeric_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
 
 def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
     output = []
-    exclude_list = [] if exclude is None else exclude.copy()
+    exclude_list = [] if exclude is None else exclude
     for c,t in zip(df.columns, df.dtypes):
         if t == pl.Utf8 and c not in exclude_list:
             output.append(c)
     return output
 
 def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
-    temp = df.groupby(predictive).agg([
+    temp = df.groupby(predictive).agg(
         pl.count().alias("prob(predictive)")
-    ]).with_columns([
+    ).with_columns(
         pl.col("prob(predictive)") / len(df)
-    ])
+    )
 
-    return df.groupby([target, predictive]).agg([
+    return df.groupby([target, predictive]).agg(
         pl.count()
-    ]).with_columns([
+    ).with_columns(
         (pl.col("count") / pl.col("count").sum()).alias("prob(target,predictive)")
-    ]).join(
+    ).join(
         temp, on=predictive
     ).select([
         pl.lit(predictive).alias("Predictive Variable"),
@@ -48,9 +49,11 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
 
 def information_gain(df:pl.DataFrame, target:str
     , cat_cols:list[str]=None
-    , n_threads:int=os.cpu_count()) -> pl.DataFrame:
+    , top_k:int=0
+    , n_threads:int=os.cpu_count()
+    , verbose:bool=True) -> pl.DataFrame:
     '''
-        Computes the information gain: Entropy(target) - Conditional_Entropy(target | c), where c is a column in cat_cols.
+        Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in cat_cols.
         For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
 
         Arguments:
@@ -58,6 +61,7 @@ def information_gain(df:pl.DataFrame, target:str
             target:
             cat_cols: list of categorical columns. Note that you may use numeric columns as categorical columns provided the column has 
                 a reasonably small number of distinct values.
+            top_k: must be >= 0. If == 0, the entire DataFrame will be returned.
             n_threads: 4, 8 ,16 will not make any real difference. But 0 there is a difference between 0 and 4 threads. 
         
         Returns:
@@ -77,24 +81,27 @@ def information_gain(df:pl.DataFrame, target:str
         return pl.DataFrame()
     
     # Compute target entropy. This only needs to be done once.
-    target_entropy = df.groupby(target).agg([
-                        pl.count().alias("prob(target)")
-                    ]).with_columns([
-                        pl.col("prob(target)") / len(df)
-                    ]).select(pl.col("prob(target)").entropy())\
-                        .to_numpy()[0,0]
+    target_entropy = df.groupby(target).agg(
+                        (pl.count()).alias("prob(target)") / len(df)
+                    ).get_column("prob(target)").entropy() 
 
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
         futures = (ex.submit(_conditional_entropy, df, target, predictive) for predictive in cats)
         for i,res in enumerate(as_completed(futures)):
             ig = res.result()
             output.append(ig)
-            print(f"Finished processing for {cats[i]}. Progress: {i+1}/{len(cats)}")
+            if verbose:
+                print(f"Finished processing for {cats[i]}. Progress: {i+1}/{len(cats)}")
 
-    return pl.concat(output).with_columns([
+    output = pl.concat(output).with_columns([
         pl.lit(target_entropy).alias("Target Entropy"),
         (pl.lit(target_entropy) - pl.col("Conditional Entropy")).alias("Information Gain")
-    ])
+    ]).sort("Information Gain", descending=True)
+
+    if top_k == 0:
+        return output 
+    else:
+        return output.limit(top_k)
 
 def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
     '''
@@ -119,7 +126,7 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
     # Get average within group and sample variance within group.
-    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")]
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
     step_two_expr:list[pl.Expr] = [] # Get average for each column
     step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
     # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
@@ -211,6 +218,26 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
 
 # ---------------------------- BASIC STUFF ----------------------------------------------------------------
 
+def describe(df:pl.DataFrame) -> pl.DataFrame:
+    '''
+        The transpose view of df.describe() for easier filtering. Add more statistics in the future (if easily
+        computable.)
+
+        Arguments:
+            df:
+
+        Returns:
+            Transposed view of df.describe()
+    '''
+    temp = df.describe()
+    columns = temp.drop_in_place("describe")
+    nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
+    return temp.transpose(include_header=True, column_names=columns).with_columns(
+        (pl.col(c).cast(pl.Float64) for c in nums)
+    ).with_columns(
+        (pl.col("null_count")/pl.col("count")).alias("null_pct")
+    )
+
 def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     '''
         Removes columns with more than threshold% null values.
@@ -249,7 +276,7 @@ def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
     remove_cols = df.select(var_expr).transpose(include_header=True, column_names=["var"])\
                     .filter(pl.col("var") < threshold).get_column("column").to_list()
     
-    print(f"The following columns are dropped because they have lower than {threshold} variance. {remove_cols}")
+    print(f"The following numeric columns are dropped because they have lower than {threshold} variance. {remove_cols}")
     print(f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
@@ -271,30 +298,28 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
             the df without constant columns
     '''
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)
-    remove_cols = []
-    constants = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list()
-    remove_cols.extend(constants)
-
+    remove_cols = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list() # These are constants, remove.
     if include_null: 
-        binary = temp.filter(pl.col("n_unique") == 2).get_column("column").to_list()
+        binary = temp.filter(pl.col("n_unique") == 2).get_column("column")
         for b in binary:
-            unique_values = df.get_column(b).unique().to_list()
-            if None in unique_values:
+            if None in df.get_column(b).unique():
                 remove_cols.append(b)
 
     print(f"The following columns are dropped because they are constants. {remove_cols}.")
     print(f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
+# --- Transformations ---
+
 def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
     '''
         The goal of this function is to map binary categorical values into [0, 1], therefore reducing the amount of encoding
-        you will have to do later. This is important when you want to keep feature dimension low when you have many binary categorical
+        you will have to do later. This is important when you want to keep feature dimension low and when you have many binary categorical
         variables. The values will be mapped to [0, 1] by the following rule:
             if value_1 < value_2, value_1 --> 0, value_2 --> 1. E.g. 'N' < 'Y' ==> 'N' --> 0 and 'Y' --> 1
         
         In case the two distinct values are [None, value_1], and you decide to treat this variable as a binary category, then
-        None --> 0 and value_1 --> 1.
+        None --> 0 and value_1 --> 1. (If you apply constant_removal first then this column will be seen as constant and dropped.)
         
         Using one-hot-encoding will map binary categorical values to 2 columns (except when you specify drop_first=True in pd.get_dummies),
         therefore introducing unnecessary dimension. So it is better to prevent it.
@@ -305,8 +330,7 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
         Arguments:
             df:
             binary_cols: the binary_cols you wish to convert. If no input, will infer (might take time because counting unique values for each column is not cheap).
-                exclude: the columns you wish to exclude in this transformation.
-            exclude: 
+            exclude: the columns you wish to exclude in this transformation.
 
         Returns: 
             (the transformed dataframe, mapping table between old values to [0,1])
@@ -314,39 +338,109 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
     mapping = {"feature":[], "to_0":[], "to_1":[], "dtype":[]}
     exprs = []
     binary_list = []
-    if binary_cols is None:
-        binary_columns = get_unique_count(df).filter(pl.col("n_unique") == 2).get_column("column").to_list()
-        print(f"Found the following binary columns: {binary_columns}.")
+    if isinstance(binary_cols, list):
+        binary_list.extend(binary_cols)
+    else:
+        binary_columns = get_unique_count(df).filter((pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude))).get_column("column")
         binary_list.extend(binary_columns)
     
-    exclude_list = [] if exclude is None else exclude.copy()
+    exclude_list = [] if exclude is None else exclude
     # Doing some repetitive operations here, but I am not sure how I can get all the data in one go.
-    for b in binary_list:
-        if b in exclude_list:
-            print(f"Found {b} is in exclude list. Ignored.")
+    for b in filter(lambda x: x not in exclude_list, binary_list):
+        vals = df.get_column(b).unique().to_list()
+        print(f"Transforming {b}...")
+        if len(vals) != 2:
+            print(f"Found {b} has {len(vals)} unique values instead of 2. Not a binary variable. Ignored.")
+            continue
+        if vals[0] is None: # Weird code, but we need this case.
+            pass
+        elif vals[1] is None:
+            vals[0], vals[1] = vals[1], vals[0]
         else:
-            vals = df.get_column(b).unique().to_list()
-            if len(vals) != 2:
-                print(f"Found {b} has {len(vals)} unique values instead of 2. Not a binary variable. Ignored.")
-                continue 
-            if vals[0] is None: # Weird code, but we need this case.
-                pass 
-            elif vals[1] is None:
-                vals[0], vals[1] = vals[1], vals[0]
-            else:
-                vals.sort()
+            vals.sort()
 
-            mapping["feature"].append(b)
-            mapping["to_0"].append(vals[0] if vals[0] is None else str(vals[0])) # have to cast to str to avoid mixed types
-            mapping["to_1"].append(str(vals[1])) # vals[1] is gauranteed to be not None by above logic
-            mapping["dtype"].append("string" if isinstance(vals[1], str) else "numeric")
-            
-            exprs.append(
-                pl.when(pl.col(b).is_null()).then(0).otherwise(
-                    pl.when(pl.col(b) < vals[1]).then(0).otherwise(1)
-                ).alias(b) 
-            )
+        mapping["feature"].append(b)
+        mapping["to_0"].append(vals[0] if vals[0] is None else str(vals[0])) # have to cast to str to avoid mixed types
+        mapping["to_1"].append(str(vals[1])) # vals[1] is gauranteed to be not None by above logic
+        mapping["dtype"].append("string" if isinstance(vals[1], str) else "numeric")
+        
+        exprs.append(
+            pl.when(pl.col(b).is_null()).then(0).otherwise(
+                pl.when(pl.col(b) < vals[1]).then(0).otherwise(1)
+            ).cast(pl.UInt8).alias(b) 
+        )
 
     return df.with_columns(exprs), pl.from_dict(mapping)
 
+def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
+    '''
+        Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, where each percentile could
+        potentially be a bin and null will be mapped to bin = 0. Bin 1 means percentile 0 to 1. Generally, bin X groups the
+        population from bin X-1 to bin X into one bucket.
 
+        I see some potential optimization opportunities here.
+
+        Arguments:
+            df:
+            num_cols: 
+            exclude:
+
+        Returns:
+            (A transformed dataframe, mapping between original variables and the bins)
+    
+    '''
+
+    # Percentile Binning
+    # Not optimized. But working.
+    num_list:list[str] = []
+    exclude_list:list[str] = [] if exclude is None else exclude
+    if isinstance(num_cols, list):
+        num_list.extend(num_cols)
+    else:
+        num_list.extend(get_numeric_cols(df, exclude=exclude_list))
+
+    # Is clone just adding 1 to ref count?
+    df2 = df.clone().with_columns((
+        pl.col(c).cast(pl.Float64) for c in num_list
+    ))
+    tables = []
+    for c in num_list:
+        percentile = df2.groupby(c).agg(pl.count().alias("cnt"))\
+            .sort(c)\
+            .with_columns(
+                ((pl.col("cnt").cumsum()*100)/len(df2)).ceil().alias("percentile")
+            ).groupby("percentile")\
+            .agg([
+                pl.col(c).min().alias("min"),
+                pl.col(c).max().alias("max"),
+                pl.col(c).sum().alias("cnt"),
+            ]).sort("percentile").select([
+                pl.lit(c).alias("feature"),
+                pl.col("percentile").cast(pl.UInt8),
+                pl.col("min"),
+                pl.col("max"),
+                pl.col("cnt"),
+            ])
+        
+        first_row = percentile.select(["percentile","min", "max"]).to_numpy()[0, :] # First row
+        # Need to handle an extreme case when percentile looks like 
+        # percentile   min   max
+        #  p1         null  null
+        #  p2          ...   ...
+        if np.isnan(first_row[2]):
+            print(f"Found one (percentile, min, max) for {c} is {first_row}, which cannot be correctly processed by the algorithm. Column {c} skipped.")
+            continue 
+
+        temp_df = df2.lazy().filter(pl.col(c).is_not_null()).sort(c)\
+            .join_asof(other=percentile.lazy(), left_on=c, right_on="max", strategy="forward")\
+            .select([c, "percentile"])\
+            .unique().collect()
+        
+        mapping = dict(zip(temp_df[c], temp_df["percentile"]))
+        df2.replace_at_idx(df2.find_idx_by_name(c),
+                           df2[c].map_dict(mapping, default=0.).cast(pl.UInt8).alias(c + "_percentile")
+                           )
+        tables.append(percentile)
+
+    ref = pl.concat(tables)
+    return df2, ref

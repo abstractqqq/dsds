@@ -1,11 +1,15 @@
-# My library for data analysis
+# My Data Analysis Toolkit
 
-Goal: Make traditional EDA methods (especially those in sklearn) easier to perform, faster to compute, and more "DataFrame-friendly", meaning that 
+Goal1: Make traditional EDA methods (especially those in sklearn) easier to perform, faster to compute, and more "DataFrame-friendly", meaning that 
 
 1. Inputs should be dataframes and reduce copying to NumPy array as much as possible, instead of inputting NumPy arrays or internally copying data to numpy array.
 2. Output should be clean dataframes on which we can quickly sort and filter.
 
 To this end, we have to entirely use Polars as Pandas is not a great performance-wise and it has inconsistent data type issues. 
+
+Goal2: Create memory efficient way of scaling, transforming data (DataFrame -> NumPy). Speed may be compromised in the interest of low memory.
+
+Goal3: Dataframe-friendly text transformations, good for small scale NLP analysis. May not be efficient over large datasets.
 
 
 ## Explorative Data Analysis (eda.py)

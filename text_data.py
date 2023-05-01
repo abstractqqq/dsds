@@ -45,16 +45,15 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
 
     '''
 
-    df2 = df.with_columns([
-                # first step in cleaning the data, perform split, so now it is a []
-                pl.col(t).str.replace_all('[^\s\w\d%]', '').str.to_lowercase().str.split(by=" ")
-                for t in text_cols
-            ])
+    df2 = df.with_columns((
+        # first step in cleaning the data, perform split, so now it is a []
+        pl.col(t).str.replace_all('[^\s\w\d%]', '').str.to_lowercase().str.split(by=" ")
+        for t in text_cols
+    ))
 
     print("Perfoming stemming...")
     ps = PorterStemmer()
     memo = {} # perform memoization for stemming
-    # Use a match statment in the future
     if vectorize_method == "tfidf":
         vectorizer:TfidfVectorizer = TfidfVectorizer(max_df = max_df, min_df = min_df, stop_words=list(stop))
     else:
@@ -65,13 +64,13 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
         new_list:list[str] = []
         text_column = df2.drop_in_place(c)
         for tokens in text_column:
-            if not tokens.is_empty(): # if tokens is not none
+            if not tokens.is_empty(): # if tokens is not empty. Tokens is a pl.Series.
                 new_tokens:list[str] = [] 
                 for w in tokens:
                     if w not in memo:
                         memo[w] = ps.stem(w)
                     new_tokens.append(memo[w])
-                # re-map the tokens into sentences, in order to use scikit-learn builtin vectorize methods
+                # re-map the tokens into sentences, in order to use scikit-learn builtin vectorize methods. Bad for performance? Can this be improved?
                 new_list.append(" ".join(new_tokens))
             else:
                 new_list.append("Unknown")
