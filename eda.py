@@ -73,7 +73,7 @@ def information_gain(df:pl.DataFrame, target:str
         for i,res in enumerate(as_completed(futures)):
             ig = res.result()
             output.append(ig)
-            print(f"Finished processing for {cats[i]}. {i+1}/{len(cats)}")
+            print(f"Finished processing for {cats[i]}. Progress: {i+1}/{len(cats)}")
 
     return pl.concat(output).with_columns([
         pl.lit(target_entropy).alias("Target Entropy"),
@@ -84,8 +84,7 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
     '''
         Computes ANOVA one way test, the f value/score and the p value. 
         Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
-        and performs better on bigger data. (Because NumPy is not parallelized while Polars will use all
-        available CPUs on the machine.)
+        and performs better on bigger data.
 
         Arguments:
             df: input Polars dataframe.
@@ -94,7 +93,7 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
                 will try to infer from df according to data types. Note that num_cols should be numeric!
 
         Returns:
-            A polars dataframe with f score and p value.
+            a polars dataframe with f score and p value.
     
     '''
     
@@ -106,9 +105,11 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
             if t != pl.Utf8 and t != pl.Struct and c != target: # Improve this in the future
                 num_list.append(c)
     
-    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # Get average within group and sample variance within group.
-    step_two_expr:list[pl.Expr] = [] # Get true average for each column
+    # Get average within group and sample variance within group.
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")]
+    step_two_expr:list[pl.Expr] = [] # Get average for each column
     step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
+    # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
     for n in num_list:
         n_avg = n + "_avg"
         n_tavg = n + "_tavg"
@@ -117,10 +118,9 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
             pl.col(n).mean().alias(n_avg)
         )
         step_one_expr.append(
-            pl.col(n).var(ddof=0).alias(n_var)
+            pl.col(n).var(ddof=0).alias(n_var) # ddof = 0 so that we don't need to compute pl.col("cnt") - 1
         )
-        step_two_expr.append(
-            # True average of this column
+        step_two_expr.append( # True average of this column
             (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
         )
         step_three_expr.append(
@@ -137,11 +137,10 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
     
     f_scores = ref.with_columns(step_two_expr).select(step_three_expr)\
             .to_numpy().ravel() * (df_in_class / df_btw_class)
-    # We should scale this by (df_in_class / df_btw_class)
+    # We should scale this by (df_in_class / df_btw_class) because we did not do this earlier
 
     p_values = fdtrc(df_btw_class, df_in_class, f_scores) # get p values 
     return pl.from_records([num_list, f_scores, p_values], schema=["feature","f_score","p_value"])
-
 
 # def get_contigency_table(df:pl.DataFrame, a:str, b:str) -> pl.DataFrame:
 #     '''
@@ -283,10 +282,8 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
     binary_list = []
     if binary_cols is None:
         binary_columns = get_unique_count(df).filter(pl.col("n_unique") == 2).get_column("column").to_list()
-
         print(f"Found the following binary columns: {binary_columns}.")
         binary_list.extend(binary_columns)
-    
     
     exclude_list = [] if exclude is None else exclude.copy()
     # Doing some repetitive operations here, but I am not sure how I can get all the data in one go.
@@ -295,6 +292,9 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
             print(f"Found {b} is in exclude list. Ignored.")
         else:
             vals = df.get_column(b).unique().to_list()
+            if len(vals) != 2:
+                print(f"Found {b} has {len(vals)} values instead of 2. Ignored.")
+                continue 
             if vals[0] is None: # Weird code, but we need this case.
                 pass 
             elif vals[1] is None:
@@ -304,7 +304,7 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
 
             mapping["feature"].append(b)
             mapping["to_0"].append(vals[0] if vals[0] is None else str(vals[0])) # have to cast to str to avoid mixed types
-            mapping["to_1"].append(vals[1] if vals[1] is None else str(vals[1]))
+            mapping["to_1"].append(str(vals[1])) # vals[1] is gauranteed to be not None by above logic
             mapping["dtype"].append("string" if isinstance(vals[1], str) else "numeric")
             
             exprs.append(

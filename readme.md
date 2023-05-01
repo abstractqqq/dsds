@@ -1,27 +1,35 @@
 # My library for data analysis
 
-## Text data transformation
+Goal: Make traditional EDA methods (especially those in sklearn) easier to perform, faster to compute, and more "DataFrame-friendly", meaning that 
 
-1. A quick reusable method to transform text data in a column into multiple numerical columns. Great for TF-IDF kind of thing and also any other model that cannot consume text data directly. 
+1. Inputs should be dataframes and reduce copying to NumPy array as much as possible, instead of inputting NumPy arrays or internally copying data to numpy array.
+2. Output should be clean dataframes on which we can quickly sort and filter.
 
-## Categorical data: Explorative data analysis
+To this end, we have to entirely use Polars as Pandas is not a great performance-wise and it has inconsistent data type issues. 
 
-Some methods I am using to perform categorical explorative data analysis. The goal is to understand "feature importance" without training a model, rank features based on their "importance", understand if variable A is depedent on B or not.
 
-Ideally, this should be applied to datasets with only categorical columns, although I may develop some binning techniques in the future so this should work with continuous variables too. The target column can be a binary classification / multilabel classification target.
+## Explorative Data Analysis
 
 My goal is to develop all these test and make them work on a Polars dataframe. A consistent API should be used. These are the methods I have so far.
 
-1. A method based on entropy.
+1. A method based on entropy. (Univariate as of now, but can be potentially multi-variate.)
     
     Let X denote the test column/feature, and Y the target. We compute the conditional entropy H(Y|X), which represents the remaining randomness in the random variable Y, given the random variable X. For more details, see [here](https://en.wikipedia.org/wiki/Entropy_(information_theory)).
 
-2. Chi-square contigency table test. 
+2. Classic Anova One Way F-test. (Univariate) 
     
-    See [here](https://en.wikipedia.org/wiki/Chi-squared_test). G-test is actually used.
+    See [here](https://saylordotorg.github.io/text_introductory-statistics/s15-04-f-tests-in-one-way-anova.html).
+
+## Text data transformation
+
+1. A quick reusable method to transform text data in a column into multiple numerical columns. Great for TF-IDF kind of thing and also any other model that cannot consume text data directly. 
 
 ## Dependencies
 
 pip install polars scipy nltk scikit-learn
 
 (nltk may require additional downloads.)
+
+## TODO
+
+1. Obviously make more useful EDA methods "DataFrame-friendly."

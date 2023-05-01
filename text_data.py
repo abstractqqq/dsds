@@ -63,9 +63,9 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
     new_columns = [df2] # df2 will be changed in the for loop, but that is ok.
     for c in text_cols:
         new_list:list[str] = []
-        text_column:list[list[str]] = df2.get_column(c).to_list() # will be great if we have pop
+        text_column = df2.drop_in_place(c)
         for tokens in text_column:
-            if tokens: # if tokens is not none
+            if not tokens.is_empty(): # if tokens is not none
                 new_tokens:list[str] = [] 
                 for w in tokens:
                     if w not in memo:
@@ -77,10 +77,9 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
                 new_list.append("Unknown")
 
         print(f"Performing {vectorize_method.capitalize()} vectorization for {c}...")
+        # Vectorizer will return Sparse matrix
         X:csr_matrix = vectorizer.fit_transform(new_list)
         names:list[str] = [c+"::word::"+x for x in vectorizer.get_feature_names_out()]
-        # Remove the text column.
-        df2.drop_in_place(c)
         # Add this new dataframe to a list 
         new_columns.append(pl.from_numpy(X.toarray(), schema=names))
 
