@@ -8,9 +8,11 @@ Goal: Make traditional EDA methods (especially those in sklearn) easier to perfo
 To this end, we have to entirely use Polars as Pandas is not a great performance-wise and it has inconsistent data type issues. 
 
 
-## Explorative Data Analysis
+## Explorative Data Analysis (eda.py)
 
 My goal is to develop all these test and make them work on a Polars dataframe. A consistent API should be used. These are the methods I have so far.
+
+0. Feature removal methods (null_pct, var, etc.) and binary transforms. More in the future.
 
 1. A method based on entropy. (Univariate as of now, but can be potentially multi-variate.)
     
@@ -20,7 +22,7 @@ My goal is to develop all these test and make them work on a Polars dataframe. A
     
     See [here](https://saylordotorg.github.io/text_introductory-statistics/s15-04-f-tests-in-one-way-anova.html).
 
-## Text data transformation
+## Text data transformation (text_data.py)
 
 1. A quick reusable method to transform text data in a column into multiple numerical columns. Great for TF-IDF kind of thing and also any other model that cannot consume text data directly. 
 

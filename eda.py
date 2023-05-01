@@ -7,8 +7,29 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Categorical EDA methods
 
+POLARS_NUMERICAL_TYPES = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
+
+def get_numeric_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
+    ''' 
+    
+    '''
+    output = []
+    exclude_list = [] if exclude is None else exclude.copy()
+    for c,t in zip(df.columns, df.dtypes):
+        if t in POLARS_NUMERICAL_TYPES and c not in exclude_list:
+            output.append(c)
+    return output
+
+def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
+    output = []
+    exclude_list = [] if exclude is None else exclude.copy()
+    for c,t in zip(df.columns, df.dtypes):
+        if t == pl.Utf8 and c not in exclude_list:
+            output.append(c)
+    return output
+
 def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
-    temp = df.groupby([predictive]).agg([
+    temp = df.groupby(predictive).agg([
         pl.count().alias("prob(predictive)")
     ]).with_columns([
         pl.col("prob(predictive)") / len(df)
@@ -35,7 +56,7 @@ def information_gain(df:pl.DataFrame, target:str
         Arguments:
             df:
             target:
-            cat_cols: Note that you may use numeric columns as categorical columns provided the column has 
+            cat_cols: list of categorical columns. Note that you may use numeric columns as categorical columns provided the column has 
                 a reasonably small number of distinct values.
             n_threads: 4, 8 ,16 will not make any real difference. But 0 there is a difference between 0 and 4 threads. 
         
@@ -48,20 +69,15 @@ def information_gain(df:pl.DataFrame, target:str
     if isinstance(cat_cols, list):
         cats.extend(cat_cols)
     else: # If cat_cols is not passed, infer it
-        for c,t in zip(df.columns, df.dtypes):
-            if t == pl.Utf8 and c != target:
-                cats.append(c)
+        cats.extend(get_string_cols(df, exclude=[target]))
 
-    if target in cats:
-        cats.remove(target)
-
-    if len(cats) == 0 or not (target in df.columns):
-        print(f"No columns are provided or can be inferred, or {target} is not in input df.")
+    if len(cats) == 0:
+        print(f"No columns are provided or can be inferred.")
         print("Returned empty dataframe.")
         return pl.DataFrame()
     
     # Compute target entropy. This only needs to be done once.
-    target_entropy = df.groupby([target]).agg([
+    target_entropy = df.groupby(target).agg([
                         pl.count().alias("prob(target)")
                     ]).with_columns([
                         pl.col("prob(target)") / len(df)
@@ -69,7 +85,7 @@ def information_gain(df:pl.DataFrame, target:str
                         .to_numpy()[0,0]
 
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
-        futures = ( ex.submit(_conditional_entropy, df, target, predictive) for predictive in cats )
+        futures = (ex.submit(_conditional_entropy, df, target, predictive) for predictive in cats)
         for i,res in enumerate(as_completed(futures)):
             ig = res.result()
             output.append(ig)
@@ -96,15 +112,12 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
             a polars dataframe with f score and p value.
     
     '''
-    
     num_list = []
     if isinstance(num_cols, list):
         num_list.extend(num_cols)
     else:
-        for c,t in zip(df.columns, df.dtypes):
-            if t != pl.Utf8 and t != pl.Struct and c != target: # Improve this in the future
-                num_list.append(c)
-    
+        num_list.extend(get_numeric_cols(df, exclude=[target]))
+
     # Get average within group and sample variance within group.
     step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")]
     step_two_expr:list[pl.Expr] = [] # Get average for each column
@@ -207,7 +220,7 @@ def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
             threshold:
 
         Returns:
-            the df without those columns
+            df without null_pct > threshold columns
     '''
 
     remove_cols = (df.null_count()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
@@ -218,25 +231,45 @@ def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     print(f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
+def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
+    '''
+        Removes features with low variance. Features with > threshold variance will be kept. This only works for numerical columns.
+        Note that this can effectively remove (numerical) constants as well. It is, however, hard to come up with
+        a uniform threshold for all features, as numerical features can be at very different scales. 
+
+        Arguments:
+            df:
+            threshold:
+            target: target in your predictive model. Some targets may have low variance, e.g. imbalanced binary targets. So we should exclude it.
+
+        Returns:
+            df without columns with < threshold var.
+    '''
+    var_expr = (pl.col(x).var() for x in get_numeric_cols(df) if x != target)
+    remove_cols = df.select(var_expr).transpose(include_header=True, column_names=["var"])\
+                    .filter(pl.col("var") < threshold).get_column("column").to_list()
+    
+    print(f"The following columns are dropped because they have lower than {threshold} variance. {remove_cols}")
+    print(f"Removed a total of {len(remove_cols)} columns.")
+    return df.drop(remove_cols)
+
 def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
-    return df.select([
+    return df.select((
         pl.col(x).n_unique() for x in df.columns
-    ]).transpose(include_header=True, column_names=["n_unique"])
+    )).transpose(include_header=True, column_names=["n_unique"])
 
 def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     '''
         Removes all constant columns from dataframe.
-        If include_null = True, then if a column has two distinct values {value_1, null}, then this will be considered a 
-        constant column.
 
         Arguments:
             df:
-            include_null: 
+            include_null: if true, then columns with two distinct values like [value_1, null] will be considered a 
+                constant column.
 
         Returns: 
             the df without constant columns
     '''
-
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)
     remove_cols = []
     constants = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list()
@@ -264,14 +297,15 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
         None --> 0 and value_1 --> 1.
         
         Using one-hot-encoding will map binary categorical values to 2 columns (except when you specify drop_first=True in pd.get_dummies),
-        therefore introducing unnecessary dimension. So it is better to prevent it. 
+        therefore introducing unnecessary dimension. So it is better to prevent it.
 
-        binary_cols: the binary_cols you wish to convert. If no input, will infer (might take time because counting unique values for each column is not cheap).
-        exclude: the columns you wish to exclude in this transformation.
+        In case the distinct values the column are [null, value_1, value_2], you must first impute this column if you want this method
+        to count this as a binary column. 
 
         Arguments:
             df:
-            binary_cols:
+            binary_cols: the binary_cols you wish to convert. If no input, will infer (might take time because counting unique values for each column is not cheap).
+                exclude: the columns you wish to exclude in this transformation.
             exclude: 
 
         Returns: 
@@ -293,7 +327,7 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
         else:
             vals = df.get_column(b).unique().to_list()
             if len(vals) != 2:
-                print(f"Found {b} has {len(vals)} values instead of 2. Ignored.")
+                print(f"Found {b} has {len(vals)} unique values instead of 2. Not a binary variable. Ignored.")
                 continue 
             if vals[0] is None: # Weird code, but we need this case.
                 pass 
