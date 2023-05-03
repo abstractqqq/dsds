@@ -231,12 +231,17 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
     '''
     temp = df.describe()
     columns = temp.drop_in_place("describe")
+    unique_counts = pl.Series("unique_count", df.select(
+            (pl.col(c).n_unique().alias(c+"_unique_count") for c in df.columns)
+        ).to_numpy().ravel())
     nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
-    return temp.transpose(include_header=True, column_names=columns).with_columns(
+    final = temp.transpose(include_header=True, column_names=columns).with_columns(
         (pl.col(c).cast(pl.Float64) for c in nums)
     ).with_columns(
         (pl.col("null_count")/pl.col("count")).alias("null_pct")
-    )
+    ).insert_at_idx(3, unique_counts)
+    
+    return final.select(['column','count','null_count','null_pct','unique_count','mean','std','min','max','median','25%','75%'])
 
 def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     '''
@@ -288,7 +293,6 @@ def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
 def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     '''
         Removes all constant columns from dataframe.
-
         Arguments:
             df:
             include_null: if true, then columns with two distinct values like [value_1, null] will be considered a 
