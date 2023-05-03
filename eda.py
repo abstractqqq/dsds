@@ -62,7 +62,7 @@ def information_gain(df:pl.DataFrame, target:str
             cat_cols: list of categorical columns. Note that you may use numeric columns as categorical columns provided the column has 
                 a reasonably small number of distinct values.
             top_k: must be >= 0. If == 0, the entire DataFrame will be returned.
-            n_threads: 4, 8 ,16 will not make any real difference. But 0 there is a difference between 0 and 4 threads. 
+            n_threads: 4, 8 ,16 will not make any real difference. But there is a difference between 0 and 4 threads. 
         
         Returns:
             a poalrs dataframe with information gain computed for each categorical column. 
@@ -131,9 +131,9 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
     step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
     # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
     for n in num_list:
-        n_avg = n + "_avg"
-        n_tavg = n + "_tavg"
-        n_var = n + "_var"
+        n_avg = n + "_avg" # avg within class
+        n_tavg = n + "_tavg" # true avg / absolute average
+        n_var = n + "_var" # var within class
         step_one_expr.append(
             pl.col(n).mean().alias(n_avg)
         )
@@ -315,7 +315,7 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
 
 # --- Transformations ---
 
-def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
+def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
     '''
         The goal of this function is to map binary categorical values into [0, 1], therefore reducing the amount of encoding
         you will have to do later. This is important when you want to keep feature dimension low and when you have many binary categorical
@@ -334,7 +334,7 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
         Arguments:
             df:
             binary_cols: the binary_cols you wish to convert. If no input, will infer (might take time because counting unique values for each column is not cheap).
-            exclude: the columns you wish to exclude in this transformation.
+            exclude: the columns you wish to exclude in this transformation. (Only applies if you are letting the system auto-detecting binary columns.)
 
         Returns: 
             (the transformed dataframe, mapping table between old values to [0,1])
@@ -348,11 +348,10 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
         binary_columns = get_unique_count(df).filter((pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude))).get_column("column")
         binary_list.extend(binary_columns)
     
-    exclude_list = [] if exclude is None else exclude
     # Doing some repetitive operations here, but I am not sure how I can get all the data in one go.
-    for b in filter(lambda x: x not in exclude_list, binary_list):
+    for b in binary_list:
         vals = df.get_column(b).unique().to_list()
-        print(f"Transforming {b}...")
+        print(f"Transforming {b} into a binary column with [0, 1] ...")
         if len(vals) != 2:
             print(f"Found {b} has {len(vals)} unique values instead of 2. Not a binary variable. Ignored.")
             continue
@@ -376,6 +375,93 @@ def binary_transform(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[s
 
     return df.with_columns(exprs), pl.from_dict(mapping)
 
+def get_ordinal_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
+    '''
+        Helper function to get a table from an ordinal_mapping dict.
+
+        Arguments:
+            ordinal_mapping: {name_of_feature: {value_1 : mapped_to_number_1, value_2 : mapped_to_number_2, ...}, ...}
+
+        Returns:
+            A table with feature name, value, and mapped_to
+    
+    '''
+
+    mapping_tables = []
+    for feature, mapping in ordinal_mapping.items():
+        count = len(ordinal_mapping[feature])
+        # Python's (> 3.7) dict is ordered dict. So we can do this.
+        mapping_tables.append(
+            pl.from_records([[feature]*count, mapping.keys(), mapping.values()], schema=["feature","value", "mapped_to"])
+        )
+
+    return pl.concat(mapping_tables)
+
+def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
+    '''
+        Automatically applies ordinal encoding to the provided columns by the following logic:
+            Sort the column, smallest value will be assigned to 0, second smallest will be assigned to 1...
+
+        This will automatically detect string columns and apply this operation if ordinal_cols is not provided. 
+        This method is great for string columns like age ranges, with values like ["10-20", "20-30"], etc...
+        
+        Arguments:
+            df:
+            ordinal_cols:
+            exclude: the columns you wish to exclude in this transformation. (Only applies if you are letting the system auto-detecting binary columns.)
+        
+        Returns:
+            (encoded df, mapping table)
+    '''
+    
+    ordinal_list:list[str] = []
+    if isinstance(ordinal_cols, list):
+        ordinal_list.extend(ordinal_cols)
+    else:
+        ordinal_list.extend(get_string_cols(df, exclude=exclude))
+
+    exprs:list[pl.Expr] = []
+    ordinal_mapping:dict[str, dict[str,int]] = {}
+    rename_dict:dict[str, str] = {}
+    for c in ordinal_list:
+        sorted_uniques = df.get_column(c).unique().sort()
+        count = len(sorted_uniques)
+        mapping:dict[str, int] = dict(zip(sorted_uniques, range(count)))
+        ordinal_mapping[c] = mapping
+        exprs.append(pl.col(c).map_dict(mapping).cast(pl.UInt32))
+        rename_dict[c] = c + "_ordinal"
+
+    return df.with_columns(exprs).rename(rename_dict), get_ordinal_mapping_table(ordinal_mapping)
+
+def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], default:int = -1) -> pl.DataFrame:
+    '''
+        Ordinal encode the data with given mapping.
+        
+        Notice that it is assumed that you already have the mapping,
+        since you have to supply the ordinal_mapping argument. If you still want the tabular output format,
+        please call get_ordinal_mapping_table with ordinal_mapping, which will create a table from this.
+
+        Arguments:
+            df:
+            ordinal_mapping:
+            default: if a value for a feature does not exist in ordinal_mapping, use default.
+
+        Returns:
+            encoded df
+    '''
+    
+    rename_dict:dict[str, str] = {}
+    exprs:list[pl.Expr] = []
+    for c in ordinal_mapping:
+        if c in df.columns:
+            mapping = ordinal_mapping[c]
+            exprs.append(pl.col(c).map_dict(mapping, default=default).cast(pl.UInt32))
+            rename_dict[c] = c + "_ordinal"
+        else:
+            print(f"Found that column {c} is not in df. Skipped.")
+
+    return df.with_columns(exprs).rename(rename_dict)
+
 def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
     '''
         Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, where each percentile could
@@ -390,12 +476,12 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
             exclude:
 
         Returns:
-            (A transformed dataframe, mapping between original variables and the bins)
+            (A transformed dataframe, a mapping table (value to percentile))
     
     '''
 
     # Percentile Binning
-    # Not optimized. But working.
+
     num_list:list[str] = []
     exclude_list:list[str] = [] if exclude is None else exclude
     if isinstance(num_cols, list):
@@ -403,16 +489,14 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
     else:
         num_list.extend(get_numeric_cols(df, exclude=exclude_list))
 
-    # Is clone just adding 1 to ref count?
-    df2 = df.clone().with_columns((
-        pl.col(c).cast(pl.Float64) for c in num_list
-    ))
-    tables = []
+    tables:list[pl.DataFrame] = []
+    exprs:list[pl.Expr] = []
+    rename_dict:dict[str,str] = {}
     for c in num_list:
-        percentile = df2.groupby(c).agg(pl.count().alias("cnt"))\
+        percentile = df.groupby(c).agg(pl.count().alias("cnt"))\
             .sort(c)\
             .with_columns(
-                ((pl.col("cnt").cumsum()*100)/len(df2)).ceil().alias("percentile")
+                ((pl.col("cnt").cumsum()*100)/len(df)).ceil().alias("percentile")
             ).groupby("percentile")\
             .agg([
                 pl.col(c).min().alias("min"),
@@ -421,9 +505,9 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
             ]).sort("percentile").select([
                 pl.lit(c).alias("feature"),
                 pl.col("percentile").cast(pl.UInt8),
-                pl.col("min"),
-                pl.col("max"),
-                pl.col("cnt"),
+                "min",
+                "max",
+                "cnt",
             ])
         
         first_row = percentile.select(["percentile","min", "max"]).to_numpy()[0, :] # First row
@@ -432,19 +516,25 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
         #  p1         null  null
         #  p2          ...   ...
         if np.isnan(first_row[2]):
-            print(f"Found one (percentile, min, max) for {c} is {first_row}, which cannot be correctly processed by the algorithm. Column {c} skipped.")
+            print(f"For feature {c}, we found (percentile, min, max) = {first_row}, which cannot be correctly processed by the algorithm. Skipped.")
             continue 
 
-        temp_df = df2.lazy().filter(pl.col(c).is_not_null()).sort(c)\
+        temp_df = df.lazy().filter(pl.col(c).is_not_null()).sort(c)\
             .join_asof(other=percentile.lazy(), left_on=c, right_on="max", strategy="forward")\
             .select([c, "percentile"])\
             .unique().collect()
         
         mapping = dict(zip(temp_df[c], temp_df["percentile"]))
-        df2.replace_at_idx(df2.find_idx_by_name(c),
-                           df2[c].map_dict(mapping, default=0.).cast(pl.UInt8).alias(c + "_percentile")
-                           )
+
+        exprs.append(
+            pl.col(c).map_dict(mapping, default=0).cast(pl.UInt8)
+        )
+        rename_dict[c] = c + "_percentile"
+        percentile = percentile.with_columns([
+            pl.col("min").cast(pl.Float32),
+            pl.col("max").cast(pl.Float32),
+            pl.col("cnt").cast(pl.UInt32)
+        ]) # Need to do this because we need a uniform format in order to stack these columns.
         tables.append(percentile)
 
-    ref = pl.concat(tables)
-    return df2, ref
+    return df.with_columns(exprs).rename(rename_dict), pl.concat(tables)
