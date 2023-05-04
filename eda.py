@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # from sklearn.tree import DecisionTreeClassifier
 
 POLARS_NUMERICAL_TYPES = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
+CPU_COUNT = os.cpu_count()
 
 def get_numeric_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
     ''' 
@@ -43,15 +44,15 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
     ).join(
         temp, on=predictive
     ).select([
-        pl.lit(predictive).alias("Predictive Variable"),
-        (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("Conditional Entropy")
+        pl.lit(predictive).alias("feature"),
+        (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("conditional_entropy")
     ])
 
 def information_gain(df:pl.DataFrame, target:str
-    , cat_cols:list[str]=None
-    , top_k:int=0
-    , n_threads:int=os.cpu_count()
-    , verbose:bool=True) -> pl.DataFrame:
+    , cat_cols:list[str] = None
+    , top_k:int = 0
+    , n_threads:int = CPU_COUNT
+    , verbose:bool = True) -> pl.DataFrame:
     '''
         Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in cat_cols.
         For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
@@ -63,10 +64,10 @@ def information_gain(df:pl.DataFrame, target:str
                 a reasonably small number of distinct values.
             top_k: must be >= 0. If == 0, the entire DataFrame will be returned.
             n_threads: 4, 8 ,16 will not make any real difference. But there is a difference between 0 and 4 threads. 
-        
+            verbose: if true, print progress.
+            
         Returns:
             a poalrs dataframe with information gain computed for each categorical column. 
-
     '''
     output = []
     cats = []
@@ -94,16 +95,17 @@ def information_gain(df:pl.DataFrame, target:str
                 print(f"Finished processing for {cats[i]}. Progress: {i+1}/{len(cats)}")
 
     output = pl.concat(output).with_columns([
-        pl.lit(target_entropy).alias("Target Entropy"),
-        (pl.lit(target_entropy) - pl.col("Conditional Entropy")).alias("Information Gain")
-    ]).sort("Information Gain", descending=True)
+        pl.lit(target_entropy).alias("target_entropy"),
+        (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
+    ]).sort("information_gain", descending=True)\
+        .select(["feature", "target_entropy", "conditional_entropy", "information_gain"])
 
     if top_k == 0:
         return output 
     else:
         return output.limit(top_k)
 
-def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
+def f_test(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
     '''
         Computes ANOVA one way test, the f value/score and the p value. 
         Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
@@ -131,9 +133,9 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
     step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
     # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
     for n in num_list:
-        n_avg = n + "_avg" # avg within class
-        n_tavg = n + "_tavg" # true avg / absolute average
-        n_var = n + "_var" # var within class
+        n_avg:str = n + "_avg" # avg within class
+        n_tavg:str = n + "_tavg" # true avg / absolute average
+        n_var:str = n + "_var" # var within class
         step_one_expr.append(
             pl.col(n).mean().alias(n_avg)
         )
@@ -150,71 +152,17 @@ def f_score(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFram
 
     # Get in class average and var
     ref = df.groupby(target).agg(step_one_expr)
-    n_samples = len(df)
-    n_classes = len(ref)
+    n_samples = np.float64(len(df))
+    n_classes = np.float64(len(ref))
     df_btw_class = n_classes - 1 
     df_in_class = n_samples - n_classes
     
-    f_scores = ref.with_columns(step_two_expr).select(step_three_expr)\
+    f_values = ref.with_columns(step_two_expr).select(step_three_expr)\
             .to_numpy().ravel() * (df_in_class / df_btw_class)
     # We should scale this by (df_in_class / df_btw_class) because we did not do this earlier
 
-    p_values = fdtrc(df_btw_class, df_in_class, f_scores) # get p values 
-    return pl.from_records([num_list, f_scores, p_values], schema=["feature","f_score","p_value"])
-
-# def get_contigency_table(df:pl.DataFrame, a:str, b:str) -> pl.DataFrame:
-#     '''
-#         df
-#         a is values (utf8), the row in the contigency table
-#         b is target, the columns in the contigency table
-    
-#     '''
-
-#     return df.rename({a:"value"})\
-#         .select([pl.col(b).fill_null(b+"_UNK"), pl.col("value").fill_null("_UNK")])\
-#         .groupby(["value", b])\
-#         .agg([
-#             pl.count().alias("cnt")
-#         ]).pivot(columns="value", values="cnt", index=b)\
-#             .fill_null(0)
-            
-
-# def chi2_contigency_test(df:pl.DataFrame, cat:str, target:str) -> Tuple[str, object]:
-#     '''
-#         Transforms data into a contigency table and perform chi squared test on it to see if 
-#         cat and target are independent or not.
-
-
-
-#         returns
-#             (cat, a class that contains chi2_contigency_test results)
-    
-#     '''
-    
-#     temp = get_contigency_table(df, cat, target)
-#     cat_values = temp.columns
-#     cat_values.remove(target)
-#     res = chi2_contingency(temp.select(cat_values).to_numpy(), lambda_ = "log-likelihood")
-#     return cat, res
-
-# def chi2_contigency_summary(df:pl.DataFrame, cat_columns:list[str], target:str
-#     , threshold:float=0.05, n_threads:int = 4
-# ) -> pl.DataFrame:
-#     '''
-    
-    
-#     '''
-#     n = len(cat_columns)
-#     final_results = []
-#     df2 = df.select(cat_columns + [target])
-#     with ThreadPoolExecutor(max_workers=n_threads) as ex:
-#         futures = (ex.submit(chi2_contigency_test, df2, c, target) for c in cat_columns)
-#         for i,f in enumerate(as_completed(futures)):
-#             cat, res = f.result()
-#             final_results.append((cat, res.pvalue, res.pvalue < threshold))
-#             print(f"Finished processing for {cat}, {i+1}/{n}.")
-
-#     return pl.from_records(final_results, schema=["feature_name", "p-value", "is_dependent"])
+    p_values = fdtrc(df_btw_class, df_in_class, f_values) # get p values 
+    return pl.from_records([num_list, f_values, p_values], schema=["feature","f_value","p_value"])
 
 # ---------------------------- BASIC STUFF ----------------------------------------------------------------
 
@@ -227,7 +175,7 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
             df:
 
         Returns:
-            Transposed view of df.describe()
+            Transposed view of df.describe() with a few more interesting columns
     '''
     temp = df.describe()
     columns = temp.drop_in_place("describe")
@@ -313,7 +261,7 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     print(f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
-# --- Transformations ---
+# ----------------------------------------------- Transformations --------------------------------------------------
 
 def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
     '''
@@ -386,8 +334,7 @@ def get_ordinal_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.Da
             A table with feature name, value, and mapped_to
     
     '''
-
-    mapping_tables = []
+    mapping_tables:list[pl.DataFrame] = []
     for feature, mapping in ordinal_mapping.items():
         count = len(ordinal_mapping[feature])
         # Python's (> 3.7) dict is ordered dict. So we can do this.
@@ -538,3 +485,29 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
         tables.append(percentile)
 
     return df.with_columns(exprs).rename(rename_dict), pl.concat(tables)
+
+# --------------------- Other, miscellaneous helper functions ----------------------------------------------
+
+def get_numpy(df:pl.DataFrame, target:str) -> Tuple[np.ndarray, np.ndarray, list[str]]:
+    '''
+        Create NumPy matrices/array for feature matrix X and target y. 
+        
+        Note that this implementation will "consume df" column by column, thus saving memory used in the process.
+        If memory is not a problem, do directly df.select(feature).to_numpy(). IMPORTANT: df will be deleted at the end.
+
+    
+    '''
+    features:list[str] = df.columns 
+    features.remove(target)
+    y = df.drop_in_place(target).to_numpy().ravel() 
+    columns = []
+    for c in features:
+        columns.append(
+            df.drop_in_place(c).to_numpy()
+        )
+
+    del df
+    X = np.concatenate(columns, axis=1)
+    return X,y,features
+
+

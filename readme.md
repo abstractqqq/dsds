@@ -32,6 +32,8 @@ My goal is to develop all these test and make them work on a Polars dataframe. A
 
 ## Dependencies
 
+Python 3.9+
+
 pip install polars scipy nltk scikit-learn
 
 (nltk may require additional downloads.)
