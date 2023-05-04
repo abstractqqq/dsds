@@ -503,7 +503,7 @@ def get_numpy(df:pl.DataFrame, target:str) -> Tuple[np.ndarray, np.ndarray, list
     columns = []
     for c in features:
         columns.append(
-            df.drop_in_place(c).to_numpy()
+            df.drop_in_place(c).to_numpy().reshape((-1,1))
         )
 
     del df
