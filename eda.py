@@ -1,15 +1,21 @@
 import polars as pl
 import os
 import numpy as np 
-from typing import Tuple, Optional
+from typing import Self, Tuple, Optional
 from scipy.stats import chi2_contingency
 from scipy.special import fdtrc
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 # from sklearn.ensemble import RandomForestClassifier
 # from sklearn.tree import DecisionTreeClassifier
 
 POLARS_NUMERICAL_TYPES = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
 CPU_COUNT = os.cpu_count()
+
+@dataclass
+class FeatureMappingResult:
+    transformed: pl.DataFrame
+    mapping: pl.DataFrame 
 
 def get_numeric_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
     ''' 
@@ -263,7 +269,7 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
 
 # ----------------------------------------------- Transformations --------------------------------------------------
 
-def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
+def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> FeatureMappingResult:
     '''
         The goal of this function is to map binary categorical values into [0, 1], therefore reducing the amount of encoding
         you will have to do later. This is important when you want to keep feature dimension low and when you have many binary categorical
@@ -321,11 +327,21 @@ def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]
             ).cast(pl.UInt8).alias(b) 
         )
 
-    return df.with_columns(exprs), pl.from_dict(mapping)
+    res = df.with_columns(exprs)
+    mapping = pl.from_dict(mapping)
+    return FeatureMappingResult(transformed = res, mapping = mapping)
 
 def get_ordinal_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
     '''
         Helper function to get a table from an ordinal_mapping dict.
+
+        >>> {
+        >>> "a": 
+        >>>    {"a1": 1, "a2": 2,},
+        >>> "b":
+        >>>    {"b1": 3, "b2": 4,},
+        >>> }
+
 
         Arguments:
             ordinal_mapping: {name_of_feature: {value_1 : mapped_to_number_1, value_2 : mapped_to_number_2, ...}, ...}
@@ -344,7 +360,7 @@ def get_ordinal_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.Da
 
     return pl.concat(mapping_tables)
 
-def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
+def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:list[str]=None) -> FeatureMappingResult:
     '''
         Automatically applies ordinal encoding to the provided columns by the following logic:
             Sort the column, smallest value will be assigned to 0, second smallest will be assigned to 1...
@@ -360,7 +376,6 @@ def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:li
         Returns:
             (encoded df, mapping table)
     '''
-    
     ordinal_list:list[str] = []
     if isinstance(ordinal_cols, list):
         ordinal_list.extend(ordinal_cols)
@@ -378,13 +393,16 @@ def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:li
         exprs.append(pl.col(c).map_dict(mapping).cast(pl.UInt32))
         rename_dict[c] = c + "_ordinal"
 
-    return df.with_columns(exprs).rename(rename_dict), get_ordinal_mapping_table(ordinal_mapping)
+    res = df.with_columns(exprs).rename(rename_dict)
+    mapping = get_ordinal_mapping_table(ordinal_mapping)
+    return FeatureMappingResult(transformed=res, mapping=mapping)
 
-def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], default:int = -1) -> pl.DataFrame:
+
+def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], default:int = -1) -> FeatureMappingResult:
     '''
         Ordinal encode the data with given mapping.
-        
-        Notice that it is assumed that you already have the mapping,
+
+        Notice that this function assumes that you already have the mapping, in correct mapping format.
         since you have to supply the ordinal_mapping argument. If you still want the tabular output format,
         please call get_ordinal_mapping_table with ordinal_mapping, which will create a table from this.
 
@@ -407,9 +425,14 @@ def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], de
         else:
             print(f"Found that column {c} is not in df. Skipped.")
 
-    return df.with_columns(exprs).rename(rename_dict)
+    res = df.with_columns(exprs).rename(rename_dict)
+    mapping = get_ordinal_mapping_table(ordinal_mapping)
+    return FeatureMappingResult(transformed=res, mapping=mapping)
 
-def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> Tuple[pl.DataFrame, pl.DataFrame]:
+# def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str]) -> FeatureMappingResult:
+#     df = df.to_dummies(columns=one_hot_columns)
+
+def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> FeatureMappingResult:
     '''
         Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, where each percentile could
         potentially be a bin and null will be mapped to bin = 0. Bin 1 means percentile 0 to 1. Generally, bin X groups the
@@ -484,22 +507,40 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
         ]) # Need to do this because we need a uniform format in order to stack these columns.
         tables.append(percentile)
 
-    return df.with_columns(exprs).rename(rename_dict), pl.concat(tables)
+    res = df.with_columns(exprs).rename(rename_dict)
+    mapping = pl.concat(tables)
+    return FeatureMappingResult(transformed=res, mapping=mapping)
 
 # --------------------- Other, miscellaneous helper functions ----------------------------------------------
+@dataclass
+class NumPyDataCube:
+    X: np.ndarray
+    y: np.ndarray
+    features: list[str]
 
-def get_numpy(df:pl.DataFrame, target:str) -> Tuple[np.ndarray, np.ndarray, list[str]]:
+def get_numpy(df:pl.DataFrame, target:str, flatten:bool=True) -> NumPyDataCube:
     '''
         Create NumPy matrices/array for feature matrix X and target y. 
         
         Note that this implementation will "consume df" column by column, thus saving memory used in the process.
-        If memory is not a problem, do directly df.select(feature).to_numpy(). IMPORTANT: df will be deleted at the end.
+        If memory is not a problem, you can do directly df.select(feature).to_numpy(). 
+        IMPORTANT: df will be consumed at the end.
 
+        Arguments:
+            df:
+            target:
+            flatten:
+
+        returns:
+            ()
+        
     
     '''
     features:list[str] = df.columns 
     features.remove(target)
-    y = df.drop_in_place(target).to_numpy().ravel() 
+    y = df.drop_in_place(target).to_numpy()
+    if flatten:
+        y = y.ravel() 
     columns = []
     for c in features:
         columns.append(
@@ -508,6 +549,6 @@ def get_numpy(df:pl.DataFrame, target:str) -> Tuple[np.ndarray, np.ndarray, list
 
     del df
     X = np.concatenate(columns, axis=1)
-    return X,y,features
+    return NumPyDataCube(X, y, features)
 
 
