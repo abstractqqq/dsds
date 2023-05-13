@@ -33,6 +33,8 @@ def transform_text_data(df:pl.DataFrame|pd.DataFrame
 ) -> Tuple[pl.DataFrame, dict[str, list[str]]]:
     ''' 
     Given a dataframe, perform one-hot encoding and TFIDF/count transformation for the respective columns.
+    This may not be optimized.
+
     Arguments:
         df: input Pandas/Polars dataframe
         text_cols: a list of str representing column names that need to be TFIDF/count vectorized

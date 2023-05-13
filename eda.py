@@ -43,16 +43,16 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
         pl.col("prob(predictive)") / len(df)
     )
 
-    return df.groupby([target, predictive]).agg(
+    return df.groupby((target, predictive)).agg(
         pl.count()
     ).with_columns(
         (pl.col("count") / pl.col("count").sum()).alias("prob(target,predictive)")
     ).join(
         temp, on=predictive
-    ).select([
+    ).select((
         pl.lit(predictive).alias("feature"),
         (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("conditional_entropy")
-    ])
+    ))
 
 def information_gain(df:pl.DataFrame, target:str
     , cat_cols:list[str] = None
@@ -100,10 +100,10 @@ def information_gain(df:pl.DataFrame, target:str
             if verbose:
                 print(f"Finished processing for {cats[i]}. Progress: {i+1}/{len(cats)}")
 
-    output = pl.concat(output).with_columns([
+    output = pl.concat(output).with_columns((
         pl.lit(target_entropy).alias("target_entropy"),
         (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
-    ]).sort("information_gain", descending=True)\
+    )).sort("information_gain", descending=True)\
         .select(["feature", "target_entropy", "conditional_entropy", "information_gain"])
 
     if top_k == 0:
@@ -134,6 +134,7 @@ def f_test(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
     # Get average within group and sample variance within group.
+    ## Could potentially replace this with generators instead of lists. Not sure how impactful that would be... Probably no diff.
     step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
     step_two_expr:list[pl.Expr] = [] # Get average for each column
     step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
@@ -185,9 +186,10 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
     '''
     temp = df.describe()
     columns = temp.drop_in_place("describe")
-    unique_counts = pl.Series("unique_count", df.select(
-            (pl.col(c).n_unique().alias(c+"_unique_count") for c in df.columns)
-        ).to_numpy().ravel())
+    unique_counts_temp = df.select(
+        (pl.col(c).n_unique().alias(c+"_unique_count") for c in df.columns)
+    ).to_numpy().ravel()
+    unique_counts = pl.Series("unique_count", unique_counts_temp)
     nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
     final = temp.transpose(include_header=True, column_names=columns).with_columns(
         (pl.col(c).cast(pl.Float64) for c in nums)
@@ -195,7 +197,7 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
         (pl.col("null_count")/pl.col("count")).alias("null_pct")
     ).insert_at_idx(3, unique_counts)
     
-    return final.select(['column','count','null_count','null_pct','unique_count','mean','std','min','max','median','25%','75%'])
+    return final.select(('column','count','null_count','null_pct','unique_count','mean','std','min','max','median','25%','75%'))
 
 def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     '''
@@ -352,10 +354,11 @@ def get_ordinal_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.Da
     '''
     mapping_tables:list[pl.DataFrame] = []
     for feature, mapping in ordinal_mapping.items():
-        count = len(ordinal_mapping[feature])
-        # Python's (> 3.7) dict is ordered dict. So we can do this.
+        table = pl.from_records(list(mapping.items()), schema=["value", "mapped_to"]).with_columns(
+            pl.lit(feature).alias("feature")
+        ).select(("feature", "value", "mapped_to"))
         mapping_tables.append(
-            pl.from_records([[feature]*count, mapping.keys(), mapping.values()], schema=["feature","value", "mapped_to"])
+            table
         )
 
     return pl.concat(mapping_tables)
@@ -429,8 +432,18 @@ def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], de
     mapping = get_ordinal_mapping_table(ordinal_mapping)
     return FeatureMappingResult(transformed=res, mapping=mapping)
 
-# def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str]) -> FeatureMappingResult:
-#     df = df.to_dummies(columns=one_hot_columns)
+def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_") -> FeatureMappingResult:
+    '''
+
+    
+    '''
+    res = df.to_dummies(columns=one_hot_columns, separator=separator)
+    records = []
+    for c in one_hot_columns:
+        for cc in filter(lambda name: c in name, res.columns):
+            records.append((c,cc))
+    mapping = pl.from_records(records, orient="row", schema=["feature", "one_hot_derived"])
+    return FeatureMappingResult(transformed = res, mapping = mapping)
 
 def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> FeatureMappingResult:
     '''
@@ -468,17 +481,17 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
             .with_columns(
                 ((pl.col("cnt").cumsum()*100)/len(df)).ceil().alias("percentile")
             ).groupby("percentile")\
-            .agg([
+            .agg((
                 pl.col(c).min().alias("min"),
                 pl.col(c).max().alias("max"),
                 pl.col(c).sum().alias("cnt"),
-            ]).sort("percentile").select([
+            )).sort("percentile").select((
                 pl.lit(c).alias("feature"),
                 pl.col("percentile").cast(pl.UInt8),
                 "min",
                 "max",
                 "cnt",
-            ])
+            ))
         
         first_row = percentile.select(["percentile","min", "max"]).to_numpy()[0, :] # First row
         # Need to handle an extreme case when percentile looks like 
@@ -491,7 +504,7 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
 
         temp_df = df.lazy().filter(pl.col(c).is_not_null()).sort(c)\
             .join_asof(other=percentile.lazy(), left_on=c, right_on="max", strategy="forward")\
-            .select([c, "percentile"])\
+            .select((c, "percentile"))\
             .unique().collect()
         
         mapping = dict(zip(temp_df[c], temp_df["percentile"]))
@@ -500,11 +513,11 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
             pl.col(c).map_dict(mapping, default=0).cast(pl.UInt8)
         )
         rename_dict[c] = c + "_percentile"
-        percentile = percentile.with_columns([
+        percentile = percentile.with_columns((
             pl.col("min").cast(pl.Float32),
             pl.col("max").cast(pl.Float32),
             pl.col("cnt").cast(pl.UInt32)
-        ]) # Need to do this because we need a uniform format in order to stack these columns.
+        )) # Need to do this because we need a uniform format in order to stack these columns.
         tables.append(percentile)
 
     res = df.with_columns(exprs).rename(rename_dict)
