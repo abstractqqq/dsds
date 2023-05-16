@@ -1,5 +1,5 @@
 import polars as pl
-import os
+import os, re 
 import numpy as np 
 from typing import Self, Tuple, Optional
 from scipy.stats import chi2_contingency
@@ -15,7 +15,20 @@ CPU_COUNT = os.cpu_count()
 @dataclass
 class FeatureMappingResult:
     transformed: pl.DataFrame
-    mapping: pl.DataFrame 
+    mapping: pl.DataFrame
+
+    # todo!
+    def __str__(self):
+        pass 
+
+@dataclass
+class DroppedFeatureResult:
+    dropped: list[str]
+    reason: str
+
+    # todo!
+    def __str__(self):
+        pass 
 
 def get_numeric_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
     ''' 
@@ -35,6 +48,14 @@ def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
         if t == pl.Utf8 and c not in exclude_list:
             output.append(c)
     return output
+
+def get_cols_regx(df:pl.DataFrame, regx:str) -> list[str]:
+    reg = re.compile(regx)
+    output: list[str] = []
+    for f in df.columns:
+        if reg.search(f):
+            output.append(f)
+    return output 
 
 def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
     temp = df.groupby(predictive).agg(
@@ -242,9 +263,9 @@ def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
     return df.drop(remove_cols)
 
 def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
-    return df.select((
-        pl.col(x).n_unique() for x in df.columns
-    )).transpose(include_header=True, column_names=["n_unique"])
+    return df.select(
+        (pl.col(x).n_unique() for x in df.columns)
+    ).transpose(include_header=True, column_names=["n_unique"])
 
 def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     '''
@@ -547,7 +568,6 @@ def get_numpy(df:pl.DataFrame, target:str, flatten:bool=True) -> NumPyDataCube:
         returns:
             ()
         
-    
     '''
     features:list[str] = df.columns 
     features.remove(target)
