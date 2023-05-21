@@ -1,7 +1,7 @@
 import polars as pl
 import os, re 
 import numpy as np 
-from typing import Self, Tuple, Optional
+from typing import Self, Tuple, Optional, Final, Any
 from scipy.stats import chi2_contingency
 from scipy.special import fdtrc
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -9,8 +9,8 @@ from dataclasses import dataclass
 # from sklearn.ensemble import RandomForestClassifier
 # from sklearn.tree import DecisionTreeClassifier
 
-POLARS_NUMERICAL_TYPES = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
-CPU_COUNT = os.cpu_count()
+POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
+CPU_COUNT:Final[int] = os.cpu_count()
 
 @dataclass
 class FeatureMappingResult:
@@ -113,6 +113,11 @@ def information_gain(df:pl.DataFrame, target:str
                         (pl.count()).alias("prob(target)") / len(df)
                     ).get_column("prob(target)").entropy() 
 
+    # Get unique count for selected columns. This is because higher unique percentage may skew information gain
+    unique_count = get_unique_count(df.select(cats)).with_columns(
+        (pl.col("n_unique") / len(df)).alias("unique_pct")
+    ).rename({"column":"feature"})
+
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
         futures = (ex.submit(_conditional_entropy, df, target, predictive) for predictive in cats)
         for i,res in enumerate(as_completed(futures)):
@@ -125,7 +130,8 @@ def information_gain(df:pl.DataFrame, target:str
         pl.lit(target_entropy).alias("target_entropy"),
         (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
     )).sort("information_gain", descending=True)\
-        .select(["feature", "target_entropy", "conditional_entropy", "information_gain"])
+        .join(unique_count, on="feature")\
+        .select(["feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"])
 
     if top_k == 0:
         return output 
@@ -207,18 +213,18 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
     '''
     temp = df.describe()
     columns = temp.drop_in_place("describe")
-    unique_counts_temp = df.select(
-        (pl.col(c).n_unique().alias(c+"_unique_count") for c in df.columns)
-    ).to_numpy().ravel()
-    unique_counts = pl.Series("unique_count", unique_counts_temp)
+    unique_counts = get_unique_count(df).with_columns(
+        (pl.col("n_unique") / len(df)).alias("unique_pct")
+    )
+    
     nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
     final = temp.transpose(include_header=True, column_names=columns).with_columns(
         (pl.col(c).cast(pl.Float64) for c in nums)
     ).with_columns(
         (pl.col("null_count")/pl.col("count")).alias("null_pct")
-    ).insert_at_idx(3, unique_counts)
+    ).join(unique_counts, on="column")
     
-    return final.select(('column','count','null_count','null_pct','unique_count','mean','std','min','max','median','25%','75%'))
+    return final.select(('column','count','null_count','null_pct','n_unique', 'unique_pct','mean','std','min','max','median','25%','75%'))
 
 def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     '''
@@ -505,7 +511,7 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
             .agg((
                 pl.col(c).min().alias("min"),
                 pl.col(c).max().alias("max"),
-                pl.col(c).sum().alias("cnt"),
+                pl.col("cnt").sum().alias("cnt"),
             )).sort("percentile").select((
                 pl.lit(c).alias("feature"),
                 pl.col("percentile").cast(pl.UInt8),
@@ -520,11 +526,11 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
         #  p1         null  null
         #  p2          ...   ...
         if np.isnan(first_row[2]):
-            print(f"For feature {c}, we found (percentile, min, max) = {first_row}, which cannot be correctly processed by the algorithm. Skipped.")
-            continue 
+            # Discard the first row if this is the case. 
+            percentile = percentile.slice(1, length = None)
 
-        temp_df = df.lazy().filter(pl.col(c).is_not_null()).sort(c)\
-            .join_asof(other=percentile.lazy(), left_on=c, right_on="max", strategy="forward")\
+        temp_df = df.lazy().filter(pl.col(c).is_not_null()).sort(c).set_sorted(c)\
+            .join_asof(other=percentile.lazy().set_sorted("max"), left_on=c, right_on="max", strategy="forward")\
             .select((c, "percentile"))\
             .unique().collect()
         
