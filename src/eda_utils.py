@@ -138,7 +138,50 @@ def information_gain(df:pl.DataFrame, target:str
     else:
         return output.limit(top_k)
 
-def f_test(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
+
+def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
+    '''
+        Same as f_reg, but returns a numpy array of f scores only. This is used in algorithms like MRMR.
+
+    '''
+    
+    # Get average within group and sample variance within group.
+    ## Could potentially replace this with generators instead of lists. Not sure how impactful that would be... Probably no diff.
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
+    step_two_expr:list[pl.Expr] = [] # Get average for each column
+    step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
+    # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
+    for n in num_list:
+        n_avg:str = n + "_avg" # avg within class
+        n_tavg:str = n + "_tavg" # true avg / absolute average
+        n_var:str = n + "_var" # var within class
+        step_one_expr.append(
+            pl.col(n).mean().alias(n_avg)
+        )
+        step_one_expr.append(
+            pl.col(n).var(ddof=0).alias(n_var) # ddof = 0 so that we don't need to compute pl.col("cnt") - 1
+        )
+        step_two_expr.append( # True average of this column
+            (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
+        )
+        step_three_expr.append(
+            # Between class var (without diving by df_btw_class) / Within class var (without dividng by df_in_class) 
+            (pl.col(n_avg) - pl.col(n_tavg)).pow(2).dot(pl.col("cnt"))/ pl.col(n_var).dot(pl.col("cnt"))
+        )
+
+    # Get in class average and var
+    ref = df.groupby(target).agg(step_one_expr)
+    n_samples = np.float64(len(df))
+    n_classes = np.float64(len(ref))
+    df_btw_class = n_classes - 1 
+    df_in_class = n_samples - n_classes
+    
+    f_score = ref.with_columns(step_two_expr).select(step_three_expr)\
+            .to_numpy().ravel() * (df_in_class / df_btw_class)
+    
+    return f_score
+
+def f_reg(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
     '''
         Computes ANOVA one way test, the f value/score and the p value. 
         Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
@@ -194,9 +237,13 @@ def f_test(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame
     f_values = ref.with_columns(step_two_expr).select(step_three_expr)\
             .to_numpy().ravel() * (df_in_class / df_btw_class)
     # We should scale this by (df_in_class / df_btw_class) because we did not do this earlier
+    # At this point, f_values should be a pretty small dataframe. Cast to numpy, so that fdtrc can process it properly.
 
     p_values = fdtrc(df_btw_class, df_in_class, f_values) # get p values 
     return pl.from_records([num_list, f_values, p_values], schema=["feature","f_value","p_value"])
+
+def mrmr():
+    pass 
 
 # ---------------------------- BASIC STUFF ----------------------------------------------------------------
 
@@ -426,7 +473,6 @@ def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:li
     res = df.with_columns(exprs).rename(rename_dict)
     mapping = get_ordinal_mapping_table(ordinal_mapping)
     return FeatureMappingResult(transformed=res, mapping=mapping)
-
 
 def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], default:int = -1) -> FeatureMappingResult:
     '''
