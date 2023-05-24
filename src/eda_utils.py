@@ -129,11 +129,11 @@ def information_gain(df:pl.DataFrame, target:str
     output = pl.concat(output).with_columns((
         pl.lit(target_entropy).alias("target_entropy"),
         (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
-    )).sort("information_gain", descending=True)\
-        .join(unique_count, on="feature")\
-        .select(["feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"])
+    )).join(unique_count, on="feature")\
+        .select(["feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"])\
+        .sort("information_gain", descending=True)
 
-    if top_k == 0:
+    if top_k <= 0:
         return output 
     else:
         return output.limit(top_k)
@@ -181,7 +181,7 @@ def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
     
     return f_score
 
-def f_reg(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
+def f_classification(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
     '''
         Computes ANOVA one way test, the f value/score and the p value. 
         Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
@@ -242,8 +242,44 @@ def f_reg(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
     p_values = fdtrc(df_btw_class, df_in_class, f_values) # get p values 
     return pl.from_records([num_list, f_values, p_values], schema=["feature","f_value","p_value"])
 
-def mrmr():
-    pass 
+def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None):
+
+    num_list = []
+    if isinstance(num_cols, list):
+        num_list.extend(num_cols)
+    else:
+        num_list.extend(get_numeric_cols(df, exclude=[target]))
+
+    f_scores = _f_score(df, target, num_list)
+
+    df_scaled = df.select(num_list).with_columns(
+        (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
+    )
+
+    cumulating_sums = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
+    top_idx = np.argmax(f_scores)
+    selected_features = [num_list[top_idx]]
+    for j in range(1, k): 
+        argmax = -1
+        current_max = -1
+        last_selected = selected_features[-1]
+        for i,f in enumerate(num_list):
+            if f not in selected_features:
+                # Left = cumulating sum of abs corr
+                # Right = abs correlation btw last_selected and f
+                cumulating_sums[i] += np.abs((df_scaled.get_column(last_selected)*df_scaled.get_column(f)).mean())
+                denominator = cumulating_sums[i] / j
+                new_score = f_scores[i] / denominator
+                if new_score > current_max:
+                    current_max = new_score
+                    argmax = i
+
+        selected_features.append(num_list[argmax])
+
+    return selected_features
+    
+
+
 
 # ---------------------------- BASIC STUFF ----------------------------------------------------------------
 
