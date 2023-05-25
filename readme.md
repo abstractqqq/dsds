@@ -32,9 +32,9 @@ My goal is to develop all these test and make them work on a Polars dataframe. A
 
 ## Dependencies
 
-Python 3.9+
+Python 3.10+ because I used match statements. Otherwise, 3.9+ is fine. 
 
-pip install polars scipy nltk scikit-learn
+pip install polars scipy nltk scikit-learn xgboost 
 
 (nltk may require additional downloads.)
 

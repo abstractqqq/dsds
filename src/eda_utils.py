@@ -1,11 +1,13 @@
 import polars as pl
-import os, re 
 import numpy as np 
+import os, re 
+from enum import Enum
 from typing import Self, Tuple, Optional, Final, Any
-from scipy.stats import chi2_contingency
+# from scipy.stats import chi2_contingency
 from scipy.special import fdtrc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+# from time import perf_counter
 # from sklearn.ensemble import RandomForestClassifier
 # from sklearn.tree import DecisionTreeClassifier
 
@@ -83,13 +85,15 @@ def information_gain(df:pl.DataFrame, target:str
     '''
         Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in cat_cols.
         For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
+        Information gain defined in this way suffers from high cardinality (high uniqueness), and therefore a weighted information
+        gain is provided, weighted by (1 - unique_pct), where unique_pct represents the percentage of unique values in feature.
 
         Arguments:
             df:
             target:
             cat_cols: list of categorical columns. Note that you may use numeric columns as categorical columns provided the column has 
                 a reasonably small number of distinct values.
-            top_k: must be >= 0. If == 0, the entire DataFrame will be returned.
+            top_k: must be >= 0. If <= 0, the entire DataFrame will be returned.
             n_threads: 4, 8 ,16 will not make any real difference. But there is a difference between 0 and 4 threads. 
             verbose: if true, print progress.
             
@@ -130,8 +134,10 @@ def information_gain(df:pl.DataFrame, target:str
         pl.lit(target_entropy).alias("target_entropy"),
         (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
     )).join(unique_count, on="feature")\
-        .select(["feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"])\
-        .sort("information_gain", descending=True)
+        .select(("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"))\
+        .with_columns(
+            ((1 - pl.col("unique_pct")) * pl.col("information_gain")).alias("weighted_information_gain")
+        ).sort("information_gain", descending=True)
 
     if top_k <= 0:
         return output 
@@ -141,7 +147,8 @@ def information_gain(df:pl.DataFrame, target:str
 
 def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
     '''
-        Same as f_reg, but returns a numpy array of f scores only. This is used in algorithms like MRMR.
+        Same as f_classification, but returns a numpy array of f scores only. 
+        This is used in algorithms like MRMR for easier-to-work-with output datatype.
 
     '''
     
@@ -242,7 +249,39 @@ def f_classification(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl
     p_values = fdtrc(df_btw_class, df_in_class, f_values) # get p values 
     return pl.from_records([num_list, f_values, p_values], schema=["feature","f_value","p_value"])
 
-def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None):
+
+class MRMR_STRATEGY(Enum):
+    F_SCORE = 1
+    RF = 2
+    XGB = 3
+
+def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
+        , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
+        , params:dict[str:Any]={}
+        , verbose:bool=True) -> pl.DataFrame:
+    '''
+        Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
+        See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
+        for more information.
+
+        Currently this only supports classification.
+
+        Arguments:
+            df:
+            target:
+            k:
+            num_cols:
+            strategy: by default, f-score will be used.
+            params: if a RF/XGB strategy is selected, params is a dict of parameters for the model.
+            verbose:
+
+        Returns:
+            pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
+    
+    '''
+
+
+    # from sklearn.ensemble import RandomForestClassifier
 
     num_list = []
     if isinstance(num_cols, list):
@@ -250,15 +289,39 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None):
     else:
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
-    f_scores = _f_score(df, target, num_list)
+
+    match strategy:
+        case MRMR_STRATEGY.F_SCORE:
+            scores = _f_score(df, target, num_list)
+        case MRMR_STRATEGY.RF:
+            from sklearn.ensemble import RandomForestClassifier
+            print("Random forest is not deterministic by default. Results may vary.")
+            rf = RandomForestClassifier(**params)
+            rf.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+            scores = rf.feature_importances_
+        case MRMR_STRATEGY.XGB:
+            from xgboost import XGBClassifier
+            print("XGB is not deterministic by default. Results may vary.")
+            xgb = XGBClassifier(**params)
+            xgb.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+            scores = xgb.feature_importances_
+        case _:
+            scores = _f_score(df, target, num_list)
+
+    if verbose:
+        importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
+                        .top_k(by=str(strategy), k=5)
+        print(f"Top 5 feature importance is (by {strategy}):\n{importance}")
 
     df_scaled = df.select(num_list).with_columns(
         (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
     )
 
     cumulating_sums = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
-    top_idx = np.argmax(f_scores)
+    top_idx = np.argmax(scores)
     selected_features = [num_list[top_idx]]
+    if verbose:
+        print(f"Found 1st feature by MRMR: {num_list[top_idx]}. 1/{k}")
     for j in range(1, k): 
         argmax = -1
         current_max = -1
@@ -269,18 +332,19 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None):
                 # Right = abs correlation btw last_selected and f
                 cumulating_sums[i] += np.abs((df_scaled.get_column(last_selected)*df_scaled.get_column(f)).mean())
                 denominator = cumulating_sums[i] / j
-                new_score = f_scores[i] / denominator
+                new_score = scores[i] / denominator
                 if new_score > current_max:
                     current_max = new_score
                     argmax = i
 
         selected_features.append(num_list[argmax])
+        if verbose:
+            print(f"Found {j+1}th feature by MRMR: {selected_features[-1]}. {j+1}/{k}")
 
-    return selected_features
-    
-
-
-
+    output = pl.from_records([selected_features], schema=["feature"]).with_columns(
+        pl.arange(1, k+1).alias("mrmr_rank")
+    )
+    return output.select(("mrmr_rank", "feature"))
 # ---------------------------- BASIC STUFF ----------------------------------------------------------------
 
 def describe(df:pl.DataFrame) -> pl.DataFrame:
