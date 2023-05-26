@@ -236,8 +236,8 @@ def f_classification(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl
 
     # Get in class average and var
     ref = df.groupby(target).agg(step_one_expr)
-    n_samples = np.float64(len(df))
-    n_classes = np.float64(len(ref))
+    n_samples = len(df)
+    n_classes = len(ref)
     df_btw_class = n_classes - 1 
     df_in_class = n_samples - n_classes
     
@@ -317,7 +317,7 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
         (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
     )
 
-    cumulating_sums = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
+    cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
     top_idx = np.argmax(scores)
     selected_features = [num_list[top_idx]]
     if verbose:
@@ -330,8 +330,8 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
             if f not in selected_features:
                 # Left = cumulating sum of abs corr
                 # Right = abs correlation btw last_selected and f
-                cumulating_sums[i] += np.abs((df_scaled.get_column(last_selected)*df_scaled.get_column(f)).mean())
-                denominator = cumulating_sums[i] / j
+                cumulating_abs_corr[i] += np.abs((df_scaled.get_column(last_selected)*df_scaled.get_column(f)).mean())
+                denominator = cumulating_abs_corr[i] / j
                 new_score = scores[i] / denominator
                 if new_score > current_max:
                     current_max = new_score
@@ -343,7 +343,7 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
 
     output = pl.from_records([selected_features], schema=["feature"]).with_columns(
         pl.arange(1, k+1).alias("mrmr_rank")
-    )
+    ) # Maybe unncessary to return a dataframe in this case. 
     return output.select(("mrmr_rank", "feature"))
 # ---------------------------- BASIC STUFF ----------------------------------------------------------------
 

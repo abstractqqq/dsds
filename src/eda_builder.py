@@ -1,7 +1,7 @@
 from eda_utils import *
 from dataclasses import dataclass
 import polars as pl 
-from typing import Self
+from typing import Self, Union, Optional
 from enum import Enum
 from functools import partial
 import os, time
@@ -21,12 +21,20 @@ class Transformations(Enum):
 
 class TransformationBuilder:
 
-    def __init__(self, df:pl.DataFrame = None, target:str = "", project_name:str="my_proj") -> Self:
-        self.df:pl.DataFrame = df 
+    def __init__(self, df:Optional[pl.DataFrame], target:str = "", project_name:str="my_proj") -> Self:
+        self.df = df
         self.target:str = target
         self.project_name:str = project_name
         self.execution_steps:list[Transformations] = []
         self.execution_funcs: list = []
+        return self 
+    
+    def read_csv_from(self, path:str) -> Self:
+        self.df = pl.read_csv(path)
+        return self 
+    
+    def read_parquet_from(self, path:str) -> Self:
+        self.df = pl.read_parquet(path)
         return self 
 
     def set_data_and_target(self, df:pl.DataFrame, target:str) -> Self:
@@ -40,6 +48,10 @@ class TransformationBuilder:
     
     def set_data(self, data:pl.DataFrame) -> Self:
         self.df = data 
+        return self
+    
+    def set_project_name(self, pname:str) -> Self:
+        self.project_name = pname
         return self 
 
     def set_null_removal(self, threshold:float) -> Self:
@@ -54,13 +66,16 @@ class TransformationBuilder:
         self.execution_funcs.append(func)
         return self
     
-    def get_description(self) -> Self:
-        self.execution_steps.append(Transformations.DESCRIBE)
-        self.execution_funcs.append(describe)
-        return self
+    # def get_description(self) -> Self:
+    #     self.execution_steps.append(Transformations.DESCRIBE)
+    #     self.execution_funcs.append(describe)
+    #     return self
     
     def _checkpoint(self, sample_amt:int=-1, sample_frac:float=-1.):
-        
+
+        # Add checkout target location in the future
+        # Right now this is always local disk
+
         output_path = "./.checkpoint/"
         if not os.path.exists(output_path):
             os.mkdir(output_path)
@@ -86,13 +101,13 @@ class TransformationBuilder:
 
         return self 
 
-    def checkpoint(self, sample:float=1.0) -> Self:
-        pass
+    # def checkpoint(self, sample:float=1.0, sample_frac:float=-1.) -> Self:
+    #     pass
     
     def build(self) -> TransformedData: #(Use optional?)
 
         if isinstance(self.df, None) or self.target == "":
-            raise ValueError("self.df cannot be None when building and self.target must be set.")
+            raise ValueError("self.df cannot be None and self.target must be set when building.")
         
 
 
