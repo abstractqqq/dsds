@@ -15,7 +15,7 @@ POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt3
 CPU_COUNT:Final[int] = os.cpu_count()
 
 @dataclass
-class FeatureMappingResult:
+class TransformationResult:
     transformed: pl.DataFrame
     mapping: pl.DataFrame
 
@@ -445,7 +445,7 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
 
 # ----------------------------------------------- Transformations --------------------------------------------------
 
-def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> FeatureMappingResult:
+def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> TransformationResult:
     '''
         The goal of this function is to map binary categorical values into [0, 1], therefore reducing the amount of encoding
         you will have to do later. This is important when you want to keep feature dimension low and when you have many binary categorical
@@ -505,7 +505,7 @@ def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]
 
     res = df.with_columns(exprs)
     mapping = pl.from_dict(mapping)
-    return FeatureMappingResult(transformed = res, mapping = mapping)
+    return TransformationResult(transformed = res, mapping = mapping)
 
 def get_ordinal_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
     '''
@@ -537,7 +537,7 @@ def get_ordinal_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.Da
 
     return pl.concat(mapping_tables)
 
-def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:list[str]=None) -> FeatureMappingResult:
+def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:list[str]=None) -> TransformationResult:
     '''
         Automatically applies ordinal encoding to the provided columns by the following logic:
             Sort the column, smallest value will be assigned to 0, second smallest will be assigned to 1...
@@ -572,9 +572,9 @@ def ordinal_auto_encode(df:pl.DataFrame, ordinal_cols:list[str]=None, exclude:li
 
     res = df.with_columns(exprs).rename(rename_dict)
     mapping = get_ordinal_mapping_table(ordinal_mapping)
-    return FeatureMappingResult(transformed=res, mapping=mapping)
+    return TransformationResult(transformed=res, mapping=mapping)
 
-def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], default:int = -1) -> FeatureMappingResult:
+def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], default:int = -1) -> TransformationResult:
     '''
         Ordinal encode the data with given mapping.
 
@@ -603,9 +603,9 @@ def ordinal_encode(df:pl.DataFrame, ordinal_mapping:dict[str, dict[str,int]], de
 
     res = df.with_columns(exprs).rename(rename_dict)
     mapping = get_ordinal_mapping_table(ordinal_mapping)
-    return FeatureMappingResult(transformed=res, mapping=mapping)
+    return TransformationResult(transformed=res, mapping=mapping)
 
-def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_") -> FeatureMappingResult:
+def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_") -> TransformationResult:
     '''
 
     
@@ -616,9 +616,87 @@ def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_"
         for cc in filter(lambda name: c in name, res.columns):
             records.append((c,cc))
     mapping = pl.from_records(records, orient="row", schema=["feature", "one_hot_derived"])
-    return FeatureMappingResult(transformed = res, mapping = mapping)
+    return TransformationResult(transformed = res, mapping = mapping)
 
-def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> FeatureMappingResult:
+# Oh FFF! How I miss Rust Enums
+class ImputationStartegy(Enum):
+    CONST = 1 
+    MEDIAN = 2
+    MEAN = 3
+    MODE = 4
+
+def impute(df:pl.DataFrame
+        , num_cols_to_impute:list[str]
+        , strategy:ImputationStartegy=ImputationStartegy.MEDIAN
+        , const:int = 1) -> TransformationResult:
+    
+    '''
+        Arguments:
+            df:
+            num_cols_to_impute:
+            strategy:
+            const: only uses this value if strategy = ImputationStartegy.CONST
+    
+    '''
+    
+    # Given Strategy, define expressions
+    match strategy:
+        case ImputationStartegy.MEDIAN:
+            exprs = (pl.col(c).fill_null(pl.col(c).median()) for c in num_cols_to_impute)
+        case ImputationStartegy.MEAN:
+            exprs = (pl.col(c).fill_null(pl.col(c).mean()) for c in num_cols_to_impute)
+        case ImputationStartegy.CONST:
+            exprs = (pl.col(c).fill_null(const) for c in num_cols_to_impute)
+        case ImputationStartegy.MODE:
+            exprs = (pl.col(c).fill_null(pl.col(c).mode()) for c in num_cols_to_impute)
+        case _:
+            print("This shouldn't happen.")
+            # Return None or not? 
+
+    mapping = pl.from_records([num_cols_to_impute], schema=["feature"]).with_columns(
+        pl.lit(str(strategy)).alias("imputation_strategy")
+    )
+    transformed = df.with_columns(exprs)
+    
+    return TransformationResult(transformed=transformed, mapping=mapping)
+
+class ScalingStrategy(Enum):
+    NORMALIZE = 1
+    MIN_MAX = 2
+    CONST = 3
+
+def scale(df:pl.DataFrame
+        , num_cols_to_scale:list[str]
+        , strategy:ScalingStrategy=ScalingStrategy.NORMALIZE
+        , const:int = 1) -> TransformationResult:
+    
+    '''
+        Arguments:
+            df:
+            num_cols_to_impute:
+            strategy:
+            const: only uses this value if strategy = ImputationStartegy.CONST
+    
+    '''
+    
+    match strategy:
+        case ScalingStrategy.NORMALIZE:
+            exprs = (((pl.col(c) - pl.col(c).mean())/pl.col(c).std() for c in num_cols_to_scale))
+        case ScalingStrategy.MIN_MAX:
+            exprs = ((pl.col(c) - pl.col(c).min())/(pl.col(c).max() - pl.col(c).min()) for c in num_cols_to_scale)
+        case ScalingStrategy.CONST:
+            exprs = (pl.col(c)/const for c in num_cols_to_scale)
+        case _:
+            print("This shouldn't happen.")
+
+    mapping = pl.from_records([num_cols_to_scale], schema=["feature"]).with_columns(
+        pl.lit(str(strategy)).alias("scaling_strategy")
+    )
+    transformed = df.with_columns(exprs)
+    
+    return TransformationResult(transformed=transformed, mapping=mapping)
+
+def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> TransformationResult:
     '''
         Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, where each percentile could
         potentially be a bin and null will be mapped to bin = 0. Bin 1 means percentile 0 to 1. Generally, bin X groups the
@@ -695,7 +773,10 @@ def percentile_binning(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[st
 
     res = df.with_columns(exprs).rename(rename_dict)
     mapping = pl.concat(tables)
-    return FeatureMappingResult(transformed=res, mapping=mapping)
+    return TransformationResult(transformed=res, mapping=mapping)
+
+
+
 
 # --------------------- Other, miscellaneous helper functions ----------------------------------------------
 @dataclass
