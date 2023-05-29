@@ -51,13 +51,9 @@ def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
             output.append(c)
     return output
 
-def get_cols_regx(df:pl.DataFrame, regx:str) -> list[str]:
-    reg = re.compile(regx)
-    output: list[str] = []
-    for f in df.columns:
-        if reg.search(f):
-            output.append(f)
-    return output 
+def get_cols_regx(df:pl.DataFrame, pattern:str) -> list[str]:
+    reg = re.compile(pattern)
+    return [f for f in df.columns if reg.search(f)]
 
 def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
     temp = df.groupby(predictive).agg(
@@ -305,7 +301,7 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
             xgb = XGBClassifier(**params)
             xgb.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
             scores = xgb.feature_importances_
-        case _:
+        case _: # Pythonic nonsense
             scores = _f_score(df, target, num_list)
 
     if verbose:
@@ -415,6 +411,9 @@ def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
     print(f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
+def regex_removal(df:pl.DataFrame, pattern:str) -> pl.DataFrame:
+    return df.drop(get_cols_regx(df, pattern))
+
 def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
     return df.select(
         (pl.col(x).n_unique() for x in df.columns)
@@ -433,10 +432,10 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     '''
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)
     remove_cols = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list() # These are constants, remove.
-    if include_null: 
+    if include_null: # This step is kind of inefficient right now.
         binary = temp.filter(pl.col("n_unique") == 2).get_column("column")
-        for b in binary:
-            if None in df.get_column(b).unique():
+        for b in binary: 
+            if df.get_column(b).null_count() > 0:
                 remove_cols.append(b)
 
     print(f"The following columns are dropped because they are constants. {remove_cols}.")
