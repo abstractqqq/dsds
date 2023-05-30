@@ -7,6 +7,8 @@ from typing import Self, Tuple, Optional, Final, Any
 from scipy.special import fdtrc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+import json # Maybe replace with Orjson in the future
+
 # from time import perf_counter
 # from sklearn.ensemble import RandomForestClassifier
 # from sklearn.tree import DecisionTreeClassifier
@@ -21,7 +23,10 @@ class TransformationResult:
 
     # todo!
     def __str__(self):
-        pass 
+        pass
+
+    def __iter__(self):
+        return iter((self.transformed, self.mapping))
 
 @dataclass
 class DroppedFeatureResult:
@@ -50,6 +55,9 @@ def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
         if t == pl.Utf8 and c not in exclude_list:
             output.append(c)
     return output
+
+def get_bool_cols(df:pl.DataFrame) -> list[str]:
+    return [c for c,t  in zip(df.columns, df.dtypes) if t == pl.Boolean]
 
 def get_cols_regx(df:pl.DataFrame, pattern:str) -> list[str]:
     reg = re.compile(pattern)
@@ -443,9 +451,25 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     return df.drop(remove_cols)
 
 # ----------------------------------------------- Transformations --------------------------------------------------
+def boolean_encode(df:pl.DataFrame, keep_null:bool=True) -> pl.DataFrame:
+    '''
+        Converts all boolean columns into binary columns.
+        Arguments:
+            df:
+            keep_null: if true, null will be kept. If false, null will be mapped to 0.
+
+    '''
+    bool_cols = get_bool_cols(df)
+    if keep_null: # Directly cast. If null, then cast will also return null
+        exprs = (pl.col(c).cast(pl.UInt8) for c in bool_cols)
+    else: # Cast. Then fill null to 0s.
+        exprs = (pl.col(c).cast(pl.UInt8).fill_null(0) for c in bool_cols)
+
+    return df.with_columns(exprs)
 
 def binary_encode(df:pl.DataFrame, binary_cols:list[str]=None, exclude:list[str]=None) -> TransformationResult:
-    '''
+    '''Encode the given columns as binary values.
+
         The goal of this function is to map binary categorical values into [0, 1], therefore reducing the amount of encoding
         you will have to do later. This is important when you want to keep feature dimension low and when you have many binary categorical
         variables. The values will be mapped to [0, 1] by the following rule:
@@ -625,7 +649,7 @@ class ImputationStartegy(Enum):
     MODE = 4
 
 def impute(df:pl.DataFrame
-        , num_cols_to_impute:list[str]
+        , cols_to_impute:list[str]
         , strategy:ImputationStartegy=ImputationStartegy.MEDIAN
         , const:int = 1) -> TransformationResult:
     
@@ -638,23 +662,37 @@ def impute(df:pl.DataFrame
     
     '''
     
+    mapping = pl.from_records([cols_to_impute], schema=["feature"]).with_columns(
+        pl.lit(str(strategy.name)).alias("imputation_strategy")
+    )
     # Given Strategy, define expressions
     match strategy:
         case ImputationStartegy.MEDIAN:
-            exprs = (pl.col(c).fill_null(pl.col(c).median()) for c in num_cols_to_impute)
+            all_medians = df[cols_to_impute].median().to_numpy().ravel()
+            exprs = (pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols_to_impute))
+            values = pl.Series("impute_by", all_medians)
+            mapping.insert_at_idx(2, values)      
+
         case ImputationStartegy.MEAN:
-            exprs = (pl.col(c).fill_null(pl.col(c).mean()) for c in num_cols_to_impute)
+            all_means = df[cols_to_impute].mean().to_numpy().ravel()
+            exprs = (pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols_to_impute))
+            values = pl.Series("impute_by", all_means)
+            mapping.insert_at_idx(2, values)  
+
         case ImputationStartegy.CONST:
-            exprs = (pl.col(c).fill_null(const) for c in num_cols_to_impute)
+            exprs = (pl.col(c).fill_null(const) for c in cols_to_impute)
+            mapping.insert_at_idx(2, pl.Series("impute_by", [const]*len(cols_to_impute)))
+
         case ImputationStartegy.MODE:
-            exprs = (pl.col(c).fill_null(pl.col(c).mode()) for c in num_cols_to_impute)
+            all_modes = df.select(pl.col(c).mode() for c in cols_to_impute).to_numpy().ravel()
+            exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols_to_impute))
+            values = pl.Series("impute_by", all_modes)
+            mapping.insert_at_idx(2, values)  
+
         case _:
             print("This shouldn't happen.")
             # Return None or not? 
 
-    mapping = pl.from_records([num_cols_to_impute], schema=["feature"]).with_columns(
-        pl.lit(str(strategy)).alias("imputation_strategy")
-    )
     transformed = df.with_columns(exprs)
     
     return TransformationResult(transformed=transformed, mapping=mapping)
@@ -678,19 +716,31 @@ def scale(df:pl.DataFrame
     
     '''
     
+    mapping = pl.from_records([num_cols_to_scale], schema=["feature"]).with_columns(
+        pl.lit(str(strategy.name)).alias("scaling_strategy")
+    )
     match strategy:
         case ScalingStrategy.NORMALIZE:
-            exprs = (((pl.col(c) - pl.col(c).mean())/pl.col(c).std() for c in num_cols_to_scale))
+            all_means = df[num_cols_to_scale].mean().to_numpy().ravel()
+            all_stds = df[num_cols_to_scale].std().to_numpy().ravel()
+            exprs = (((pl.col(c) - pl.lit(all_means[i]))/(pl.lit(all_stds[i])) for i,c in enumerate(num_cols_to_scale)))
+            args = (json.dumps({"mean":m, "std":s}) for m,s in zip(all_means, all_stds))
+            mapping.insert_at_idx(2, pl.Series("params", args))
+
         case ScalingStrategy.MIN_MAX:
-            exprs = ((pl.col(c) - pl.col(c).min())/(pl.col(c).max() - pl.col(c).min()) for c in num_cols_to_scale)
+            all_maxs = df[num_cols_to_scale].max().to_numpy().ravel()
+            all_mins = df[num_cols_to_scale].min().to_numpy().ravel()
+            exprs = ((pl.col(c) - pl.lit(all_mins[i]))/(pl.lit(all_maxs[i] - all_mins[i])) for i,c in enumerate(num_cols_to_scale))
+            args = (json.dumps({"min":m, "max":mm}) for m, mm in zip(all_mins, all_maxs))
+            mapping.insert_at_idx(2, pl.Series("params", args))
+
         case ScalingStrategy.CONST:
             exprs = (pl.col(c)/const for c in num_cols_to_scale)
+            mapping.insert_at_idx(2, pl.Series("params", pl.lit(str(const))))
+
         case _:
             print("This shouldn't happen.")
 
-    mapping = pl.from_records([num_cols_to_scale], schema=["feature"]).with_columns(
-        pl.lit(str(strategy)).alias("scaling_strategy")
-    )
     transformed = df.with_columns(exprs)
     
     return TransformationResult(transformed=transformed, mapping=mapping)

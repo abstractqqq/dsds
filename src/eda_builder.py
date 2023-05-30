@@ -4,7 +4,7 @@ import polars as pl
 from typing import Self, Union, Optional, Any, Callable
 from enum import Enum
 from functools import partial
-import os, time
+import os, time, json # Replace json by orjson?
 from pathlib import Path
 
 class TransformedData:
@@ -42,12 +42,16 @@ class _ExecChoice(Enum):
 class _ExecStep():
     name:_ExecChoice
     desc:str
+    args:str # a json string representing the args. This will be useful when we "reconstruct" a pipeline from a blueprint.
     func:Callable
 
-    def __init__(self, step:_ExecChoice, desc:str, func:Callable):
-        self.name = step.name
-        self.desc = desc
-        self.func = func
+    def get_args(self) -> str:
+        return self.args
+
+    # def __init__(self, step:_ExecChoice, desc:str, func:Callable):
+    #     self.name = step.name
+    #     self.desc = desc
+    #     self.func = func
 
 @dataclass
 class _ExecPlan():
@@ -131,6 +135,7 @@ class TransformationBuilder:
         self.execution_plan.add_step(
             name = _ExecChoice.NULL_REMOVAL,
             desc = _ExecChoice.NULL_REMOVAL.value.format(threshold*100),
+            args = json.dumps({"threshold":threshold}),
             func = partial(null_removal, threshold=threshold)        
         )
         return self 
@@ -142,6 +147,7 @@ class TransformationBuilder:
         self.execution_plan.add_step(
             name = _ExecChoice.VAR_REMOVAL,
             desc = _ExecChoice.VAR_REMOVAL.value.format(threshold),
+            args = json.dumps({"threshold":threshold}),
             func = partial(var_removal, threshold=threshold)            
         )
         return self
@@ -151,6 +157,7 @@ class TransformationBuilder:
         self.execution_plan.add_step(
             name = _ExecChoice.CONST_REMOVAL,
             desc = _ExecChoice.CONST_REMOVAL.value,
+            args = json.dumps({"threshold":include_null}),
             func = partial(constant_removal, include_null=include_null)            
         )
         return self
@@ -160,6 +167,7 @@ class TransformationBuilder:
         self.execution_plan.add_step(
             name = _ExecChoice.REGX_REMOVAL,
             desc = _ExecChoice.REGX_REMOVAL.value.format(pat),
+            args = json.dumps({"pat":pat}),
             func = partial(regex_removal, pattern=pat)            
         )
         return self
