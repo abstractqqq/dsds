@@ -7,6 +7,10 @@ from functools import partial
 import os, time, json # Replace json by orjson?
 from pathlib import Path
 
+################################################################################################
+# WORK IN PROGRESS
+################################################################################################
+
 class TransformedData:
     pass
     
@@ -41,6 +45,7 @@ class _ExecChoice(Enum):
 @dataclass
 class _ExecStep():
     name:_ExecChoice
+    method_name: str # name of the method, thus method_name
     desc:str
     args:str # a json string representing the args. This will be useful when we "reconstruct" a pipeline from a blueprint.
     func:Callable
@@ -134,6 +139,7 @@ class TransformationBuilder:
 
         self.execution_plan.add_step(
             name = _ExecChoice.NULL_REMOVAL,
+            method_name = "set_null_removal",
             desc = _ExecChoice.NULL_REMOVAL.value.format(threshold*100),
             args = json.dumps({"threshold":threshold}),
             func = partial(null_removal, threshold=threshold)        
@@ -146,6 +152,7 @@ class TransformationBuilder:
         
         self.execution_plan.add_step(
             name = _ExecChoice.VAR_REMOVAL,
+            method_name = "set_var_removal",
             desc = _ExecChoice.VAR_REMOVAL.value.format(threshold),
             args = json.dumps({"threshold":threshold}),
             func = partial(var_removal, threshold=threshold)            
@@ -156,6 +163,7 @@ class TransformationBuilder:
         
         self.execution_plan.add_step(
             name = _ExecChoice.CONST_REMOVAL,
+            method_name = "set_const_removal",
             desc = _ExecChoice.CONST_REMOVAL.value,
             args = json.dumps({"threshold":include_null}),
             func = partial(constant_removal, include_null=include_null)            
@@ -166,6 +174,7 @@ class TransformationBuilder:
 
         self.execution_plan.add_step(
             name = _ExecChoice.REGX_REMOVAL,
+            method_name = "set_regx_removal",
             desc = _ExecChoice.REGX_REMOVAL.value.format(pat),
             args = json.dumps({"pat":pat}),
             func = partial(regex_removal, pattern=pat)            

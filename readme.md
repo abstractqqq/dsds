@@ -45,7 +45,7 @@ My goal is to develop all these test and make them work on a Polars dataframe. A
 
 ## Dependencies
 
-Python 3.11+ because I am using match statements and a lot of typing. 
+Python 3.11+ because I am using match statements and a lot of typing. If only eda_utils is used, then I think 3.9 is good.
 
 pip install polars scipy nltk scikit-learn xgboost 
 
