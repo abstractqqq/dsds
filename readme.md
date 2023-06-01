@@ -1,5 +1,7 @@
 # My Data Analysis Toolkit
 
+Still in early development. Name of package undecided yet.
+
 Goal 1: Make traditional EDA, feature selection methods (especially those in sklearn) easier to perform, faster to compute, and more "DataFrame-friendly", meaning that 
 
 1. Inputs should be dataframes and reduce copying to NumPy array as much as possible. This means we avoid internally copying data to numpy array.

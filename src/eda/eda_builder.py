@@ -1,4 +1,6 @@
-from eda_utils import *
+from .eda_prescreen import *
+from .eda_selection import *
+from .eda_transformations import *
 from dataclasses import dataclass
 import polars as pl 
 from typing import Self, Union, Optional, Any, Callable
@@ -170,14 +172,14 @@ class TransformationBuilder:
         )
         return self
     
-    def set_regx_removal(self, pat:str) -> Self:
+    def set_regx_removal(self, pat:str, lowercase:bool=False) -> Self:
 
         self.execution_plan.add_step(
             name = _ExecChoice.REGX_REMOVAL,
             method_name = "set_regx_removal",
             desc = _ExecChoice.REGX_REMOVAL.value.format(pat),
-            args = json.dumps({"pat":pat}),
-            func = partial(regex_removal, pattern=pat)            
+            args = json.dumps({"pat":pat, "lowercase": lowercase}),
+            func = partial(regex_removal, pattern=pat, lowercase=lowercase)            
         )
         return self
         
