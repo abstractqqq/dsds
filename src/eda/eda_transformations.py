@@ -149,6 +149,14 @@ def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_"
     mapping = pl.from_records(records, orient="row", schema=["feature", "one_hot_derived"])
     return TransformationResult(transformed = res, mapping = mapping)
 
+def fixed_sized_encode(df:pl.DataFrame, num_cols:list[str], bin_size:int=50) -> TransformationResult:
+    '''Given a continuous variable, take the smallest `bin_size` of them, and call them bin 1, take the next
+    smallest `bin_size` of them and call them bin 2, etc...
+    
+    '''
+    pass
+
+# Try to generalize this.
 def percentile_encode(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str]=None) -> TransformationResult:
     '''
         Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, where each percentile could
@@ -202,6 +210,7 @@ def percentile_encode(df:pl.DataFrame, num_cols:list[str]=None, exclude:list[str
         # percentile   min   max
         #  p1         null  null
         #  p2          ...   ...
+        # This happens when there are so many nulls in the column.
         if np.isnan(first_row[2]):
             # Discard the first row if this is the case. 
             percentile = percentile.slice(1, length = None)

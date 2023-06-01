@@ -6,6 +6,7 @@ from typing import Final, Any
 from scipy.special import fdtrc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .eda_prescreen import get_string_cols, get_numeric_cols, get_unique_count
+from tqdm import tqdm
 
 CPU_COUNT:Final[int] = os.cpu_count()
 
@@ -27,37 +28,38 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
         (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("conditional_entropy")
     ))
 
+# NEED REVIEW OF CORRECTNESS
 def information_gain(df:pl.DataFrame, target:str
-    , cat_cols:list[str] = None
+    , discrete_cols:list[str] = None
     , top_k:int = 0
-    , n_threads:int = CPU_COUNT
-    , verbose:bool = True) -> pl.DataFrame:
+    , n_threads:int = CPU_COUNT) -> pl.DataFrame:
     '''
-        Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in cat_cols.
+        Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in discrete_cols.
         For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
+
         Information gain defined in this way suffers from high cardinality (high uniqueness), and therefore a weighted information
         gain is provided, weighted by (1 - unique_pct), where unique_pct represents the percentage of unique values in feature.
+
+        Currently this only works for discrete columns and no method for continuous column is implemented yet.
 
         Arguments:
             df:
             target:
-            cat_cols: list of categorical columns. Note that you may use numeric columns as categorical columns provided the column has 
-                a reasonably small number of distinct values.
+            discrete_cols: list of discrete columns.
             top_k: must be >= 0. If <= 0, the entire DataFrame will be returned.
             n_threads: 4, 8 ,16 will not make any real difference. But there is a difference between 0 and 4 threads. 
-            verbose: if true, print progress.
             
         Returns:
             a poalrs dataframe with information gain computed for each categorical column. 
     '''
     output = []
-    cats = []
-    if isinstance(cat_cols, list):
-        cats.extend(cat_cols)
+    discretes = []
+    if isinstance(discrete_cols, list):
+        discretes.extend(discrete_cols)
     else: # If cat_cols is not passed, infer it
-        cats.extend(get_string_cols(df, exclude=[target]))
+        discretes.extend(get_string_cols(df, exclude=[target]))
 
-    if len(cats) == 0:
+    if len(discretes) == 0:
         print(f"No columns are provided or can be inferred.")
         print("Returned empty dataframe.")
         return pl.DataFrame()
@@ -68,17 +70,17 @@ def information_gain(df:pl.DataFrame, target:str
                     ).get_column("prob(target)").entropy() 
 
     # Get unique count for selected columns. This is because higher unique percentage may skew information gain
-    unique_count = get_unique_count(df.select(cats)).with_columns(
+    unique_count = get_unique_count(df.select(discretes)).with_columns(
         (pl.col("n_unique") / len(df)).alias("unique_pct")
     ).rename({"column":"feature"})
 
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
-        futures = (ex.submit(_conditional_entropy, df, target, predictive) for predictive in cats)
-        for i,res in enumerate(as_completed(futures)):
-            ig = res.result()
-            output.append(ig)
-            if verbose:
-                print(f"Finished processing for {cats[i]}. Progress: {i+1}/{len(cats)}")
+        futures = (ex.submit(_conditional_entropy, df, target, predictive) for predictive in discretes)
+        with tqdm(total=len(discretes)) as pbar:
+            for res in as_completed(futures):
+                ig = res.result()
+                output.append(ig)
+                pbar.update(1)
 
     output = pl.concat(output).with_columns((
         pl.lit(target_entropy).alias("target_entropy"),
@@ -207,8 +209,7 @@ class MRMR_STRATEGY(Enum):
 
 def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
         , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
-        , params:dict[str:Any]={}
-        , verbose:bool=True) -> pl.DataFrame:
+        , params:dict[str:Any]={}) -> pl.DataFrame:
     '''
         Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
         See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
@@ -223,7 +224,6 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
             num_cols:
             strategy: by default, f-score will be used.
             params: if a RF/XGB strategy is selected, params is a dict of parameters for the model.
-            verbose:
 
         Returns:
             pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
@@ -256,28 +256,35 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
     else: # Pythonic nonsense
         scores = _f_score(df, target, num_list)
 
-    if verbose:
-        importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
-                        .top_k(by=str(strategy), k=5)
-        print(f"Top 5 feature importance is (by {strategy}):\n{importance}")
+    # FYI. This part can be removed.
+    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
+                    .top_k(by=str(strategy), k=5)
+    print(f"Top 5 feature importance is (by {strategy}):\n{importance}")
 
     df_scaled = df.select(num_list).with_columns(
         (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
-    )
+    ) # Note that if we get a const column, the entire column will be NaN
 
+    output_size = min(k, len(num_list))
+    print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
     cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
+    
+    pbar = tqdm(total=output_size)
     top_idx = np.argmax(scores)
     selected = [num_list[top_idx]]
-    if verbose:
-        print(f"Selected {selected[-1]} by MRMR. {1}/{k}")
-    for j in range(1, k): 
+    pbar.update(1)
+    for j in range(1, output_size): 
         argmax = -1
         current_max = -1
         for i,f in enumerate(num_list):
             if f not in selected:
                 # Left = cumulating sum of abs corr
                 # Right = abs correlation btw last_selected and f
-                cumulating_abs_corr[i] += np.abs((df_scaled.get_column(selected[-1])*df_scaled.get_column(f)).mean())
+                a = (df_scaled.get_column(selected[-1])*df_scaled.get_column(f)).mean()
+                # In the rare case this calculation yields a NaN, we punish by adding 1.
+                # Otherwise, proceed as usual. +1 is a punishment because
+                # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
+                cumulating_abs_corr[i] += 1 if np.isnan(a) else np.abs(a)
                 denominator = cumulating_abs_corr[i] / j
                 new_score = scores[i] / denominator
                 if new_score > current_max:
@@ -285,10 +292,10 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
                     argmax = i
 
         selected.append(num_list[argmax])
-        if verbose:
-            print(f"Selected {selected[-1]} by MRMR. {j+1}/{k}")
+        pbar.update(1)
 
+    pbar.close()
     output = pl.from_records([selected], schema=["feature"]).with_columns(
-        pl.arange(1, k+1).alias("mrmr_rank")
+        pl.arange(1, output_size+1).alias("mrmr_rank")
     ) # Maybe unncessary to return a dataframe in this case. 
     return output.select(("mrmr_rank", "feature"))
