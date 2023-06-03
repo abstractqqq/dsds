@@ -3,7 +3,8 @@ import polars as pl
 import numpy as np
 from enum import Enum
 from typing import Final, Any
-from scipy.special import fdtrc
+from scipy.spatial import KDTree
+from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .eda_prescreen import get_string_cols, get_numeric_cols, get_unique_count
 from tqdm import tqdm
@@ -29,11 +30,15 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
     ))
 
 # NEED REVIEW OF CORRECTNESS
-def information_gain(df:pl.DataFrame, target:str
+def naive_sample_ig(df:pl.DataFrame, target:str
     , discrete_cols:list[str] = None
     , top_k:int = 0
     , n_threads:int = CPU_COUNT) -> pl.DataFrame:
     '''
+        The entropy here is "sample entropy". This is not a good estimation of real entropy of the target variable.
+        Thus I do not recommend using this method for now. That said, this computation computes sample entropy and the the sample
+        conditional entropy in a (hopefully) correct and fast way.
+
         Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in discrete_cols.
         For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
 
@@ -96,6 +101,79 @@ def information_gain(df:pl.DataFrame, target:str
     else:
         return output.limit(top_k)
 
+naive_sample_mi = naive_sample_ig
+
+def mutual_info(df:pl.DataFrame
+    , conti_cols:list[str]
+    , target:str, k=3
+    , random_state:int=42
+    , n_threads:int=CPU_COUNT) -> pl.DataFrame:
+    
+    '''Approximates mutual information (information gain) between the continuous variables and the target.
+
+        This is essentially a "copy-and-paste" of the mutual_info_classif call in sklearn library. 
+        There are a few important distinctions:
+
+        1. This uses Scipy library's kdtree, instead of sklearn's kdtree and nearneighbors. 
+        2. The use of Scipy enables us to use more cores. 
+        3. There are less "checks" and "safeguards", meaning input data quality is expected to be "good".
+        4. Conti_cols are supposed to be "continuous" variables. In sklearn's mutual_info_classif, if you input a dense matrix X,
+            it will always be treated as continuous, and if X is sparse, it will be treated as discrete.
+        5. The method here is sklearn's method in the case of continous variable and discrete target, which is based on the method
+            described in sources.
+   
+        Arguments:
+            df:
+            conti_cols:
+            target: list of discrete columns.
+            random_state: a random seed to generate small noise.
+            n_threads: 
+            
+        Returns:
+
+        Sources:
+            (1). B. C. Ross “Mutual Information between Discrete and Continuous Data Sets”. PLoS ONE 9(2), 2014.\n
+            (2). A. Kraskov, H. Stogbauer and P. Grassberger, “Estimating mutual information”. Phys. Rev. E 69, 2004.
+            
+    '''
+    n = len(df)
+    rng = np.random.default_rng(random_state)
+    target_col = df.get_column(target).to_numpy().ravel()
+    unique_targets = np.unique(target_col)
+    # parts = {t:df.filter((pl.col(target) == t)) for t in df[target].unique()}
+    # To do: If any part size < k, abort. This gets rid of "points with unique labels" issue too.
+    all_masks = {}
+    for t in unique_targets:
+        all_masks[t] = target_col == t
+        if len(df.filter(pl.col(target) == t)) <= k:
+            raise ValueError(f"The target class {t} must have more than {k} values in the dataset.")        
+
+    estimates = []
+    psi_n_and_k = psi(n) + psi(k)
+    for col in tqdm(conti_cols):
+        c = df.get_column(col).to_numpy().reshape(-1,1)
+        c = c + (1e-10 * np.mean(c) * rng.standard_normal(size=c.shape))
+        radius = np.empty(n)
+        label_counts = np.empty(n)
+        for t in unique_targets:
+            mask = all_masks[t]
+            c_masked = c[mask]
+            kd1 = KDTree(data=c_masked)
+            # dd = distances from the points the the k nearest points. +1 because this starts from 0. It is 1 off from sklearn's kdtree.
+            dd, _ = kd1.query(c_masked, k = k + 1, workers=n_threads)
+            radius[mask] = np.nextafter(dd[:, -1], 0)
+            label_counts[mask] = np.sum(mask)
+
+        kd2 = KDTree(data=c) 
+        m_all = kd2.query_ball_point(c, r = radius, return_length=True, workers=n_threads)
+        estimates.append(
+            max(0, psi_n_and_k - np.mean(psi(label_counts) + psi(m_all)))
+        ) # smallest is 0
+
+    output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])\
+        .sort(by="estimated_mi", descending=True)
+
+    return output
 
 def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
     '''

@@ -82,6 +82,12 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
         (pl.col("n_unique") / len(df)).alias("unique_pct"),
         pl.when(pl.col("n_unique")==2).then(1).otherwise(0).alias("is_binary")
     )
+
+    skew_and_kt = df.select(pl.col(c).skew() for c in df.columns).transpose(include_header=True, column_names=["skew"])\
+                    .join(
+                        df.select(pl.col(c).kurtosis() for c in df.columns).transpose(include_header=True, column_names=["kurtosis"])
+                    , on = "column")
+
     nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
     dtypes_dict = dict(zip(df.columns, map(dtype_mapping, df.dtypes)))
     final = temp.transpose(include_header=True, column_names=desc).with_columns(
@@ -89,11 +95,11 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
     ).with_columns(
         (pl.col("null_count")/pl.col("count")).alias("null_pct"),
         pl.col("column").map_dict(dtypes_dict).alias("dtype")
-    ).join(unique_counts, on="column")
+    ).join(unique_counts, on="column").join(skew_and_kt, on="column")
     
     return final.select(('column', 'is_binary','count','null_count','null_pct','n_unique'
                         , 'unique_pct','mean','std','min','max','25%'
-                        , 'median','75%', 'dtype'))
+                        , 'median','75%', "skew", "kurtosis",'dtype'))
 
 def null_inferral(df:pl.DataFrame, threshold:float=0.5) -> list[str]:
     return (df.null_count()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
