@@ -32,7 +32,7 @@ def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
 def get_bool_cols(df:pl.DataFrame) -> list[str]:
     return [c for c,t in zip(df.columns, df.dtypes) if t == pl.Boolean]
 
-def get_cols_regx(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> list[str]:
+def get_cols_regex(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> list[str]:
 
     reg = re.compile(pattern)
     if lowercase:
@@ -83,10 +83,12 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
         pl.when(pl.col("n_unique")==2).then(1).otherwise(0).alias("is_binary")
     )
 
-    skew_and_kt = df.select(pl.col(c).skew() for c in df.columns).transpose(include_header=True, column_names=["skew"])\
-                    .join(
-                        df.select(pl.col(c).kurtosis() for c in df.columns).transpose(include_header=True, column_names=["kurtosis"])
-                    , on = "column")
+    skew_and_kt = df.select(pl.col(c).skew() for c in df.columns)\
+                .transpose(include_header=True, column_names=["skew"])\
+                .join(
+                    df.select(pl.col(c).kurtosis() for c in df.columns)\
+                    .transpose(include_header=True, column_names=["kurtosis"])
+                , on = "column")
 
     nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
     dtypes_dict = dict(zip(df.columns, map(dtype_mapping, df.dtypes)))
@@ -149,10 +151,10 @@ def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
     return df.drop(remove_cols)
 
 # Really this is just an alias
-regx_inferral = get_cols_regx
+regx_inferral = get_cols_regex
 
 def regex_removal(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> pl.DataFrame:
-    remove_cols = get_cols_regx(df, pattern, lowercase)
+    remove_cols = get_cols_regex(df, pattern, lowercase)
     print(f"The following numeric columns are dropped because their names satisfy the regex rule: {pattern}. {remove_cols}")
     print(f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)

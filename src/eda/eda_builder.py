@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 from .eda_prescreen import *
 from .eda_selection import *
 from .eda_transformations import *
 from dataclasses import dataclass
-import polars as pl 
+import polars as pl
+import pandas as pd
 from typing import Self, Union, Optional, Any, Callable
 from enum import Enum
 from functools import partial
@@ -30,60 +33,79 @@ class TransformedData:
 # 2. Better organization for the execution.
 #
 
-class _ExecChoice(Enum):
+# This is just a builtin mapping for desc.
+class BuiltinExecutions(Enum):
     NULL_REMOVAL = "Remove columns with more than {:.2f}% nulls."
     VAR_REMOVAL = "Remove columns with less than {} variance. (Not recommended.)"
     CONST_REMOVAL = "Remove columns that are constants."
-    COL_REMOVAL = "Remove the columns {}."
-    REGX_REMOVAL = "Remove all columns whose names satisfy the regex rule: {}."
-    BINARY_ENCODE = "Encode {} into binary [0,1] values."
-    ORDINAL_ENCODE = "Encode string values of {} into numbers with given mapping {}."
-    ORDINAL_AUTO_ENCODE = "Encode string values of {} into numbers with inferred ordering."
-    ONE_HOT_ENCODE = "Encode string values of {} by the one-hot-encoding technique. (No drop first option)."
-    SCALE = "Scale {} using specified the {} scaling method."
-    IMPUTE = "Impute {} using specified the {} imputation method."
+    COL_REMOVAL = "Remove the given columns if they exist in dataframe."
+    REGX_REMOVAL = "Remove all columns whose names satisfy the regex rule."
+    BINARY_ENCODE = "Encode given columns into binary [0,1] values."
+    ORDINAL_ENCODE = "Encode string values of given columns into numbers with given mapping."
+    ORDINAL_AUTO_ENCODE = "Encode string values of given columns into numbers with inferred ordering."
+    TARGET_ENCODE = "Encode string values using the target encoding algorithm."
+    ONE_HOT_ENCODE = "Encode string values of given columns by the one-hot-encoding technique. (No drop first option)."
+    ENCODER_RECORD = "Encode by a given encoder record."
+    SCALE = "Scale using specified the {} scaling method."
+    IMPUTE = "Impute using specified the {} imputation method."
     CHECKPOINT = "Unavailable for now."
 
 @dataclass
-class _ExecStep():
-    name:_ExecChoice
-    method_name: str # name of the method, thus method_name
+class ExecStep():
+    name:str
+    module_path:str|Path|None
     desc:str
-    args:str # a json string representing the args. This will be useful when we "reconstruct" a pipeline from a blueprint.
-    func:Callable
+    args:dict[str, Any]
+    is_transformation:bool = False
+    # Is this a transfromation call? 
+    # If so, the output is expected to be of type TransformationResult.
+    # If not, the output is expected to be of type pl.DataFrame.
+    is_custom:bool = False # If is custom, module path will be recorded.
 
     def get_args(self) -> str:
         return self.args
+    
+    # __str__
 
-    # def __init__(self, step:_ExecChoice, desc:str, func:Callable):
+    # def __init__(self, step:_BuiltinExecutions, desc:str, func:Callable):
     #     self.name = step.name
     #     self.desc = desc
     #     self.func = func
 
 @dataclass
-class _ExecPlan():
-    steps:list[_ExecStep] = []
+class ExecPlan():
+    steps:list[ExecStep] = []
 
-    def add(self, step:_ExecStep) -> None:
+    def add(self, step:ExecStep) -> None:
         self.steps.append(step)
 
-    def add_step(self, name:_ExecChoice, desc:str, func:Callable) -> None:
+    def add_step(self, func:Callable
+                , desc:str, args:dict[str, Any]
+                , is_transf:bool=False) -> None:
         self.steps.append(
-            _ExecStep(name, desc, func)
+            ExecStep(func.__name__, None, desc, args, is_transf, True)
+        )
+
+    def add_custom_step(self, func:Callable
+                , desc:str, args:dict[str, Any]
+                , is_transf:bool=False) -> None:
+        
+        self.steps.append(
+            ExecStep(func.__name__, func.__module__, desc, args, is_transf)
         )
 
 class TransformationBuilder:
 
-    def __init__(self, project_name:str="my_proj") -> Self:
+    def __init__(self, project_name:str="my_project") -> Self:
         self.df:pl.DataFrame = None
         self.target:str = ""
         self.project_name:str = project_name
         self.ready_to_go:bool = False
-        self.execution_plan:_ExecPlan = _ExecPlan()
+        self.execution_plan:ExecPlan = ExecPlan()
         return self
     
     def _is_ready(self) -> bool:
-        return isinstance(self.df, pl.DataFrame) and not self.df.is_empty() and self.target in self.df.columns
+        return isinstance(self.df, pl.DataFrame) and not self.df.is_empty() and self.target in self.df.columns and self.target != ""
     
     ### Project meta data section
     def set_target(self, target:str) -> Self: 
@@ -98,8 +120,8 @@ class TransformationBuilder:
     ### End of project meta data section
     
     ### IO Section 
-    def read_csv_from(self, path:str|Path, csv_args:dict[str, Any]) -> Self:
-        args = csv_args.copy()
+    def read_csv_from(self, path:str|Path, csv_args:Optional[dict[str, Any]] = None) -> Self:
+        args = {} if csv_args is None else csv_args.copy()
         if "source" not in args:
             args["source"] = path
 
@@ -112,11 +134,21 @@ class TransformationBuilder:
         self.ready_to_go = self._is_ready()
         return self
     
+    def from_pandas(self, df:pd.DataFrame) -> Self:
+        print("!!! The input Pandas DataFrame will be emptied out after this call.")
+        self.df = pl.from_pandas(df)
+        df = df.iloc[0:0]
+        self.ready_to_go = self._is_ready()
+        return self
     # Add database support later
 
-    def setup(self, data:Union[pl.DataFrame, str, Path], target:str) -> Self:
+    def setup(self, data:Union[pl.DataFrame, pd.DataFrame, str, Path], target:str) -> Self:
         if isinstance(data, pl.DataFrame): 
-            self.df = data 
+            self.df = data
+        elif isinstance(data, pd.DataFrame):
+            print("!!! The input Pandas DataFrame will be emptied out after this call.")
+            self.df = pl.from_pandas(data)
+            data = data.iloc[0:0]
         else:
             try:
                 if data.endswith(".csv"): # What about csv parameters? Use read_csv_from.
@@ -140,11 +172,9 @@ class TransformationBuilder:
             raise ValueError("Threshold for null removal must be between 0 and 1.")
 
         self.execution_plan.add_step(
-            name = _ExecChoice.NULL_REMOVAL,
-            method_name = "set_null_removal",
-            desc = _ExecChoice.NULL_REMOVAL.value.format(threshold*100),
-            args = json.dumps({"threshold":threshold}),
-            func = partial(null_removal, threshold=threshold)        
+            func = null_removal ,
+            desc = BuiltinExecutions.NULL_REMOVAL.value.format(threshold*100),
+            args = {"threshold":threshold}  
         )
         return self 
     
@@ -153,47 +183,109 @@ class TransformationBuilder:
             raise ValueError("Threshold for var removal must be positive.")
         
         self.execution_plan.add_step(
-            name = _ExecChoice.VAR_REMOVAL,
-            method_name = "set_var_removal",
-            desc = _ExecChoice.VAR_REMOVAL.value.format(threshold),
-            args = json.dumps({"threshold":threshold}),
-            func = partial(var_removal, threshold=threshold)            
+            func = var_removal,
+            desc = BuiltinExecutions.VAR_REMOVAL.value.format(threshold),
+            args = {"threshold":threshold},
         )
         return self
     
     def set_const_removal(self, include_null:bool=True) -> Self:
         
         self.execution_plan.add_step(
-            name = _ExecChoice.CONST_REMOVAL,
-            method_name = "set_const_removal",
-            desc = _ExecChoice.CONST_REMOVAL.value,
-            args = json.dumps({"threshold":include_null}),
-            func = partial(constant_removal, include_null=include_null)            
+            func = constant_removal,
+            desc = BuiltinExecutions.CONST_REMOVAL.value,
+            args = {"threshold":include_null},
         )
         return self
     
-    def set_regx_removal(self, pat:str, lowercase:bool=False) -> Self:
+    def set_regex_removal(self, pat:str, lowercase:bool=False) -> Self:
 
         self.execution_plan.add_step(
-            name = _ExecChoice.REGX_REMOVAL,
-            method_name = "set_regx_removal",
-            desc = _ExecChoice.REGX_REMOVAL.value.format(pat),
-            args = json.dumps({"pat":pat, "lowercase": lowercase}),
-            func = partial(regex_removal, pattern=pat, lowercase=lowercase)            
+            func = regex_removal,
+            desc = BuiltinExecutions.REGX_REMOVAL.value,
+            args = {"pat":pat, "lowercase": lowercase},
+        )
+        return self
+    
+    def set_col_removal(self, cols:list[str]) -> Self:
+        self.execution_plan.add_step(
+            func = remove_if_exists,
+            desc = BuiltinExecutions.COL_REMOVAL.value,
+            args = {"to_drop":cols},
         )
         return self
         
     ### End of column removal section
 
-    # def get_description(self) -> Self:
-    #     self.execution_steps.append(Transformations.DESCRIBE)
-    #     self.execution_funcs.append(describe)
-    #     return self
+    ### Scaling and Imputation
+    def set_scaling(self, cols:list[str], strategy:ScalingStrategy.NORMALIZE, const:int=1) -> Self:
+        # const only matters if startegy is constant
+        self.execution_plan.add_step(
+            func = scale,
+            desc = BuiltinExecutions.SCALE.value.format(strategy),
+            args = {"cols":cols, "strategy": strategy, "const":const},
+            is_transformation = True
+        )
+        return self
+    
+    def set_impute(self, cols:list[str], strategy:ImputationStartegy.MEDIAN, const:int=1) -> Self:
+        # const only matters if startegy is constant
+        self.execution_plan.add_step(
+            func = impute,
+            desc = BuiltinExecutions.IMPUTE.value.format(strategy),
+            args = {"cols":cols, "strategy": strategy, "const":const},
+            is_transformation = True
+        )
+        return self
+    
+    ### End of Scaling and Imputation
 
-    # def checkpoint(self, sample:float=1.0, sample_frac:float=-1.) -> Self:
-    #     pass
-    # Should have a better way of saving to local. For example, we hash the execution plan?
-    #  
+    ### Encoding
+    def set_ordinal_encoding(self, mapping:dict[str, dict[str,int]], default:int|None=None) -> Self:
+        
+        self.execution_plan.add_step(
+            func = ordinal_encode,
+            desc = BuiltinExecutions.ORDINAL_ENCODE.value,
+            args = {"ordinal_mapping":mapping, "default": default},
+            is_transformation = True
+        )
+        return self
+    
+    def set_ordinal_auto_encoding(self, cols:list[str], default:int|None=None) -> Self:
+        
+        self.execution_plan.add_step(
+            func = ordinal_auto_encode,
+            desc = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value,
+            args = {"ordinal_cols":cols, "default": default},
+            is_transformation = True
+        )
+        return self
+    
+    def set_target_encoding(self, str_cols:list[str], min_samples_leaf:int=20, smoothing:int=10) -> Self:
+        
+        if self._is_ready():
+            self.execution_plan.add_step(
+                func = smooth_target_encode,
+                desc = BuiltinExecutions.TARGET_ENCODE.value,
+                args = {"target":self.target, "str_cols": str_cols, "min_samples_leaf":min_samples_leaf, "smoothing":smoothing},
+                is_transformation = True
+            )
+            return self
+        else:
+            raise ValueError(f"The data frame and target must be set before setting target encoding.")
+        
+    def set_one_hot_encoding(self, one_hot_cols:list[str]) -> Self:
+        pass
+    
+    def set_encode_by_record(self, rec:EncoderRecord) -> Self:
+        
+        self.execution_plan.add_step(
+            func = encode_by,
+            desc = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value,
+            args = {"rec":rec},
+            is_transformation = True
+        )
+        return self
     
     def build(self) -> TransformedData: #(Use optional?)
 

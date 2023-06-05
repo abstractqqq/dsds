@@ -1,4 +1,4 @@
-# My Data Analysis Toolkit
+# Goals of this Data Analysis Toolkit
 
 Still in early development. Name of package undecided yet.
 
@@ -7,55 +7,100 @@ Goal 1: Make traditional EDA, feature selection methods (especially those in skl
 1. Inputs should be dataframes and reduce copying to NumPy array as much as possible. This means we avoid internally copying data to numpy array.
 2. Output should be clean dataframes on which we can quickly sort and filter.
 
-To this end, we have to entirely use Polars as Pandas is not a great performance-wise and it has inconsistent data type issues. 
+To this end, we have to entirely use Polars (maybe make some methods pandas compatible in the future). The main reason for not using pandas is performance, ease of programming in polars, and pandas's loose type enforcement.
 
-Goal 2: Create memory efficient way of scaling, transforming data. Speed may be compromised in the interest of low memory, but will be case dependent.
-
-Goal 3: Remove dependency on sklearn for the data preparation part of the model building pipeline. ONLY the data preparation part. The models in sklearn are great.
+Goal 2: Remove dependency on sklearn for the data preparation part of the model building pipeline. ONLY the data preparation part for now.
 
 Why? Here are some reasons: 
-(a). In-memory objects are not the way to build long lasting pipelines because they are difficulty to change/update, and use more resource than necessary. 
-(b). Old pandas + sklearn + NumPy algorithms pales in comparison with polars + minimal numpy in terms of performance, especially when we want to be "dataframe centric"!
-(c). Easier to debug. Let's face the truth and speak the truth! It's hard to debug in OOP! I am working on some kind of a "lazy" builder that will combine feature removal, imputation, scaling,  
 
-Goal 4: Dataframe-friendly text transformations, good for small scale NLP analysis. May not be efficient over large datasets.
+(a). In-memory objects are not the way to build long lasting pipelines because they are difficult to change/update, and use more resource than necessary, and are hard to serialize. 
+
+(b). A lot of sklearn data preprocessing/feature selection algorithms suffer from immense performance bottlenecks, and are not "dataframe-friendly"!
+
+# Existing Functionalities:
+
+## EDA Prescreen
+
+The point of feature prescreening is to reduce the number of feature to be analyzed by dropping obviously useless features. E.g in a dataset with 500+ features, it is impossible for a person to know what the features are. It will take very long time to run feature selection on all features. In this case we can quickly remove all features that are constant, all id column feautres, or all features that are too unique (which makes them like ids). If you are confident in removing columns with high null percentage, you may do that do.
+
+0. Data profiling for an overview of the statistics of the data.
+
+1. Infer/remove columns based on null pct, unique pct, variance, constant, or name of column.
 
 
-## EDA Utils
+## EDA Transformation
 
-My goal is to develop all these test and make them work on a Polars dataframe. A consistent API should be used. These are the methods I have so far.
+0. Binary transforms, boolean transform, ordinal encoding, auto ordinal encoding, one-hot encoding.
 
-0. Feature removal methods (null_pct, var, etc.) and binary transforms. Imputation and scaling will be added in teh future.
+1. More advanced encoding techniques such as target encoding. More to come.
 
-1. A method based on entropy. (Univariate as of now, but can be potentially multi-variate.)
+2. Imputation and scaling.
+
+## EDA Selection
+
+Feature selection done in a simple, fast, and "less memory intensive way". May need more optimization.
+
+0. Methods based on entropy: mutual_info, naive_sample_ig
     
     Let X denote the test column/feature, and Y the target. We compute the conditional entropy H(Y|X), which represents the remaining randomness in the random variable Y, given the random variable X. For more details, see [here](https://en.wikipedia.org/wiki/Entropy_(information_theory)).
 
-    Also see the docstring of information_gain.
+    The mutual_info function is a speed-up version of sklearn's mutual_info_classif. 
 
-2. Classic Anova One Way F-test. (Univariate) 
+    More details can be found in the docstring of the functions.
+
+1. Classic Anova One Way F-test.
     
     See [here](https://saylordotorg.github.io/text_introductory-statistics/s15-04-f-tests-in-one-way-anova.html).
 
-3. MRMR Algorithm:
+2. Basic MRMR Algorithm:
 
     See [here](https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b)
 
-## Text data transformation (text_data.py)
+## EDA Builder
 
-1. A quick reusable method to transform text data in a column into multiple numerical columns. Great for TF-IDF kind of thing and also any other model that cannot consume text data directly. 
+A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. 
+
+## EDA Misc
+
+Miscallenous functions.
+
+## EDA Text
+
+1. A quick reusable method to transform text data in a column into multiple numerical columns. Great for TF-IDF kind of thing and also any other model that cannot consume text data directly. Experimental for now. Not suitable for big data. 
 
 ## Dependencies
 
-Python 3.11+ because I am using match statements and a lot of typing. If only eda_utils is used, then I think 3.9 is good.
+Python 3.11+ is recommended. We are forward looking.
 
-pip install polars scipy nltk scikit-learn xgboost 
+pip install polars orjson scipy nltk scikit-learn xgboost 
 
 (nltk may require additional downloads.)
 
-## TODO
+# todo()!
 
-1. Obviously add more useful EDA methods.
-2. Build a data preparation pipeline "builder".
-3. Common imputation + scaling and their respective.
-4. Package this.
+EDA Selection:
+
+1. More feature selection algorithms that are not bloated and yield good results.
+
+EDA Transformation:
+
+1. WOE Transformation.
+
+2. More imputation and scaling strategies.
+
+EDA Builder:
+
+1. Finish the main functionalities.
+
+2. Checkpoint functionalities.
+
+3. I/O from databases, S3, datalake, etc.
+
+4. Allow user defined function calls into the pipeline.
+
+EDA Text: Currently on hold.
+
+EDA Prescreen:
+
+1. Open to suggestions.
+
