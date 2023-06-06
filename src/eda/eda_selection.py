@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .eda_prescreen import get_string_cols, get_numeric_cols, get_unique_count
 from tqdm import tqdm
 
+# Add a score only option for each function here.
+
 CPU_COUNT:Final[int] = os.cpu_count()
 
 def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
@@ -32,8 +34,7 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
 # NEED REVIEW OF CORRECTNESS
 def naive_sample_ig(df:pl.DataFrame, target:str
     , discrete_cols:list[str] = None
-    , top_k:int = 0
-    , n_threads:int = CPU_COUNT) -> pl.DataFrame:
+    , n_threads:int = CPU_COUNT) -> pl.DataFrame|np.ndarray:
     '''
         The entropy here is "sample entropy". This is not a good estimation of real entropy of the target variable.
         Thus I do not recommend using this method for now. That said, this computation computes sample entropy and the the sample
@@ -94,18 +95,16 @@ def naive_sample_ig(df:pl.DataFrame, target:str
         .select(("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"))\
         .with_columns(
             ((1 - pl.col("unique_pct")) * pl.col("information_gain")).alias("weighted_information_gain")
-        ).sort("information_gain", descending=True)
+        )
 
-    if top_k <= 0:
-        return output 
-    else:
-        return output.limit(top_k)
+    return output
 
 naive_sample_mi = naive_sample_ig
 
 def mutual_info(df:pl.DataFrame
     , conti_cols:list[str]
-    , target:str, k=3
+    , target:str
+    , n_neighbors:int=3
     , random_state:int=42
     , n_threads:int=CPU_COUNT) -> pl.DataFrame:
     
@@ -126,6 +125,7 @@ def mutual_info(df:pl.DataFrame
             df:
             conti_cols:
             target: list of discrete columns.
+            n_neighbors:
             random_state: a random seed to generate small noise.
             n_threads: 
             
@@ -138,40 +138,39 @@ def mutual_info(df:pl.DataFrame
     '''
     n = len(df)
     rng = np.random.default_rng(random_state)
-    target_col = df.get_column(target).to_numpy().ravel()
+    target_col = df[target].to_numpy().ravel()
     unique_targets = np.unique(target_col)
     # parts = {t:df.filter((pl.col(target) == t)) for t in df[target].unique()}
     # To do: If any part size < k, abort. This gets rid of "points with unique labels" issue too.
     all_masks = {}
     for t in unique_targets:
         all_masks[t] = target_col == t
-        if len(df.filter(pl.col(target) == t)) <= k:
-            raise ValueError(f"The target class {t} must have more than {k} values in the dataset.")        
+        if len(df.filter(pl.col(target) == t)) <= n_neighbors:
+            raise ValueError(f"The target class {t} must have more than {n_neighbors} values in the dataset.")        
 
     estimates = []
-    psi_n_and_k = psi(n) + psi(k)
+    psi_n_and_k = psi(n) + psi(n_neighbors)
     for col in tqdm(conti_cols):
-        c = df.get_column(col).to_numpy().reshape(-1,1)
+        c = df[col].to_numpy().reshape(-1,1)
         c = c + (1e-10 * np.mean(c) * rng.standard_normal(size=c.shape))
         radius = np.empty(n)
         label_counts = np.empty(n)
         for t in unique_targets:
             mask = all_masks[t]
             c_masked = c[mask]
-            kd1 = KDTree(data=c_masked)
+            kd1 = KDTree(data=c_masked, leafsize=40)
             # dd = distances from the points the the k nearest points. +1 because this starts from 0. It is 1 off from sklearn's kdtree.
-            dd, _ = kd1.query(c_masked, k = k + 1, workers=n_threads)
+            dd, _ = kd1.query(c_masked, k = n_neighbors + 1, workers=n_threads)
             radius[mask] = np.nextafter(dd[:, -1], 0)
             label_counts[mask] = np.sum(mask)
 
-        kd2 = KDTree(data=c) 
+        kd2 = KDTree(data=c, leafsize=40) 
         m_all = kd2.query_ball_point(c, r = radius, return_length=True, workers=n_threads)
         estimates.append(
             max(0, psi_n_and_k - np.mean(psi(label_counts) + psi(m_all)))
         ) # smallest is 0
 
-    output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])\
-        .sort(by="estimated_mi", descending=True)
+    output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
 
     return output
 
@@ -281,13 +280,43 @@ def f_classification(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl
 
 
 class MRMR_STRATEGY(Enum):
-    F_SCORE = 1
-    RF = 2
-    XGB = 3
+    F_SCORE = "F-score"
+    RF = "Random Forest"
+    XGB = "XGBoost"
+    MIS = "Mutual Information Score"
 
-def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
-        , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
-        , params:dict[str:Any]={}) -> pl.DataFrame:
+def _mrmr_underlying_score(df:pl.DataFrame, target:str
+    , num_list:list[str]
+    , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
+    , params:dict[str:Any]={}) -> np.ndarray:
+    
+    print(f"Running {strategy.value} to determine feature relevance...")
+    if strategy == MRMR_STRATEGY.F_SCORE:
+        scores = _f_score(df, target, num_list)
+    elif strategy == MRMR_STRATEGY.RF:
+        from sklearn.ensemble import RandomForestClassifier
+        print("Random forest is not deterministic by default. Results may vary.")
+        rf = RandomForestClassifier(**params)
+        rf.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+        scores = rf.feature_importances_
+    elif strategy == MRMR_STRATEGY.XGB:
+        from xgboost import XGBClassifier
+        print("XGB is not deterministic by default. Results may vary.")
+        xgb = XGBClassifier(**params)
+        xgb.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+        scores = xgb.feature_importances_
+    elif strategy == MRMR_STRATEGY.MIS:
+        scores = mutual_info(df, conti_cols=num_list, target=target).get_column("estimated_mi").to_numpy().ravel()
+    else: # Pythonic nonsense
+        raise ValueError(f"The strategy {strategy} is not a valid MRMR Strategy.")
+    
+    return scores
+
+def mrmr(df:pl.DataFrame, target:str
+    , k:int, num_cols:list[str]=None
+    , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
+    , params:dict[str:Any]={}
+    , low_memory:bool=False) -> pl.DataFrame:
     '''
         Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
         See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
@@ -302,6 +331,7 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
             num_cols:
             strategy: by default, f-score will be used.
             params: if a RF/XGB strategy is selected, params is a dict of parameters for the model.
+            low_memory: 
 
         Returns:
             pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
@@ -317,36 +347,23 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
     else:
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
-    if strategy == MRMR_STRATEGY.F_SCORE:
-        scores = _f_score(df, target, num_list)
-    elif strategy == MRMR_STRATEGY.RF:
-        from sklearn.ensemble import RandomForestClassifier
-        print("Random forest is not deterministic by default. Results may vary.")
-        rf = RandomForestClassifier(**params)
-        rf.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
-        scores = rf.feature_importances_
-    elif strategy == MRMR_STRATEGY.XGB:
-        from xgboost import XGBClassifier
-        print("XGB is not deterministic by default. Results may vary.")
-        xgb = XGBClassifier(**params)
-        xgb.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
-        scores = xgb.feature_importances_
-    else: # Pythonic nonsense
-        scores = _f_score(df, target, num_list)
+    scores = _mrmr_underlying_score(df, target=target, num_list=num_list, strategy=strategy, params=params)
 
     # FYI. This part can be removed.
     importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
                     .top_k(by=str(strategy), k=5)
-    print(f"Top 5 feature importance is (by {strategy}):\n{importance}")
+    print(f"Top 5 feature importance by {strategy} is:\n{importance}")
 
-    df_scaled = df.select(num_list).with_columns(
-        (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
-    ) # Note that if we get a const column, the entire column will be NaN
+    if low_memory:
+        df_local = df.select(num_list)
+    else: # this could potentially double memory usage. so I provided a low_memory flag.
+        df_local = df.select(num_list).with_columns(
+            (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
+        ) # Note that if we get a const column, the entire column will be NaN
 
     output_size = min(k, len(num_list))
     print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
     cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
-    
     pbar = tqdm(total=output_size)
     top_idx = np.argmax(scores)
     selected = [num_list[top_idx]]
@@ -354,11 +371,18 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
     for j in range(1, output_size): 
         argmax = -1
         current_max = -1
+        last_selected_col = df_local.drop_in_place(selected[-1])
+        if low_memory: # normalize if in low memory mode.
+            last_selected_col = (last_selected_col - last_selected_col.mean())/last_selected_col.std()
         for i,f in enumerate(num_list):
             if f not in selected:
                 # Left = cumulating sum of abs corr
                 # Right = abs correlation btw last_selected and f
-                a = (df_scaled.get_column(selected[-1])*df_scaled.get_column(f)).mean()
+                candidate_col = df_local.get_column(f)
+                if low_memory: # normalize if in low memory mode.
+                    candidate_col = (candidate_col - candidate_col.mean())/candidate_col.std()
+
+                a = (last_selected_col*candidate_col).mean()
                 # In the rare case this calculation yields a NaN, we punish by adding 1.
                 # Otherwise, proceed as usual. +1 is a punishment because
                 # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
@@ -377,3 +401,72 @@ def mrmr(df:pl.DataFrame, target:str, k:int, num_cols:list[str]=None
         pl.arange(1, output_size+1).alias("mrmr_rank")
     ) # Maybe unncessary to return a dataframe in this case. 
     return output.select(("mrmr_rank", "feature"))
+
+def knock_out_mrmr(df:pl.DataFrame, target:str
+    , k:int 
+    , num_cols:list[str]=None
+    , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
+    , corr_threshold:float = 0.7
+    , params:dict[str:Any]={}) -> pl.DataFrame:
+
+    '''
+        Essentially the same as vanilla MRMR. Instead of using sum(abs(corr)) to "weigh down" correlated 
+        variables, here we use a simpler knock out rule based on absolute correlation.
+
+        Inspired by the package Featurewiz and its creator.
+    
+    '''
+    
+    num_list = []
+    if isinstance(num_cols, list):
+        num_list.extend(num_cols)
+    else:
+        num_list.extend(get_numeric_cols(df, exclude=[target]))
+
+    scores = _mrmr_underlying_score(df, target=target, num_list=num_list, strategy=strategy, params=params)
+    # FYI. This part can be removed.
+    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
+                    .top_k(by=str(strategy), k=5)
+    print(f"Top 5 feature importance by {strategy} is:\n{importance}")
+    # true if low correlation, false if high
+    low_corr = (df[num_list].corr() < corr_threshold).to_numpy()
+    surviving_indices = np.full(shape=len(num_list), fill_value=True) # an array of booleans
+    argmax = np.argmax(scores)
+    selected = [num_list[argmax]]
+    surviving_indices = surviving_indices & low_corr[:, argmax]
+    output_size = min(k, len(num_list))
+    print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
+    print(f"For knock out MRMR, it is possible for the process to end without finding enough variables. Try making the correlation threshold higher to make more variables qualify.")
+    count = 1
+    pbar = tqdm(total=output_size)
+    pbar.update(1)
+    for _ in range(1, k):
+        argmax = -1
+        maxval = -1
+        for j, b in enumerate(surviving_indices):
+            if b:
+                if scores[j] > maxval:
+                    maxval = scores[j]
+                    argmax = j
+        if argmax > 0:
+            selected.append(num_list[argmax])
+            surviving_indices = surviving_indices & low_corr[:, argmax]
+            count += 1
+            pbar.update(1)
+        else:
+            print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out rule eliminates most of them.")
+            print("Returning early...")
+            break
+
+    pbar.close()
+    output = pl.from_records([selected], schema=["feature"]).with_columns(
+        pl.arange(1, output_size+1).alias("mrmr_rank")
+    ) # Maybe unncessary to return a dataframe in this case. 
+    return output.select(("mrmr_rank", "feature"))
+
+  
+                    
+
+
+
+    

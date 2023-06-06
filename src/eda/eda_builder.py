@@ -49,6 +49,7 @@ class BuiltinExecutions(Enum):
     SCALE = "Scale using specified the {} scaling method."
     IMPUTE = "Impute using specified the {} imputation method."
     CHECKPOINT = "Unavailable for now."
+    CHECK_COLS = "Check if df.columns == the given columns or if the given columns is a subset of df.columns"
 
 @dataclass
 class ExecStep():
@@ -80,18 +81,19 @@ class ExecPlan():
         self.steps.append(step)
 
     def add_step(self, func:Callable
-                , desc:str, args:dict[str, Any]
-                , is_transf:bool=False) -> None:
+        , desc:str, args:dict[str, Any]
+        , is_transf:bool=False) -> None:
+        
         self.steps.append(
-            ExecStep(func.__name__, None, desc, args, is_transf, True)
+            ExecStep(func.__name__, func.__module__, desc, args, is_transf, False)
         )
 
     def add_custom_step(self, func:Callable
-                , desc:str, args:dict[str, Any]
-                , is_transf:bool=False) -> None:
+        , desc:str, args:dict[str, Any]
+        , is_transf:bool=False) -> None:
         
         self.steps.append(
-            ExecStep(func.__name__, func.__module__, desc, args, is_transf)
+            ExecStep(func.__name__, func.__module__, desc, args, is_transf, True)
         )
 
 class TransformationBuilder:
@@ -286,6 +288,24 @@ class TransformationBuilder:
             is_transformation = True
         )
         return self
+    
+    ### End of Encoding Section
+
+    ### Helpers, safety checks
+    def _check_columns(self, cols:list[str], subset:bool) -> bool:
+        in_col_not_in_df = [c for c in cols if c not in self.df.columns]
+
+    
+    def check_columns(self, cols:list[str], subset:bool=False) -> Self:
+        self.execution_plan.add_step(
+            func = self._check_columns,
+            desc = BuiltinExecutions.CHECK_COLS.value,
+            args = {"cols":cols, "subset":subset}
+        )
+        return self
+
+
+    ### End of Helpers, safety checks
     
     def build(self) -> TransformedData: #(Use optional?)
 

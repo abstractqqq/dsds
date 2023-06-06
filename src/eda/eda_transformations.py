@@ -213,6 +213,11 @@ def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_"
 
     
     '''
+    # Here is a rule: Separator must be a single char
+    # This is enforced because we want to be able to extract separator from EncoderRecord
+    if len(separator) != 1:
+        raise ValueError(f"Separator must be a single character for the system to work, not {separator}")
+
     res = df.to_dummies(columns=one_hot_columns, separator=separator)
     all_mappings = []
     for c in one_hot_columns:
@@ -540,8 +545,12 @@ def encode_by(df:pl.DataFrame, rec:EncoderRecord) -> pl.DataFrame:
     if rec.strategy == EncodingStrategy.PERCENTILE:
         pass 
     elif rec.strategy == EncodingStrategy.ONE_HOT:
-        pass
-
+        one_hot_cols = rec.features
+        one_hot_map = rec.mappings[0]
+        key:str = list(one_hot_map.keys())[0]
+        value:str = one_hot_map[key] # must be a string
+        separator = value[value.rfind(key) - 1]
+        return df.to_dummies(columns=one_hot_cols, separator=separator)
 
     # Normal case 
     return df.with_columns(
