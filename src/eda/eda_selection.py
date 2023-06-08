@@ -2,16 +2,15 @@ import os
 import polars as pl
 import numpy as np
 from enum import Enum
-from typing import Final, Any
+from typing import Final, Any, Tuple
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .eda_prescreen import get_string_cols, get_numeric_cols, get_unique_count
 from tqdm import tqdm
 
-# Add a score only option for each function here.
-
 CPU_COUNT:Final[int] = os.cpu_count()
+# Some will return dataframe as output, some list of str
 
 def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
     temp = df.groupby(predictive).agg(
@@ -34,7 +33,7 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
 # NEED REVIEW OF CORRECTNESS
 def naive_sample_ig(df:pl.DataFrame, target:str
     , discrete_cols:list[str] = None
-    , n_threads:int = CPU_COUNT) -> pl.DataFrame|np.ndarray:
+    , n_threads:int = CPU_COUNT) -> pl.DataFrame:
     '''
         The entropy here is "sample entropy". This is not a good estimation of real entropy of the target variable.
         Thus I do not recommend using this method for now. That said, this computation computes sample entropy and the the sample
@@ -62,18 +61,13 @@ def naive_sample_ig(df:pl.DataFrame, target:str
     discretes = []
     if isinstance(discrete_cols, list):
         discretes.extend(discrete_cols)
-    else: # If cat_cols is not passed, infer it
+    else: # If discrete_cols is not passed, infer it
         discretes.extend(get_string_cols(df, exclude=[target]))
-
-    if len(discretes) == 0:
-        print(f"No columns are provided or can be inferred.")
-        print("Returned empty dataframe.")
-        return pl.DataFrame()
     
     # Compute target entropy. This only needs to be done once.
     target_entropy = df.groupby(target).agg(
                         (pl.count()).alias("prob(target)") / len(df)
-                    ).get_column("prob(target)").entropy() 
+                    ).get_column("prob(target)").entropy()
 
     # Get unique count for selected columns. This is because higher unique percentage may skew information gain
     unique_count = get_unique_count(df.select(discretes)).with_columns(
@@ -123,7 +117,7 @@ def mutual_info(df:pl.DataFrame
    
         Arguments:
             df:
-            conti_cols:
+            conti_cols: 
             target: list of discrete columns.
             n_neighbors:
             random_state: a random seed to generate small noise.
@@ -171,7 +165,6 @@ def mutual_info(df:pl.DataFrame
         ) # smallest is 0
 
     output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
-
     return output
 
 def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
@@ -288,7 +281,7 @@ class MRMR_STRATEGY(Enum):
 def _mrmr_underlying_score(df:pl.DataFrame, target:str
     , num_list:list[str]
     , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
-    , params:dict[str:Any]={}) -> np.ndarray:
+    , params:dict[str,Any]={}) -> np.ndarray:
     
     print(f"Running {strategy.value} to determine feature relevance...")
     if strategy == MRMR_STRATEGY.F_SCORE:
@@ -315,8 +308,8 @@ def _mrmr_underlying_score(df:pl.DataFrame, target:str
 def mrmr(df:pl.DataFrame, target:str
     , k:int, num_cols:list[str]=None
     , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
-    , params:dict[str:Any]={}
-    , low_memory:bool=False) -> pl.DataFrame:
+    , params:dict[str,Any]={}
+    , low_memory:bool=False) -> list[str]:
     '''
         Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
         See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
@@ -337,9 +330,6 @@ def mrmr(df:pl.DataFrame, target:str
             pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
     
     '''
-
-
-    # from sklearn.ensemble import RandomForestClassifier
 
     num_list = []
     if isinstance(num_cols, list):
@@ -386,8 +376,8 @@ def mrmr(df:pl.DataFrame, target:str
                 # In the rare case this calculation yields a NaN, we punish by adding 1.
                 # Otherwise, proceed as usual. +1 is a punishment because
                 # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
-                cumulating_abs_corr[i] += 1 if np.isnan(a) else np.abs(a)
-                denominator = cumulating_abs_corr[i] / j
+                cumulating_abs_corr[i] += (1-np.isnan(a)) * np.abs(a) 
+                denominator = cumulating_abs_corr[i]/j 
                 new_score = scores[i] / denominator
                 if new_score > current_max:
                     current_max = new_score
@@ -397,17 +387,105 @@ def mrmr(df:pl.DataFrame, target:str
         pbar.update(1)
 
     pbar.close()
-    output = pl.from_records([selected], schema=["feature"]).with_columns(
-        pl.arange(1, output_size+1).alias("mrmr_rank")
-    ) # Maybe unncessary to return a dataframe in this case. 
-    return output.select(("mrmr_rank", "feature"))
+    print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
+    return selected
+
+# def __mrmr_par_step(c1:pl.Series, c2:pl.Series, i:int, low_memory:bool) -> Tuple[float, float]:
+#     if low_memory:
+#         c2_scaled = (c2 - c2.mean())/c2.std()
+#     else:
+#         c2_scaled = c2
+    
+#     corr = (c1 * c2_scaled).mean()
+#     return np.isnan(corr) * np.abs(corr), i
+
+# def mrmr_par(df:pl.DataFrame, target:str
+#     , k:int, num_cols:list[str]=None
+#     , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
+#     , params:dict[str,Any]={}
+#     , low_memory:bool=False
+#     , n_threads:int=CPU_COUNT) -> list[str]:
+#     '''
+#         Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
+#         See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
+#         for more information.
+
+#         Currently this only supports classification.
+
+#         Arguments:
+#             df:
+#             target:
+#             k:
+#             num_cols:
+#             strategy: by default, f-score will be used.
+#             params: if a RF/XGB strategy is selected, params is a dict of parameters for the model.
+#             low_memory: 
+
+#         Returns:
+#             pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
+    
+#     '''
+
+#     num_list = []
+#     if isinstance(num_cols, list):
+#         num_list.extend(num_cols)
+#     else:
+#         num_list.extend(get_numeric_cols(df, exclude=[target]))
+
+#     scores = _mrmr_underlying_score(df, target=target, num_list=num_list, strategy=strategy, params=params)
+
+#     # FYI. This part can be removed.
+#     importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
+#                     .top_k(by=str(strategy), k=5)
+#     print(f"Top 5 feature importance by {strategy} is:\n{importance}")
+
+#     if low_memory:
+#         df_local = df.select(num_list)
+#     else: # this could potentially double memory usage. so I provided a low_memory flag.
+#         df_local = df.select(num_list).with_columns(
+#             (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
+#         ) # Note that if we get a const column, the entire column will be NaN
+
+#     output_size = min(k, len(num_list))
+#     print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
+#     cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
+#     pbar = tqdm(total=output_size)
+#     top_idx = np.argmax(scores)
+#     selected = [num_list[top_idx]]
+#     pbar.update(1)
+#     for j in range(1, output_size): 
+#         argmax = -1
+#         curmax = -1
+#         last_selected_col = df_local.drop_in_place(selected[-1])
+#         if low_memory:
+#             last_selected_col = (last_selected_col - last_selected_col.mean())/last_selected_col.std()
+#         with ThreadPoolExecutor(max_workers=n_threads) as ex:
+#             futures = (
+#                 ex.submit(__mrmr_par_step, last_selected_col, df_local.get_column(f), i, low_memory) 
+#                 for i,f in enumerate(num_list) if f not in selected
+#             )
+#             for res in as_completed(futures):
+#                 corr, i = res.result()
+#                 cumulating_abs_corr[i] += corr
+#                 denominator = cumulating_abs_corr[i]/j
+#                 new_score = scores[i] / denominator
+#                 if new_score > curmax:
+#                     curmax = new_score
+#                     argmax = i
+
+#         selected.append(num_list[argmax])
+#         pbar.update(1)
+
+#     pbar.close()
+#     print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
+#     return selected
 
 def knock_out_mrmr(df:pl.DataFrame, target:str
     , k:int 
     , num_cols:list[str]=None
     , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
     , corr_threshold:float = 0.7
-    , params:dict[str:Any]={}) -> pl.DataFrame:
+    , params:dict[str,Any]={}) -> list[str]:
 
     '''
         Essentially the same as vanilla MRMR. Instead of using sum(abs(corr)) to "weigh down" correlated 
@@ -429,40 +507,32 @@ def knock_out_mrmr(df:pl.DataFrame, target:str
                     .top_k(by=str(strategy), k=5)
     print(f"Top 5 feature importance by {strategy} is:\n{importance}")
     # true if low correlation, false if high
-    low_corr = (df[num_list].corr() < corr_threshold).to_numpy()
+
+    # Set up
+    low_corr = np.abs(df[num_list].corr().to_numpy()) < corr_threshold
     surviving_indices = np.full(shape=len(num_list), fill_value=True) # an array of booleans
-    argmax = np.argmax(scores)
-    selected = [num_list[argmax]]
-    surviving_indices = surviving_indices & low_corr[:, argmax]
+    scores = list(enumerate(scores))
+    scores.sort(key=lambda x:x[1], reverse=True)
+    selected = []
+    count = 0
     output_size = min(k, len(num_list))
-    print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
-    print(f"For knock out MRMR, it is possible for the process to end without finding enough variables. Try making the correlation threshold higher to make more variables qualify.")
-    count = 1
     pbar = tqdm(total=output_size)
-    pbar.update(1)
-    for _ in range(1, k):
-        argmax = -1
-        maxval = -1
-        for j, b in enumerate(surviving_indices):
-            if b:
-                if scores[j] > maxval:
-                    maxval = scores[j]
-                    argmax = j
-        if argmax > 0:
-            selected.append(num_list[argmax])
-            surviving_indices = surviving_indices & low_corr[:, argmax]
+    # Run the knock outs
+    for i, _ in scores:
+        if surviving_indices[i]:
+            selected.append(num_list[i])
+            surviving_indices = surviving_indices & low_corr[:,i]
             count += 1
             pbar.update(1)
-        else:
-            print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out rule eliminates most of them.")
-            print("Returning early...")
+        if count >= output_size:
             break
 
     pbar.close()
-    output = pl.from_records([selected], schema=["feature"]).with_columns(
-        pl.arange(1, output_size+1).alias("mrmr_rank")
-    ) # Maybe unncessary to return a dataframe in this case. 
-    return output.select(("mrmr_rank", "feature"))
+    if count < k:
+        print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out rule eliminates most of them.")
+
+    print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
+    return selected
 
   
                     

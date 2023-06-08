@@ -6,6 +6,8 @@ from nltk.stem import PorterStemmer
 from scipy.sparse import csr_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 
+# DEVELOPMENT HALTED FOR NOW.
+
 # nltk.download("punkt")
 stop = stopwords.words('english')
 

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+import logging
 import orjson
 import polars as pl
 import numpy as np 
 from enum import Enum
-from typing import Any
+from typing import Any, Tuple, Iterable, Optional
 from dataclasses import dataclass
 from .eda_prescreen import get_bool_cols, get_numeric_cols, get_string_cols, get_unique_count, dtype_mapping
+
+logger = logging.getLogger(__name__)
 
 class ImputationStartegy(Enum):
     CONST = "CONST"
@@ -27,36 +31,72 @@ class EncodingStrategy(Enum):
     BINARY = "BINARY"
     PERCENTILE = "PERCENTILE"
 
+# It is highly recommended that this should be a dataclass and serializable by orjson.
+class TransformationRecord(ABC):
+    
+    @abstractmethod
+    def materialize(self) -> pl.DataFrame | str:
+        # A pretty way to print or visualize itself, 
+        # or organize self to something more useful than a data structure.
+        pass 
+
+    @abstractmethod
+    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
+        # Transform according to the record.
+        pass
+
 @dataclass
-class ImputationRecord:
+class ImputationRecord(TransformationRecord):
     features:list[str]
     strategy:ImputationStartegy
     values:list[float] | np.ndarray
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable:
         return zip(self.features, [self.strategy]*len(self.features), self.values)
+    
+    def __str__(self) -> str:
+        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY).decode()
     
     def materialize(self) -> pl.DataFrame:
         return pl.from_records(list(self), schema=["feature", "imputation_strategy", "value_used"])
     
-    def __str__(self) -> str:
-        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY).decode()
-
+    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
+        return df.with_columns(
+            pl.col(f).fill_null(v) for f, v in zip(self.features, self.values)
+        )
+    
 @dataclass
-class ScalingRecord:
+class ScalingRecord(TransformationRecord):
     features:list[str]
     strategy:ScalingStrategy
     values:list[dict[str, float]]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable:
         vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY).decode() for v in self.values)
         return zip(self.features, [self.strategy]*len(self.features), vals)
+    
+    def __str__(self) -> str:
+        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY).decode()
     
     def materialize(self) -> pl.DataFrame:
         return pl.from_records(list(self), schema=["feature", "scaling_strategy", "scaling_meta_data"])
     
-    def __str__(self) -> str:
-        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY).decode()
+    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
+    
+        if self.strategy == ScalingStrategy.NORMALIZE:
+            return df.with_columns(
+                (pl.col(f)-pl.lit(v["mean"]))/pl.lit(v["std"]) for f, v in zip(self.features, self.values)
+            )
+        elif self.strategy == ScalingStrategy.MIN_MAX:
+            return df.with_columns(
+                (pl.col(f)-pl.lit(v["min"]))/(pl.lit(v["max"] - v["min"])) for f, v in zip(self.features, self.values)
+            )
+        elif self.strategy == ScalingStrategy.CONST:
+            return df.with_columns(
+                pl.col(f)/v['const'] for f, v in zip(self.features, self.values)
+            )    
+        else:
+            raise ValueError(f"Unknown scaling strategy: {self.strategy}")
 
 @dataclass
 class EncoderRecord:
@@ -64,32 +104,70 @@ class EncoderRecord:
     strategy:EncodingStrategy
     mappings:list[dict[Any, Any]]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterable:
         vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode() for v in self.mappings)
         return zip(self.features, [self.strategy]*len(self.features), vals)
+    
+    def __str__(self) -> str:
+        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode()
     
     def materialize(self) -> pl.DataFrame:
         return pl.from_records(list(self), schema=["feature", "encoding_strategy", "maps"])
     
-    def __str__(self) -> str:
-        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode()
+    def _find_first_index_of_smaller(self, u:float, order:list[Tuple[float, int]]) -> int:
+        order = order.sort(key=lambda x: x[1])
+        for v, i in order: # order looks like [(18.21, 1), (22.32, 2), ...]
+            if u < v:
+                return i
+        # percentile max out at 100. It is possible that in future data, there will be some
+        # that is > current max. So assign all that to 101
+        return 101 
 
-@dataclass
-class TransformationResult:
+    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
+        # Special cases first
+        if self.strategy == EncodingStrategy.PERCENTILE:
+            for i,f in enumerate(self.features):
+                # Construct a new series for each column. SLOW SLOW SLOW...
+                order = list(self.mappings[i].items())
+                percentiles = []
+                already_mapped = {}
+                for v in df.get_column(f):
+                    if v is None or np.isnan(v) or np.isneginf(v): # To 0
+                        percentiles.append(0) 
+                    else:
+                        if v in already_mapped:
+                            percentiles.append(already_mapped[v])
+                        else:
+                            percentile = self._find_first_index_of_smaller(v, order)
+                            already_mapped[v] = percentile
+                            percentiles.append(percentile)
+                
+                new_f = pl.Series(f, percentiles)
+                df.replace_at_idx(df.find_idx_by_name(f), new_f)
+            return df
+        
+        elif self.strategy == EncodingStrategy.ONE_HOT:
+            one_hot_cols = self.features
+            one_hot_map = self.mappings[0]
+            key:str = list(one_hot_map.keys())[0]
+            value:str = one_hot_map[key] # must be a string
+            separator = value[value.rfind(key) - 1]
+            return df.to_dummies(columns=one_hot_cols, separator=separator)
+
+        # Normal case 
+        return df.with_columns(
+            pl.col(f).map_dict(d) for f,d in zip(self.features, self.mappings)
+        )
+
+@dataclass 
+class TransformationResult: # It is a dataclass just for convenience.
     transformed: pl.DataFrame
-    mapping: pl.DataFrame | ImputationRecord | ScalingRecord | EncoderRecord
-
-    def __iter__(self):
+    mapping: TransformationRecord
+    def __iter__(self) -> Iterable[Tuple[pl.DataFrame, TransformationRecord]]:
         return iter((self.transformed, self.mapping))
     
-    def materialize(self) -> pl.DataFrame:
-        return self.get_mapping_table()
-
-    def get_mapping_table(self) -> pl.DataFrame:
-        if isinstance(self.mapping, pl.DataFrame):
-            return self.mapping
-        else:
-            return self.mapping.materialize()
+    def materialize(self) -> pl.DataFrame | str:
+        return self.mapping.materialize()
 
 def impute(df:pl.DataFrame
     , cols:list[str]
@@ -131,11 +209,6 @@ def impute(df:pl.DataFrame
     transformed = df.with_columns(exprs)
     return TransformationResult(transformed=transformed, mapping=impute_record)
 
-def impute_by(df:pl.DataFrame, rec:ImputationRecord) -> pl.DataFrame:
-    return df.with_columns(
-        pl.col(f).fill_null(v) for f, v in zip(rec.features, rec.values)
-    )
-
 def scale(df:pl.DataFrame
     , cols:list[str]
     , strategy:ScalingStrategy=ScalingStrategy.NORMALIZE
@@ -175,23 +248,6 @@ def scale(df:pl.DataFrame
     transformed = df.with_columns(exprs)
     return TransformationResult(transformed=transformed, mapping=scaling_records)
 
-def scale_by(df:pl.DataFrame, rec:ScalingRecord) -> pl.DataFrame:
-    
-    if rec.strategy == ScalingStrategy.NORMALIZE:
-        return df.with_columns(
-            (pl.col(f)-pl.lit(v["mean"]))/pl.lit(v["std"]) for f, v in zip(rec.features, rec.values)
-        )
-    elif rec.strategy == ScalingStrategy.MIN_MAX:
-        return df.with_columns(
-            (pl.col(f)-pl.lit(v["min"]))/(pl.lit(v["max"] - v["min"])) for f, v in zip(rec.features, rec.values)
-        )
-    elif rec.strategy == ScalingStrategy.CONST:
-        return df.with_columns(
-            pl.col(f)/v['const'] for f, v in zip(rec.features, rec.values)
-        )    
-    else:
-        raise ValueError(f"Unknown scaling strategy: {rec.strategy}")
-
 def boolean_transform(df:pl.DataFrame, keep_null:bool=True) -> pl.DataFrame:
     '''
         Converts all boolean columns into binary columns.
@@ -208,7 +264,7 @@ def boolean_transform(df:pl.DataFrame, keep_null:bool=True) -> pl.DataFrame:
 
     return df.with_columns(exprs)
 
-def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_") -> TransformationResult:
+def one_hot_encode(df:pl.DataFrame, cols:Optional[list[str]]=None, separator:str="_") -> TransformationResult:
     '''
 
     
@@ -218,9 +274,15 @@ def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_"
     if len(separator) != 1:
         raise ValueError(f"Separator must be a single character for the system to work, not {separator}")
 
-    res = df.to_dummies(columns=one_hot_columns, separator=separator)
+    str_cols = []
+    if isinstance(cols, list):
+        str_cols.extend(cols)
+    else:
+        str_cols = get_string_cols(df)
+
+    res = df.to_dummies(columns=str_cols, separator=separator)
     all_mappings = []
-    for c in one_hot_columns:
+    for c in str_cols:
         mapping = {}
         for cc in filter(lambda name: c in name, res.columns):
             # c is original column_name, cc is one-hot created name
@@ -229,7 +291,7 @@ def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_"
 
         all_mappings.append(mapping)
 
-    encoder_rec = EncoderRecord(features=one_hot_columns, strategy=EncodingStrategy.ONE_HOT, mappings=all_mappings)
+    encoder_rec = EncoderRecord(features=str_cols, strategy=EncodingStrategy.ONE_HOT, mappings=all_mappings)
     return TransformationResult(transformed = res, mapping = encoder_rec)
 
 # def fixed_sized_encode(df:pl.DataFrame, num_cols:list[str], bin_size:int=50) -> TransformationResult:
@@ -241,7 +303,7 @@ def one_hot_encode(df:pl.DataFrame, one_hot_columns:list[str], separator:str="_"
 
 # Try to generalize this.
 def percentile_encode(df:pl.DataFrame
-    , num_cols:list[str]=None
+    , cols:list[str]=None
     , exclude:list[str]=None
 ) -> TransformationResult:
     '''
@@ -265,8 +327,8 @@ def percentile_encode(df:pl.DataFrame
 
     num_list:list[str] = []
     exclude_list:list[str] = [] if exclude is None else exclude
-    if isinstance(num_cols, list):
-        num_list.extend(num_cols)
+    if isinstance(cols, list):
+        num_list.extend(cols)
     else:
         num_list.extend(get_numeric_cols(df, exclude=exclude_list))
 
@@ -323,7 +385,7 @@ def percentile_encode(df:pl.DataFrame
     return TransformationResult(transformed=res, mapping=encoder_rec)
 
 def binary_encode(df:pl.DataFrame
-    , binary_cols:list[str]=None
+    , cols:list[str]=None
     , exclude:list[str]=None) -> TransformationResult:
     
     '''Encode the given columns as binary values.
@@ -354,8 +416,8 @@ def binary_encode(df:pl.DataFrame
     exprs = []
     mappings = []
     binary_list = []
-    if isinstance(binary_cols, list):
-        binary_list.extend(binary_cols)
+    if isinstance(cols, list):
+        binary_list.extend(cols)
     else:
         binary_columns = get_unique_count(df).filter((pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude))).get_column("column")
         binary_list.extend(binary_columns)     
@@ -363,9 +425,9 @@ def binary_encode(df:pl.DataFrame
     # Doing some repetitive operations here, but I am not sure how I can get all the data in one go.
     for b in binary_list:
         vals = df.get_column(b).unique().to_list()
-        print(f"Transforming {b} into a binary column with [0, 1] ...")
+        logger.info(f"Transforming {b} into a binary column with [0, 1] ...")
         if len(vals) != 2:
-            print(f"Found {b} has {len(vals)} unique values instead of 2. Not a binary variable. Ignored.")
+            logger.warning(f"Found {b} has {len(vals)} unique values instead of 2. Not a binary variable. Ignored.")
             continue
         if vals[0] is None: # Weird code, but we need this case.
             pass
@@ -374,9 +436,8 @@ def binary_encode(df:pl.DataFrame
         else:
             vals.sort()
 
-        first_value = vals[0] if vals[0] is None else str(vals[0])
-        mappings.append({first_value: 0, vals[1]: 1, "orig_dtype":dtype_mapping(vals[1])})
-        
+        # In Python, None can be a dictionary key.
+        mappings.append({vals[0]: 0, vals[1]: 1})        
         exprs.append(
             pl.when(pl.col(b).is_null()).then(0).otherwise(
                 pl.when(pl.col(b) < vals[1]).then(0).otherwise(1)
@@ -416,7 +477,7 @@ def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
     return pl.concat(mapping_tables)
 
 def ordinal_auto_encode(df:pl.DataFrame
-    , ordinal_cols:list[str]=None
+    , cols:list[str]=None
     , default:int|None=None
     , exclude:list[str]=None) -> TransformationResult:
     '''
@@ -436,8 +497,8 @@ def ordinal_auto_encode(df:pl.DataFrame
             (encoded df, mapping table)
     '''
     ordinal_list:list[str] = []
-    if isinstance(ordinal_cols, list):
-        ordinal_list.extend(ordinal_cols)
+    if isinstance(cols, list):
+        ordinal_list.extend(cols)
     else:
         ordinal_list.extend(get_string_cols(df, exclude=exclude))
 
@@ -481,17 +542,17 @@ def ordinal_encode(df:pl.DataFrame
             all_mappings.append(mapping)
             exprs.append(pl.col(c).map_dict(mapping, default=default).cast(pl.UInt32))
         else:
-            print(f"Found that column {c} is not in df. Skipped.")
+            logger.warning(f"Found that column {c} is not in df. Skipped.")
 
     res = df.with_columns(exprs)
     encoder_rec = EncoderRecord(features=f, strategy=EncodingStrategy.ORDINAL, mappings=all_mappings)
     return TransformationResult(transformed=res, mapping=encoder_rec)
 
 def smooth_target_encode(df:pl.DataFrame, target:str
-    , str_cols:list[str]
+    , cols:list[str]
     , min_samples_leaf:int
     , smoothing:float
-    , check_binary:bool=False) -> TransformationResult:
+    , check_binary:bool=True) -> TransformationResult:
     
     '''Smooth target encoding for binary classification. Currently only implemented for binary target.
 
@@ -506,9 +567,13 @@ def smooth_target_encode(df:pl.DataFrame, target:str
             check_binary:
     
     '''
+    str_cols = []
+    if isinstance(cols, list):
+        str_cols.extend(cols)
+    else:
+        str_cols = get_string_cols(df)
     
     # Only works for binary target for now 
-
     # Check if it is binary or not.
     if check_binary:
         target_uniques = list(df.get_column(target).unique().sort())
@@ -518,6 +583,7 @@ def smooth_target_encode(df:pl.DataFrame, target:str
     p = df.get_column(target).mean() # probability of target = 1
     all_mappings:list[dict[Any, Any]] = []
     exprs:list[pl.Expr] = []
+    # Test and see how null will be encoded.
     for c in str_cols:
         ref = df.groupby(c).agg((
             pl.col(target).sum().alias("cnt"),
@@ -538,21 +604,3 @@ def smooth_target_encode(df:pl.DataFrame, target:str
     res = df.with_columns(exprs)
     encoder_rec = EncoderRecord(features=str_cols, strategy=EncodingStrategy.TARGET, mappings=all_mappings)
     return TransformationResult(transformed=res, mapping=encoder_rec)
-
-def encode_by(df:pl.DataFrame, rec:EncoderRecord) -> pl.DataFrame:
-
-    # Special cases first
-    if rec.strategy == EncodingStrategy.PERCENTILE:
-        pass 
-    elif rec.strategy == EncodingStrategy.ONE_HOT:
-        one_hot_cols = rec.features
-        one_hot_map = rec.mappings[0]
-        key:str = list(one_hot_map.keys())[0]
-        value:str = one_hot_map[key] # must be a string
-        separator = value[value.rfind(key) - 1]
-        return df.to_dummies(columns=one_hot_cols, separator=separator)
-
-    # Normal case 
-    return df.with_columns(
-        pl.col(f).map_dict(d) for f,d in zip(rec.features, rec.mappings)
-    )

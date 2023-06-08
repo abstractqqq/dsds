@@ -3,28 +3,22 @@ from __future__ import annotations
 from .eda_prescreen import *
 from .eda_selection import *
 from .eda_transformations import *
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import polars as pl
 import pandas as pd
-from typing import Self, Union, Optional, Any, Callable
+from typing import ParamSpec, Self, TypeVar, Union, Optional, Any, Callable, Iterable
 from enum import Enum
-from functools import partial
-import os, time, json # Replace json by orjson?
+# from functools import partial
+# import os, time, json 
 from pathlib import Path
+import logging
 
+T = TypeVar("T")
+P = ParamSpec("P")
+logger = logging.getLogger(__name__)
 ################################################################################################
 # WORK IN PROGRESS
 ################################################################################################
-
-class TransformedData:
-    pass
-    
-    # def __init__(self):
-    #     self.df:pl.DataFrame = None
-    #     self.target:str = ""
-    #     self.log:list[str] = []
-    #     self.mappings:list[pl.DataFrame] = []
-
 
 # We need this abstraction for the following reasons
 # 1. In the future, I want to add "checkpoint" (save to local)
@@ -38,142 +32,170 @@ class BuiltinExecutions(Enum):
     NULL_REMOVAL = "Remove columns with more than {:.2f}% nulls."
     VAR_REMOVAL = "Remove columns with less than {} variance. (Not recommended.)"
     CONST_REMOVAL = "Remove columns that are constants."
-    COL_REMOVAL = "Remove the given columns if they exist in dataframe."
-    REGX_REMOVAL = "Remove all columns whose names satisfy the regex rule."
-    BINARY_ENCODE = "Encode given columns into binary [0,1] values."
+    UNIQUE_REMOVAL = "Remove columns that are like unique identifiers, e.g. with more than {:.2f}% unique values."
+    COL_REMOVAL = "Remove given if they exist in dataframe."
+    REGX_REMOVAL = "Remove all columns whose names satisfy the regex rule {}."
+    BINARY_ENCODE = "Encode given into binary [0,1] values."
     ORDINAL_ENCODE = "Encode string values of given columns into numbers with given mapping."
     ORDINAL_AUTO_ENCODE = "Encode string values of given columns into numbers with inferred ordering."
     TARGET_ENCODE = "Encode string values using the target encoding algorithm."
     ONE_HOT_ENCODE = "Encode string values of given columns by the one-hot-encoding technique. (No drop first option)."
-    ENCODER_RECORD = "Encode by a given encoder record."
+    PERCENTILE_ENCODE = "Encode a continuous column by percentiles."
     SCALE = "Scale using specified the {} scaling method."
     IMPUTE = "Impute using specified the {} imputation method."
     CHECKPOINT = "Unavailable for now."
-    CHECK_COLS = "Check if df.columns == the given columns or if the given columns is a subset of df.columns"
+    SELECT = "Select only the given columns."
 
 @dataclass
 class ExecStep():
     name:str
-    module_path:str|Path|None
+    module:str|Path|None
     desc:str
     args:dict[str, Any]
     is_transformation:bool = False
     # Is this a transfromation call? 
     # If so, the output is expected to be of type TransformationResult.
     # If not, the output is expected to be of type pl.DataFrame.
-    is_custom:bool = False # If is custom, module path will be recorded.
+    is_custom:bool = False 
 
     def get_args(self) -> str:
         return self.args
     
-    # __str__
-
-    # def __init__(self, step:_BuiltinExecutions, desc:str, func:Callable):
-    #     self.name = step.name
-    #     self.desc = desc
-    #     self.func = func
+    def __str__(self) -> str:
+        text = f"Function: {self.name} | Module: {self.module} | Arguments:\n{self.args}\n"
+        text += f"Brief description: {self.desc}"
+        if self.is_transformation:
+            text += "\nThis step is a transformation step."
+        if self.is_custom:
+            text += "\nThis step is a user defined function."
+        return text
 
 @dataclass
 class ExecPlan():
-    steps:list[ExecStep] = []
+    _steps:list[ExecStep] = field(default_factory=list)
+
+    def __iter__(self) -> Iterable:
+        return iter(self._steps)
+
+    def __str__(self) -> str:
+        if len(self._steps) > 0:
+            text = ""
+            for i, item in enumerate(self._steps):
+                text += f"--- Step {i+1}: ---\n"
+                text += str(item)
+                text += "\n"
+            return text
+        else:
+            return "No step has been set."
+        
+    def __len__(self) -> int:
+        return len(self._steps)
+    
+    def clear(self) -> None:
+        self._steps.clear()
+
+    def is_empty(self) -> bool:
+        return len(self._steps) == 0
 
     def add(self, step:ExecStep) -> None:
-        self.steps.append(step)
+        self._steps.append(step)
 
-    def add_step(self, func:Callable
-        , desc:str, args:dict[str, Any]
+    def add_step(self
+        , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
+        , desc:str
+        , args:dict[str, Any] # Technically is not Any, but Anything that can be serialized by orjson..
         , is_transf:bool=False) -> None:
         
-        self.steps.append(
+        self._steps.append(
             ExecStep(func.__name__, func.__module__, desc, args, is_transf, False)
         )
 
-    def add_custom_step(self, func:Callable
-        , desc:str, args:dict[str, Any]
+    def add_custom_step(self
+        , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
+        , desc:str
+        , args:dict[str, Any]
         , is_transf:bool=False) -> None:
         
-        self.steps.append(
+        self._steps.append(
             ExecStep(func.__name__, func.__module__, desc, args, is_transf, True)
         )
 
+def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
+    return df.select(cols)
+
 class TransformationBuilder:
 
-    def __init__(self, project_name:str="my_project") -> Self:
-        self.df:pl.DataFrame = None
-        self.target:str = ""
+    def __init__(self, target:str, project_name:str="my_project") -> Self:
+        if target == "":
+            raise ValueError("Target cannot be empty string. Please rename it if it is the case.")
+
+        self.target = target
         self.project_name:str = project_name
-        self.ready_to_go:bool = False
-        self.execution_plan:ExecPlan = ExecPlan()
+        self._built:bool = False
+        self._execution_plan:ExecPlan = ExecPlan()
+        self._blueprint:ExecPlan = ExecPlan()
         return self
     
+    def __len__(self) -> int: # positive int
+        return len(self._execution_plan)
+    
+    def __str__(self) -> str:
+        if not self._execution_plan.is_empty():
+            text = f"Project name: {self.project_name}"
+            f"\nTotal steps: {len(self)} | Ready to build: {self._is_ready()} | Is built: {self._built}\n"
+            if self.target != "":
+                text += f"Target variable: {self.target}"
+            text += "\n"
+            text += str(self._execution_plan)
+            return text
+        return "The current builder has no execution plan."
+    
+    ### Miscellaneous
+    def show(self):
+        print(self)
+
+    def clear(self):
+        self.target = ""
+        self._execution_plan.clear()
+        self._blueprint.clear()
+        self._built = False
+
+    def select_cols(self, cols:list[str]) -> Self:
+        self._execution_plan.add_step(
+            func = _select_cols,
+            desc = BuiltinExecutions.SELECT.value,
+            args = {"cols":cols}
+        )
+        return self
+
+    ### End of Miscellaneous
+
+    ### Checks
     def _is_ready(self) -> bool:
-        return isinstance(self.df, pl.DataFrame) and not self.df.is_empty() and self.target in self.df.columns and self.target != ""
+        return self.target != ""
     
+    ### End of Checks.
+
     ### Project meta data section
-    def set_target(self, target:str) -> Self: 
-        self.target = target
-        self.ready_to_go = self._is_ready()
-        return self 
-    
-    def set_project_name(self, pname:str) -> Self:
-        self.project_name = pname
+    def set_project_name(self, project_name:str) -> Self:
+        if project_name == "":
+            raise ValueError("Project name cannot be empty.")
+        self.project_name = project_name
         return self
 
     ### End of project meta data section
     
     ### IO Section 
-    def read_csv_from(self, path:str|Path, csv_args:Optional[dict[str, Any]] = None) -> Self:
-        args = {} if csv_args is None else csv_args.copy()
-        if "source" not in args:
-            args["source"] = path
+    def from_blueprint(self) -> Self:
+        pass
 
-        self.df = pl.read_csv(**args)
-        self.ready_to_go = self._is_ready()
-        return self
-    
-    def read_parquet_from(self, path:str|Path) -> Self:
-        self.df = pl.read_parquet(path)
-        self.ready_to_go = self._is_ready()
-        return self
-    
-    def from_pandas(self, df:pd.DataFrame) -> Self:
-        print("!!! The input Pandas DataFrame will be emptied out after this call.")
-        self.df = pl.from_pandas(df)
-        df = df.iloc[0:0]
-        self.ready_to_go = self._is_ready()
-        return self
-    # Add database support later
-
-    def setup(self, data:Union[pl.DataFrame, pd.DataFrame, str, Path], target:str) -> Self:
-        if isinstance(data, pl.DataFrame): 
-            self.df = data
-        elif isinstance(data, pd.DataFrame):
-            print("!!! The input Pandas DataFrame will be emptied out after this call.")
-            self.df = pl.from_pandas(data)
-            data = data.iloc[0:0]
-        else:
-            try:
-                if data.endswith(".csv"): # What about csv parameters? Use read_csv_from.
-                    self.df = pl.read_csv(data)
-                elif data.endswith(".parquet"):
-                    self.df = pl.read_parquet(data)
-                else:
-                    raise NotImplementedError(f"The data/data path {data} is either not found or not supported at this time.")
-            except Exception as e:
-                print(e)
-                self.ready_to_go = False
-
-        self.target = target
-        self.ready_to_go = self._is_ready()
-        return self
-    
     ### End of IO Section 
     ### Column removal section
     def set_null_removal(self, threshold:float) -> Self:
         if threshold > 1 or threshold <= 0:
             raise ValueError("Threshold for null removal must be between 0 and 1.")
 
-        self.execution_plan.add_step(
+        self._execution_plan.add_step(
             func = null_removal ,
             desc = BuiltinExecutions.NULL_REMOVAL.value.format(threshold*100),
             args = {"threshold":threshold}  
@@ -181,10 +203,10 @@ class TransformationBuilder:
         return self 
     
     def set_var_removal(self, threshold:float) -> Self:
-        if threshold < 0:
+        if threshold <= 0:
             raise ValueError("Threshold for var removal must be positive.")
         
-        self.execution_plan.add_step(
+        self._execution_plan.add_step(
             func = var_removal,
             desc = BuiltinExecutions.VAR_REMOVAL.value.format(threshold),
             args = {"threshold":threshold},
@@ -193,24 +215,39 @@ class TransformationBuilder:
     
     def set_const_removal(self, include_null:bool=True) -> Self:
         
-        self.execution_plan.add_step(
+        self._execution_plan.add_step(
             func = constant_removal,
             desc = BuiltinExecutions.CONST_REMOVAL.value,
             args = {"threshold":include_null},
         )
         return self
     
+    def set_unique_removal(self, threshold:float=0.9) -> Self:
+        if threshold > 1 or threshold <= 0:
+            raise ValueError("Threshold for unique removal must be between 0 and 1.")
+
+        self._execution_plan.add_step(
+            func = unique_removal ,
+            desc = BuiltinExecutions.UNIQUE_REMOVAL.value.format(threshold*100),
+            args = {"threshold":threshold}  
+        )
+        return self 
+    
     def set_regex_removal(self, pat:str, lowercase:bool=False) -> Self:
 
-        self.execution_plan.add_step(
+        description = BuiltinExecutions.REGX_REMOVAL.value.format(pat)
+        if lowercase:
+            description += ". Everything will be lowercased."
+
+        self._execution_plan.add_step(
             func = regex_removal,
-            desc = BuiltinExecutions.REGX_REMOVAL.value,
+            desc = description,
             args = {"pat":pat, "lowercase": lowercase},
         )
         return self
     
     def set_col_removal(self, cols:list[str]) -> Self:
-        self.execution_plan.add_step(
+        self._execution_plan.add_step(
             func = remove_if_exists,
             desc = BuiltinExecutions.COL_REMOVAL.value,
             args = {"to_drop":cols},
@@ -222,7 +259,7 @@ class TransformationBuilder:
     ### Scaling and Imputation
     def set_scaling(self, cols:list[str], strategy:ScalingStrategy.NORMALIZE, const:int=1) -> Self:
         # const only matters if startegy is constant
-        self.execution_plan.add_step(
+        self._execution_plan.add_step(
             func = scale,
             desc = BuiltinExecutions.SCALE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
@@ -232,7 +269,7 @@ class TransformationBuilder:
     
     def set_impute(self, cols:list[str], strategy:ImputationStartegy.MEDIAN, const:int=1) -> Self:
         # const only matters if startegy is constant
-        self.execution_plan.add_step(
+        self._execution_plan.add_step(
             func = impute,
             desc = BuiltinExecutions.IMPUTE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
@@ -243,9 +280,24 @@ class TransformationBuilder:
     ### End of Scaling and Imputation
 
     ### Encoding
-    def set_ordinal_encoding(self, mapping:dict[str, dict[str,int]], default:int|None=None) -> Self:
+    def set_binary_encoding(self, bin_cols:Optional[list[str]]=None) -> Self:
         
-        self.execution_plan.add_step(
+        if bin_cols:
+            description = BuiltinExecutions.BINARY_ENCODE.value
+        else:
+            description = "Automatically detect binary columns and turn them into [0,1] values according to their order."
+
+        self._execution_plan.add_step(
+            func = binary_encode,
+            desc = description,
+            args = {"binary_cols":bin_cols},
+            is_transformation = True
+        )
+        return self
+
+    def set_ordinal_encoding(self, mapping:dict[str, dict[str,int]], default:Optional[int]=None) -> Self:
+        
+        self._execution_plan.add_step(
             func = ordinal_encode,
             desc = BuiltinExecutions.ORDINAL_ENCODE.value,
             args = {"ordinal_mapping":mapping, "default": default},
@@ -253,9 +305,9 @@ class TransformationBuilder:
         )
         return self
     
-    def set_ordinal_auto_encoding(self, cols:list[str], default:int|None=None) -> Self:
+    def set_ordinal_auto_encoding(self, cols:list[str], default:Optional[int]=None) -> Self:
         
-        self.execution_plan.add_step(
+        self._execution_plan.add_step(
             func = ordinal_auto_encode,
             desc = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value,
             args = {"ordinal_cols":cols, "default": default},
@@ -266,7 +318,7 @@ class TransformationBuilder:
     def set_target_encoding(self, str_cols:list[str], min_samples_leaf:int=20, smoothing:int=10) -> Self:
         
         if self._is_ready():
-            self.execution_plan.add_step(
+            self._execution_plan.add_step(
                 func = smooth_target_encode,
                 desc = BuiltinExecutions.TARGET_ENCODE.value,
                 args = {"target":self.target, "str_cols": str_cols, "min_samples_leaf":min_samples_leaf, "smoothing":smoothing},
@@ -276,43 +328,76 @@ class TransformationBuilder:
         else:
             raise ValueError(f"The data frame and target must be set before setting target encoding.")
         
-    def set_one_hot_encoding(self, one_hot_cols:list[str]) -> Self:
-        pass
-    
-    def set_encode_by_record(self, rec:EncoderRecord) -> Self:
+    def set_one_hot_encoding(self, one_hot_cols:Optional[list[str]]=None, separator:str="_") -> Self:
         
-        self.execution_plan.add_step(
-            func = encode_by,
-            desc = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value,
-            args = {"rec":rec},
+        if one_hot_cols:
+            description = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value
+        else:
+            description = "Automatically detect string columns and one-hot encode them."
+
+        self._execution_plan.add_step(
+            func = one_hot_encode,
+            desc = description,
+            args = {"one_hot_cols":one_hot_cols, "separator": separator},
+            is_transformation = True
+        )
+        return self
+    
+    def set_percentile_encoding(self, num_cols:list[str]) -> Self:
+        
+        self._execution_plan.add_step(
+            func = percentile_encode,
+            desc = BuiltinExecutions.PERCENTILE_ENCODE.value,
+            args = {"num_cols":num_cols},
             is_transformation = True
         )
         return self
     
     ### End of Encoding Section
 
-    ### Helpers, safety checks
-    def _check_columns(self, cols:list[str], subset:bool) -> bool:
-        in_col_not_in_df = [c for c in cols if c not in self.df.columns]
+    ### Custom Actions
+    def add_custom_action(self
+        , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
+        , desc:str
+        , args:dict[str, Any]
+        , is_transformation:bool) -> Self:
 
-    
-    def check_columns(self, cols:list[str], subset:bool=False) -> Self:
-        self.execution_plan.add_step(
-            func = self._check_columns,
-            desc = BuiltinExecutions.CHECK_COLS.value,
-            args = {"cols":cols, "subset":subset}
+        if is_transformation:
+            logging.info("It is highly recommended that the custom function returns a type that inherits from the TransformationRecord class.")
+        self._execution_plan.add_custom_step(
+            func = func,
+            desc = desc,
+            args = args,
+            is_transformation = is_transformation
         )
+
         return self
 
+    ### End of Custom Actions
 
-    ### End of Helpers, safety checks
-    
-    def build(self) -> TransformedData: #(Use optional?)
+    def fit(self, X, y) -> Self:
+        pass
 
-        if self.ready_to_go:
-            pass 
-        else:
-            print("Please make sure that:\n\t1. a dataframe input is correctly set.\n\t2. a target name is correct set.\n\t3. target exists as one of the columns of df.")
+    def build(self, df:pl.DataFrame|pd.DataFrame) -> Self:
+        if not self._is_ready():
+            logger.warning("Not ready to build. Please make sure that both the dataframe and the target are set up properly.")
+            return None
+        if self._built:
+            logger.warning("The builder has already been built once. Please run")
+
+
+        try:
+            pass
+
+        except Exception as e:
+            logger.error(e)
+            return None
+        
+        
+    def write_blueprint(self, path:str|Path) -> None:
+        if self._blueprint.is_empty():
+            pass
+
         
 
 

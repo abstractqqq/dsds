@@ -1,23 +1,21 @@
 import polars as pl 
-import re
+import re, logging
 from datetime import datetime 
 from typing import Final, Any
 from dataclasses import dataclass
 
-_POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
-
+logger = logging.getLogger(__name__)
+POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
+POLARS_DATETIME_TYPES:Final[list[pl.DataType]] = [pl.Datetime, pl.Date, pl.Time]
 #----------------------------------------------------------------------------------------------#
-# Generic columns checks                                                                       #
+# Generic columns checks | Only works with Polars because Pandas's data types suck!            #
 #----------------------------------------------------------------------------------------------#
 
 def get_numeric_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
-    ''' 
-    
-    '''
     output = []
     exclude_list = [] if exclude is None else exclude
     for c,t in zip(df.columns, df.dtypes):
-        if t in _POLARS_NUMERICAL_TYPES and c not in exclude_list:
+        if t in POLARS_NUMERICAL_TYPES and c not in exclude_list:
             output.append(c)
     return output
 
@@ -29,11 +27,13 @@ def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
             output.append(c)
     return output
 
+def get_datetime_cols(df:pl.DataFrame) -> list[str]:
+    return [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
+
 def get_bool_cols(df:pl.DataFrame) -> list[str]:
     return [c for c,t in zip(df.columns, df.dtypes) if t == pl.Boolean]
 
 def get_cols_regex(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> list[str]:
-
     reg = re.compile(pattern)
     if lowercase:
         return [f for f in df.columns if reg.search(f)]
@@ -42,11 +42,11 @@ def get_cols_regex(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> list[s
 def dtype_mapping(d: Any) -> str: # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
     if isinstance(d, str) or d == pl.Utf8:
         return "string"
-    elif isinstance(d, (int,float)) or d in _POLARS_NUMERICAL_TYPES:
+    elif isinstance(d, (int,float)) or d in POLARS_NUMERICAL_TYPES:
         return "numeric"
     elif isinstance(d, bool) or d == pl.Boolean:
         return "bool"
-    elif isinstance(d, datetime) or d in [pl.Datetime, pl.Date, pl.Time]:
+    elif isinstance(d, datetime) or d in POLARS_DATETIME_TYPES:
         return "datetime"
     else:
         return "other/unknown"
@@ -64,6 +64,7 @@ class DroppedFeatureResult:
     def __str__(self):
         pass 
 
+# Add a slim option that returns fewer stats.
 def describe(df:pl.DataFrame) -> pl.DataFrame:
     '''
         The transpose view of df.describe() for easier filtering. Add more statistics in the future (if easily
@@ -103,9 +104,29 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
                         , 'unique_pct','mean','std','min','max','25%'
                         , 'median','75%', "skew", "kurtosis",'dtype'))
 
+# Discrete = string or column has < threshold% unique values.
+def discrete_inferral():
+    pass
+
+# Check if column follows the normal distribution. Hmm...
+def normal_inferral():
+    pass
+
+# Check if columns are duplicates. Slow
+def duplicate_inferral():
+    # Get profiles first. 
+    # Cut down list to columns that have the same min, max, n_unique, null_count.
+    # Then divide into strings and numerics and bools.
+    # Use ==
+    pass
+
+# Check if string column is date
+def date_inferral():
+    pass
+
 def null_inferral(df:pl.DataFrame, threshold:float=0.5) -> list[str]:
     return (df.null_count()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
-                    .filter(pl.col("null_pct") > threshold)\
+                    .filter(pl.col("null_pct") >= threshold)\
                     .get_column("column").to_list() 
 
 def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
@@ -120,9 +141,9 @@ def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
             df without null_pct > threshold columns
     '''
 
-    remove_cols = null_inferral(df, threshold)    
-    print(f"The following columns are dropped because they have more than {threshold*100:.2f}% null values. {remove_cols}.")
-    print(f"Removed a total of {len(remove_cols)} columns.")
+    remove_cols = null_inferral(df, threshold) 
+    logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}% null values. {remove_cols}.\n"
+                f"Removed a total of {len(remove_cols)} columns.")  
     return df.drop(remove_cols)
 
 def var_inferral(df:pl.DataFrame, threshold:float, target:str) -> list[str]:
@@ -145,9 +166,9 @@ def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
             df without columns with < threshold var.
     '''
 
-    remove_cols = var_inferral(df, threshold, target)    
-    print(f"The following numeric columns are dropped because they have lower than {threshold} variance. {remove_cols}")
-    print(f"Removed a total of {len(remove_cols)} columns.")
+    remove_cols = var_inferral(df, threshold, target) 
+    logger.info(f"The following columns are dropped because they have lower than {threshold} variance. {remove_cols}.\n"
+                f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
 # Really this is just an alias
@@ -155,10 +176,9 @@ regx_inferral = get_cols_regex
 
 def regex_removal(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> pl.DataFrame:
     remove_cols = get_cols_regex(df, pattern, lowercase)
-    print(f"The following numeric columns are dropped because their names satisfy the regex rule: {pattern}. {remove_cols}")
-    print(f"Removed a total of {len(remove_cols)} columns.")
+    logger.info(f"The following columns are dropped because their names satisfy the regex rule: {pattern}. {remove_cols}.\n"
+            f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
-
 
 def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
     return df.select(
@@ -169,12 +189,12 @@ def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
 def unique_inferral(df:pl.DataFrame, threshold:float=0.9) -> list[str]:
     return get_unique_count(df).with_columns(
         (pl.col("n_unique")/len(df)).alias("unique_pct")
-    ).filter(pl.col("unique_pct") > threshold).get_column("column").to_list()
+    ).filter(pl.col("unique_pct") >= threshold).get_column("column").to_list()
 
 def unique_removal(df:pl.DataFrame, threshold:float=0.9) -> pl.DataFrame:
     remove_cols = unique_inferral(df, threshold)
-    print(f"The following columns are dropped because more than {threshold*100:.2f}% of values are unique. {remove_cols}")
-    print(f"Removed a total of {len(remove_cols)} columns.")
+    logger.info(f"The following columns are dropped because more than {threshold*100:.2f}% of values are unique. {remove_cols}.\n"
+        f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
 def constant_inferral(df:pl.DataFrame, include_null:bool=True) -> list[str]:
@@ -198,10 +218,11 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
             the df without constant columns
     '''
     remove_cols = constant_inferral(df, include_null)
-    print(f"The following columns are dropped because they are constants. {remove_cols}.")
-    print(f"Removed a total of {len(remove_cols)} columns.")
+    logger.info(f"The following columns are dropped because they are constants. {remove_cols}.\n"
+                f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
 def remove_if_exists(df:pl.DataFrame, to_drop:list[str]) -> pl.DataFrame:
     drop = list(set(to_drop).intersection(set(df.columns)))
+    logger.info(f"The following columns are dropped. {drop}.\nRemoved a total of {len(drop)} columns.")
     return df.drop(columns=drop)
