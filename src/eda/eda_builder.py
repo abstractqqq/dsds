@@ -1,17 +1,38 @@
 from __future__ import annotations
 
-from .eda_prescreen import *
-from .eda_selection import *
-from .eda_transformations import *
-from dataclasses import dataclass, field
+from .eda_prescreen import (
+    remove_if_exists
+    , regex_removal
+    , var_removal
+    , null_removal
+    , unique_removal
+    , constant_removal
+)
+# from .eda_selection import *
+from .eda_transformations import (
+    TransformationResult
+    , TransformationRecord
+    , ScalingStrategy
+    , ImputationStartegy
+    , scale
+    , impute
+    , binary_encode
+    , one_hot_encode
+    , percentile_encode
+    , smooth_target_encode
+    , ordinal_encode
+    , ordinal_auto_encode
+)
+from dataclasses import dataclass
 import polars as pl
 import pandas as pd
-from typing import ParamSpec, Self, TypeVar, Union, Optional, Any, Callable, Iterable
+from typing import ParamSpec, Self, TypeVar, Optional, Any, Callable, Iterable
 from enum import Enum
-# from functools import partial
-# import os, time, json 
 from pathlib import Path
+import orjson
 import logging
+import importlib
+import os
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -50,21 +71,25 @@ class BuiltinExecutions(Enum):
 class ExecStep():
     name:str
     module:str|Path|None
-    desc:str
-    args:dict[str, Any]
-    is_transformation:bool = False
+    desc:str = ""
+    args:Optional[dict[str, Any]] = None # None if it is record.
+    is_transform:bool = False
     # Is this a transfromation call? 
     # If so, the output is expected to be of type TransformationResult.
     # If not, the output is expected to be of type pl.DataFrame.
+    encoder_rec: Optional[TransformationRecord] = None # Will only be not none in blueprints.
     is_custom:bool = False 
 
     def get_args(self) -> str:
         return self.args
     
+    def drop_args(self) -> Self:
+        self.args = None
+    
     def __str__(self) -> str:
         text = f"Function: {self.name} | Module: {self.module} | Arguments:\n{self.args}\n"
         text += f"Brief description: {self.desc}"
-        if self.is_transformation:
+        if self.is_transform:
             text += "\nThis step is a transformation step."
         if self.is_custom:
             text += "\nThis step is a user defined function."
@@ -72,52 +97,58 @@ class ExecStep():
 
 @dataclass
 class ExecPlan():
-    _steps:list[ExecStep] = field(default_factory=list)
+    steps:list[ExecStep]
 
     def __iter__(self) -> Iterable:
-        return iter(self._steps)
+        return iter(self.steps)
 
     def __str__(self) -> str:
-        if len(self._steps) > 0:
+        if len(self.steps) > 0:
             text = ""
-            for i, item in enumerate(self._steps):
+            for i, item in enumerate(self.steps):
                 text += f"--- Step {i+1}: ---\n"
                 text += str(item)
                 text += "\n"
             return text
         else:
             return "No step has been set."
+    
+    def __repr__(self):
+        print(str(self))
         
     def __len__(self) -> int:
-        return len(self._steps)
+        return len(self.steps)
     
     def clear(self) -> None:
-        self._steps.clear()
+        self.steps.clear()
 
     def is_empty(self) -> bool:
-        return len(self._steps) == 0
+        return len(self.steps) == 0
 
     def add(self, step:ExecStep) -> None:
-        self._steps.append(step)
+        self.steps.append(step)
+
+    def popleft(self) -> Optional[ExecStep]:
+        return self.steps.pop(0)
 
     def add_step(self
         , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
         , desc:str
         , args:dict[str, Any] # Technically is not Any, but Anything that can be serialized by orjson..
-        , is_transf:bool=False) -> None:
+        , is_transform:bool=False) -> None:
         
-        self._steps.append(
-            ExecStep(func.__name__, func.__module__, desc, args, is_transf, False)
+        self.steps.append(
+            ExecStep(func.__name__, func.__module__, desc, args, is_transform, False)
         )
 
     def add_custom_step(self
         , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
         , desc:str
         , args:dict[str, Any]
-        , is_transf:bool=False) -> None:
+        , is_transform:bool=False) -> None:
         
-        self._steps.append(
-            ExecStep(func.__name__, func.__module__, desc, args, is_transf, True)
+        self.steps.append(
+            ExecStep(func.__name__, func.__module__, desc, args, is_transform, True)
         )
 
 def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
@@ -125,16 +156,15 @@ def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
 
 class TransformationBuilder:
 
-    def __init__(self, target:str, project_name:str="my_project") -> Self:
+    def __init__(self, target:str, project_name:str="my_project"):
         if target == "":
             raise ValueError("Target cannot be empty string. Please rename it if it is the case.")
 
         self.target = target
         self.project_name:str = project_name
         self._built:bool = False
-        self._execution_plan:ExecPlan = ExecPlan()
-        self._blueprint:ExecPlan = ExecPlan()
-        return self
+        self._execution_plan:ExecPlan = ExecPlan(steps=[])
+        self._blueprint:ExecPlan = ExecPlan(steps=[])
     
     def __len__(self) -> int: # positive int
         return len(self._execution_plan)
@@ -155,7 +185,6 @@ class TransformationBuilder:
         print(self)
 
     def clear(self):
-        self.target = ""
         self._execution_plan.clear()
         self._blueprint.clear()
         self._built = False
@@ -206,19 +235,22 @@ class TransformationBuilder:
         if threshold <= 0:
             raise ValueError("Threshold for var removal must be positive.")
         
-        self._execution_plan.add_step(
-            func = var_removal,
-            desc = BuiltinExecutions.VAR_REMOVAL.value.format(threshold),
-            args = {"threshold":threshold},
-        )
-        return self
+        if self._is_ready():
+            self._execution_plan.add_step(
+                func = var_removal,
+                desc = BuiltinExecutions.VAR_REMOVAL.value.format(threshold),
+                args = {"threshold":threshold, "target":self.target},
+            )
+            return self
+        else:
+            raise ValueError("Target must be set before setting var removal.")
     
     def set_const_removal(self, include_null:bool=True) -> Self:
         
         self._execution_plan.add_step(
             func = constant_removal,
             desc = BuiltinExecutions.CONST_REMOVAL.value,
-            args = {"threshold":include_null},
+            args = {"include_null":include_null},
         )
         return self
     
@@ -257,41 +289,46 @@ class TransformationBuilder:
     ### End of column removal section
 
     ### Scaling and Imputation
-    def set_scaling(self, cols:list[str], strategy:ScalingStrategy.NORMALIZE, const:int=1) -> Self:
+    def set_scaling(self, cols:list[str]
+        , strategy:ScalingStrategy=ScalingStrategy.NORMALIZE
+        , const:int=1) -> Self:
         # const only matters if startegy is constant
         self._execution_plan.add_step(
             func = scale,
             desc = BuiltinExecutions.SCALE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
-            is_transformation = True
+            is_transform = True
         )
         return self
     
-    def set_impute(self, cols:list[str], strategy:ImputationStartegy.MEDIAN, const:int=1) -> Self:
+    def set_impute(self, cols:list[str]
+        , strategy:ImputationStartegy=ImputationStartegy.MEDIAN
+        , const:int=1) -> Self:
+        
         # const only matters if startegy is constant
         self._execution_plan.add_step(
             func = impute,
             desc = BuiltinExecutions.IMPUTE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
-            is_transformation = True
+            is_transform = True
         )
         return self
     
     ### End of Scaling and Imputation
 
     ### Encoding
-    def set_binary_encoding(self, bin_cols:Optional[list[str]]=None) -> Self:
+    def set_binary_encoding(self, cols:Optional[list[str]]=None) -> Self:
         
-        if bin_cols:
+        if cols:
             description = BuiltinExecutions.BINARY_ENCODE.value
         else:
-            description = "Automatically detect binary columns and turn them into [0,1] values according to their order."
+            description = "Automatically detect binary columns and turn them into [0,1] values by their order."
 
         self._execution_plan.add_step(
             func = binary_encode,
             desc = description,
-            args = {"binary_cols":bin_cols},
-            is_transformation = True
+            args = {"cols":cols},
+            is_transform = True
         )
         return self
 
@@ -301,7 +338,7 @@ class TransformationBuilder:
             func = ordinal_encode,
             desc = BuiltinExecutions.ORDINAL_ENCODE.value,
             args = {"ordinal_mapping":mapping, "default": default},
-            is_transformation = True
+            is_transform = True
         )
         return self
     
@@ -310,27 +347,27 @@ class TransformationBuilder:
         self._execution_plan.add_step(
             func = ordinal_auto_encode,
             desc = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value,
-            args = {"ordinal_cols":cols, "default": default},
-            is_transformation = True
+            args = {"cols":cols, "default": default},
+            is_transform = True
         )
         return self
     
-    def set_target_encoding(self, str_cols:list[str], min_samples_leaf:int=20, smoothing:int=10) -> Self:
+    def set_target_encoding(self, cols:list[str], min_samples_leaf:int=20, smoothing:int=10) -> Self:
         
         if self._is_ready():
             self._execution_plan.add_step(
                 func = smooth_target_encode,
                 desc = BuiltinExecutions.TARGET_ENCODE.value,
-                args = {"target":self.target, "str_cols": str_cols, "min_samples_leaf":min_samples_leaf, "smoothing":smoothing},
-                is_transformation = True
+                args = {"target":self.target, "cols": cols, "min_samples_leaf":min_samples_leaf, "smoothing":smoothing},  # noqa: E501
+                is_transform = True
             )
             return self
         else:
-            raise ValueError(f"The data frame and target must be set before setting target encoding.")
+            raise ValueError("The target must be set before target encoding.")
         
-    def set_one_hot_encoding(self, one_hot_cols:Optional[list[str]]=None, separator:str="_") -> Self:
+    def set_one_hot_encoding(self, cols:Optional[list[str]]=None, separator:str="_") -> Self:
         
-        if one_hot_cols:
+        if cols:
             description = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value
         else:
             description = "Automatically detect string columns and one-hot encode them."
@@ -338,18 +375,18 @@ class TransformationBuilder:
         self._execution_plan.add_step(
             func = one_hot_encode,
             desc = description,
-            args = {"one_hot_cols":one_hot_cols, "separator": separator},
-            is_transformation = True
+            args = {"cols":cols, "separator": separator},
+            is_transform = True
         )
         return self
     
-    def set_percentile_encoding(self, num_cols:list[str]) -> Self:
+    def set_percentile_encoding(self, cols:list[str]) -> Self:
         
         self._execution_plan.add_step(
             func = percentile_encode,
             desc = BuiltinExecutions.PERCENTILE_ENCODE.value,
-            args = {"num_cols":num_cols},
-            is_transformation = True
+            args = {"cols":cols},
+            is_transform = True
         )
         return self
     
@@ -360,15 +397,17 @@ class TransformationBuilder:
         , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
         , desc:str
         , args:dict[str, Any]
-        , is_transformation:bool) -> Self:
+        , is_transform:bool) -> Self:
 
-        if is_transformation:
-            logging.info("It is highly recommended that the custom function returns a type that inherits from the TransformationRecord class.")
+        if is_transform or ("return" not in func.__annotations__):
+            logger.info("It is highly recommended that the custom function returns " 
+                        "a type that inherits from the TransformationRecord class.")
+
         self._execution_plan.add_custom_step(
             func = func,
             desc = desc,
             args = args,
-            is_transformation = is_transformation
+            is_transform = is_transform
         )
 
         return self
@@ -378,27 +417,89 @@ class TransformationBuilder:
     def fit(self, X, y) -> Self:
         pass
 
-    def build(self, df:pl.DataFrame|pd.DataFrame) -> Self:
-        if not self._is_ready():
-            logger.warning("Not ready to build. Please make sure that both the dataframe and the target are set up properly.")
-            return None
-        if self._built:
-            logger.warning("The builder has already been built once. Please run")
+    def build(self, df:pl.DataFrame|pd.DataFrame) -> pl.DataFrame:
+        '''
+            Build according to the steps.
 
+            Returns:
+                A dataframe.
+        
+        '''
+
+
+        if isinstance(df, pd.DataFrame):
+            logger.warning("Found input to be a Pandas dataframe. Turning it into a Polars dataframe.")
+            try:
+                input_df:pl.DataFrame = pl.from_pandas(df)
+            except Exception as e:
+                logger.error(e)
+        else:
+            input_df:pl.DataFrame = df
+        
+        logger.info(f"Starting to build. Total steps: {len(self._execution_plan)}.")
+        
+        if self.target not in input_df.columns:
+            raise ValueError(f"The target {self.target} is not found in input dataframe's columns.")
+        
+        i = 0
+        n = len(self._execution_plan)
+        # Todo! If something failed, save a backup dataframe to a temp folder.
+        while not self._execution_plan.is_empty():
+            i += 1
+            step = self._execution_plan.popleft()
+            logger.info(f"|{i}/{n}|: Step: {step.name}")
+            if step.is_transform: # Essentially the fit step.
+                transf:Callable[[pl.DataFrame, T], TransformationResult] = getattr(importlib.import_module(step.module)
+                                                                                   , step.name)
+                transf: pl.DataFrame
+                rec: TransformationRecord
+                transf, rec = transf(input_df, **step.args)
+                input_df = transf
+                new_step = ExecStep(
+                    name = step.name,
+                    module = None,
+                    is_transform = True,
+                    encoder_rec = rec,
+                    is_custom = step.is_custom
+                )
+                self._blueprint.add(new_step)
+            else:
+                apply_func:Callable[[pl.DataFrame, T], pl.DataFrame] = getattr(importlib.import_module(step.module)
+                                                                               , step.name)
+                input_df = apply_func(input_df, **step.args)
+                self._blueprint.add(step)
+
+        logger.info("Build success. A blueprint has been built and can be viewed by calling .blueprint(), "
+                    "and can be saved as a json by calling .write()")
+        self._built = True
+        return input_df
+
+    def blueprint(self) -> str:
+        return str(self._blueprint)
+        
+    def write(self, name:str="") -> None:
+        if self._blueprint.is_empty():
+            logger.warning("Blueprint is empty. Nothing is done.")
+            return
+
+        directory = "./blueprints/"
+        if name == "":
+            logger.info("No name is specified, using project name as default.")
+            name += self.project_name + ".json"
+        else:
+            if not name.endswith(".json"):
+                name += ".json"
+
+        if not os.path.isdir(directory):
+            logger.info("Local ./blueprints/ directory is not found. It will be created.")
+            os.mkdir(directory)
 
         try:
-            pass
-
+            data = orjson.dumps(self._blueprint, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS)
+            with open(directory+name, "wb") as f:
+                f.write(data)
         except Exception as e:
             logger.error(e)
-            return None
-        
-        
-    def write_blueprint(self, path:str|Path) -> None:
-        if self._blueprint.is_empty():
-            pass
-
-        
 
 
 

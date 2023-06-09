@@ -2,20 +2,29 @@
 
 Still in early development. Name of package undecided yet.
 
-Goal 1: Make traditional EDA, feature selection methods (especially those in sklearn) easier to perform, faster to compute, and more "DataFrame-friendly", meaning that 
+This library aims to be a lightweight altenative to Scikit-learn (Sklearn), especially in the data preparation stage, e.g. feature screening/selection, basic transformations (scale, impute, one-hot encode, target encode, etc.) Its goal is to replace sklearn's pipeline up until model building. Its focuses are on 
 
-1. Inputs should be dataframes and reduce copying to NumPy array as much as possible. This means we avoid internally copying data to numpy array.
-2. Output should be clean dataframes on which we can quickly sort and filter.
+1. Being more dataframe centric in design. Dataframe in, dataframe out, and try not to convert or copy to NumPy unless necessary, or provide low-memory options.
 
-To this end, we have to entirely use Polars (maybe make some methods pandas compatible in the future). The main reason for not using pandas is performance, ease of programming in polars, and pandas's loose type enforcement.
+2. Performance. Many algorithms are 3-5x faster, 10x if you have more cores on your computer, than Scikit-learn's implementation.
 
-Goal 2: Remove dependency on sklearn for the data preparation part of the model building pipeline. ONLY the data preparation part for now.
+3. Simplicity and consistency. This library should not be everything. It should stick to the responsibilities outlined above. It shouldn't become a visualization library. It shouldn't overload users with millions of input options, most of which won't be used anyway and which really adds little but side effects to the program.
 
-Why? Here are some reasons: 
+4. Be more developer friendly by introducing useful types and data structures in the backend.
 
-(a). In-memory objects are not the way to build long lasting pipelines because they are difficult to change/update, and use more resource than necessary, and are hard to serialize. 
+To this end, I believe the old "stack", Pandas + Sklearn + some NumPy, is inadequate, mostly because
 
-(b). A lot of sklearn data preprocessing/feature selection algorithms suffer from immense performance bottlenecks, and are not "dataframe-friendly"!
+1. Their lack of parallelism
+2. Pandas's "object" types and slow performance.
+3. Lack of types enforcement, leading to infinitely many quality checks. Lack of types describing outputs.
+
+Dask and PySpark are distributed systems and so are their own universe. But on a single machine, Polars has proven to be more performant and less memory intensive than both of them.
+
+Most algorithms in Sklearn are available in Scipy, and Scipy relies more heavily on C and usually has multicore options. Therefore, when the algorithm is too complex to perfom in Polars, we can rely on Scipy. 
+
+So the proposed new "stack" is Polars + Scipy + some NumPy.
+
+Note, if you want everything to work, you may need to install sklearn because in some algorithms we need random forest's feature importances.
 
 # Existing Functionalities:
 
@@ -23,28 +32,37 @@ Why? Here are some reasons:
 
 The point of feature prescreening is to reduce the number of feature to be analyzed by dropping obviously useless features. E.g in a dataset with 500+ features, it is impossible for a person to know what the features are. It will take very long time to run feature selection on all features. In this case we can quickly remove all features that are constant, all id column feautres, or all features that are too unique (which makes them like ids). If you are confident in removing columns with high null percentage, you may do that do.
 
-0. Data profiling for an overview of the statistics of the data.
+1. Data profiling for an overview of the statistics of the data.
 
-1. Infer/remove columns based on null pct, unique pct, variance, constant, or name of column.
+2. Infer/remove columns based on column data type, null pct, unique pct, variance, constant, or name of column.
 
+### todo()!
+
+1. Infer duplicate columns, string columns hiding as dates, distribution of data in column.
+
+2. Remove based on the above characteristics.
 
 ## EDA Transformation
 
-0. Binary transforms, boolean transform, ordinal encoding, auto ordinal encoding, one-hot encoding.
-
-1. More advanced encoding techniques such as target encoding. More to come.
+1. Binary transforms, boolean transform, ordinal encoding, auto ordinal encoding, one-hot encoding, target encoding.
 
 2. Imputation and scaling.
 
+### todo()!
+
+1. More imputation and scaling startegies.
+
+2. More slightly advanced encoding techniques.
+
 ## EDA Selection
 
-Feature selection done in a simple, fast, and "less memory intensive way". May need more optimization.
+Feature selection done fast. May need more optimization.
 
 0. Methods based on entropy: mutual_info, naive_sample_ig
     
     Let X denote the test column/feature, and Y the target. We compute the conditional entropy H(Y|X), which represents the remaining randomness in the random variable Y, given the random variable X. For more details, see [here](https://en.wikipedia.org/wiki/Entropy_(information_theory)).
 
-    The mutual_info function is a speed-up version of sklearn's mutual_info_classif. 
+    The mutual_info function is a speed-up version of sklearn's mutual_info_classif, but with some small precision issues right now. (Not sure if this is a bug or not. Most likely this is just a precision issue. Need some help.)
 
     More details can be found in the docstring of the functions.
 
@@ -52,19 +70,21 @@ Feature selection done in a simple, fast, and "less memory intensive way". May n
     
     See [here](https://saylordotorg.github.io/text_introductory-statistics/s15-04-f-tests-in-one-way-anova.html).
 
-2. Basic MRMR Algorithm:
+2. Basic MRMR Algorithm with many options: mrmr, knock-out-mrmr.
 
     See [here](https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b)
 
 ## EDA Builder
 
-A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. 
+A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. It is essentially like Sklearn's pipeline, but less object dependent and easier to serialize and edit.
+
+1. In progress.
 
 ## EDA Misc
 
 Miscallenous functions.
 
-## EDA Text
+## EDA Text (Halted.)
 
 1. A quick reusable method to transform text data in a column into multiple numerical columns. Great for TF-IDF kind of thing and also any other model that cannot consume text data directly. Experimental for now. Not suitable for big data. 
 
@@ -72,35 +92,22 @@ Miscallenous functions.
 
 Python 3.11+ is recommended. We are forward looking.
 
-pip install polars orjson scipy nltk scikit-learn xgboost 
+pip install polars orjson scipy numpy
+
+Note: nltk, scikit-learn, and xgboost are needed for full functionalities. 
 
 (nltk may require additional downloads.)
 
-# todo()!
+## General Considerations and Guidelines Before Making Contributions:
 
-EDA Selection:
+1. If you can read the data into memory, your code should process it faster than Scikit-learn and Pandas. "Abuse" Polars' multi-core capabilities as much as possible before sending data to NumPy. (If you write it in Rust and want a Python wrapper, let me know!)
 
-1. More feature selection algorithms that are not bloated and yield good results.
+2. Provide proof that the algorithm generates exact/very close results as Scikit-learn's implementation.
 
-EDA Transformation:
+3. Try not to include other packages than NumPy, Scipy and Polars. The preferred serialization strategy is dataclasses + Orjson, not pickling.
 
-1. WOE Transformation.
+4. Fucntion annotaions are required and functions should have one output type only.
 
-2. More imputation and scaling strategies.
+5. Obscure algorithms that do not have a lot of usages should not be included in the package. The package is designed in such a way that it can be customized (A lot more work to be done here.)
 
-EDA Builder:
-
-1. Finish the main functionalities.
-
-2. Checkpoint functionalities.
-
-3. I/O from databases, S3, datalake, etc.
-
-4. Allow user defined function calls into the pipeline.
-
-EDA Text: Currently on hold.
-
-EDA Prescreen:
-
-1. Open to suggestions.
-
+6. All guidelines above can be discussed.

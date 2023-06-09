@@ -1,11 +1,11 @@
 import polars as pl 
-import re, logging
+import re, logging  # noqa: E401
 from datetime import datetime 
 from typing import Final, Any
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
-POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]
+POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]  # noqa: E501
 POLARS_DATETIME_TYPES:Final[list[pl.DataType]] = [pl.Datetime, pl.Date, pl.Time]
 #----------------------------------------------------------------------------------------------#
 # Generic columns checks | Only works with Polars because Pandas's data types suck!            #
@@ -39,7 +39,8 @@ def get_cols_regex(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> list[s
         return [f for f in df.columns if reg.search(f)]
     return [f for f in df.columns if reg.search(f.lower())]
 
-def dtype_mapping(d: Any) -> str: # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
+# dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
+def dtype_mapping(d: Any) -> str:
     if isinstance(d, str) or d == pl.Utf8:
         return "string"
     elif isinstance(d, (int,float)) or d in POLARS_NUMERICAL_TYPES:
@@ -142,7 +143,8 @@ def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     '''
 
     remove_cols = null_inferral(df, threshold) 
-    logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}% null values. {remove_cols}.\n"
+    logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
+                f" null values. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")  
     return df.drop(remove_cols)
 
@@ -153,14 +155,17 @@ def var_inferral(df:pl.DataFrame, threshold:float, target:str) -> list[str]:
 
 def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
     '''
-        Removes features with low variance. Features with > threshold variance will be kept. This only works for numerical columns.
+        Removes features with low variance. Features with > threshold variance will be kept. This only works for 
+        numerical columns.
+        
         Note that this can effectively remove (numerical) constants as well. It is, however, hard to come up with
         a uniform threshold for all features, as numerical features can be at very different scales. 
 
         Arguments:
             df:
             threshold:
-            target: target in your predictive model. Some targets may have low variance, e.g. imbalanced binary targets. So we should exclude it.
+            target: target in your predictive model. Some targets may have low variance, e.g. imbalanced binary targets. 
+                So we should exclude it.
 
         Returns:
             df without columns with < threshold var.
@@ -172,12 +177,13 @@ def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
     return df.drop(remove_cols)
 
 # Really this is just an alias
-regx_inferral = get_cols_regex
+regex_inferral = get_cols_regex
 
 def regex_removal(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> pl.DataFrame:
     remove_cols = get_cols_regex(df, pattern, lowercase)
-    logger.info(f"The following columns are dropped because their names satisfy the regex rule: {pattern}. {remove_cols}.\n"
-            f"Removed a total of {len(remove_cols)} columns.")
+    logger.info(f"The following columns are dropped because their names satisfy the regex rule: {pattern}."
+                f" {remove_cols}.\n"
+                f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
 def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
@@ -193,8 +199,9 @@ def unique_inferral(df:pl.DataFrame, threshold:float=0.9) -> list[str]:
 
 def unique_removal(df:pl.DataFrame, threshold:float=0.9) -> pl.DataFrame:
     remove_cols = unique_inferral(df, threshold)
-    logger.info(f"The following columns are dropped because more than {threshold*100:.2f}% of values are unique. {remove_cols}.\n"
-        f"Removed a total of {len(remove_cols)} columns.")
+    logger.info(f"The following columns are dropped because more than {threshold*100:.2f}% of unique values."
+                f" {remove_cols}.\n"
+                f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
 
 def constant_inferral(df:pl.DataFrame, include_null:bool=True) -> list[str]:

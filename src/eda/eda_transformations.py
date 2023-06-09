@@ -10,6 +10,8 @@ from typing import Any, Tuple, Iterable, Optional
 from dataclasses import dataclass
 from .eda_prescreen import get_bool_cols, get_numeric_cols, get_string_cols, get_unique_count, dtype_mapping
 
+# ADD A COLUMN TYPE SAFE GUARD
+
 logger = logging.getLogger(__name__)
 
 class ImputationStartegy(Enum):
@@ -72,14 +74,15 @@ class ScalingRecord(TransformationRecord):
     values:list[dict[str, float]]
 
     def __iter__(self) -> Iterable:
-        vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY).decode() for v in self.values)
-        return zip(self.features, [self.strategy]*len(self.features), vals)
+        return zip(self.features, [self.strategy]*len(self.features), self.values)
     
     def __str__(self) -> str:
         return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY).decode()
     
     def materialize(self) -> pl.DataFrame:
-        return pl.from_records(list(self), schema=["feature", "scaling_strategy", "scaling_meta_data"])
+        vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY).decode() for v in self.values)
+        presentable =  zip(self.features, [self.strategy]*len(self.features), vals)
+        return pl.from_records(list(presentable), schema=["feature", "scaling_strategy", "scaling_meta_data"])
     
     def transform(self, df:pl.DataFrame) -> pl.DataFrame:
     
@@ -105,14 +108,15 @@ class EncoderRecord:
     mappings:list[dict[Any, Any]]
 
     def __iter__(self) -> Iterable:
-        vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode() for v in self.mappings)
-        return zip(self.features, [self.strategy]*len(self.features), vals)
+        return zip(self.features, [self.strategy]*len(self.features), self.mappings)
     
     def __str__(self) -> str:
         return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode()
     
     def materialize(self) -> pl.DataFrame:
-        return pl.from_records(list(self), schema=["feature", "encoding_strategy", "maps"])
+        vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode() for v in self.mappings)
+        presentable =  zip(self.features, [self.strategy]*len(self.features), vals)
+        return pl.from_records(list(presentable), schema=["feature", "encoding_strategy", "maps"])
     
     def _find_first_index_of_smaller(self, u:float, order:list[Tuple[float, int]]) -> int:
         order = order.sort(key=lambda x: x[1])
@@ -159,15 +163,33 @@ class EncoderRecord:
             pl.col(f).map_dict(d) for f,d in zip(self.features, self.mappings)
         )
 
-@dataclass 
+
 class TransformationResult: # It is a dataclass just for convenience.
-    transformed: pl.DataFrame
-    mapping: TransformationRecord
+
+    def __init__(self, transformed:pl.DataFrame, mapping: TransformationRecord):
+        self.transformed = transformed
+        self.mapping = mapping
+        
     def __iter__(self) -> Iterable[Tuple[pl.DataFrame, TransformationRecord]]:
         return iter((self.transformed, self.mapping))
     
     def materialize(self) -> pl.DataFrame | str:
         return self.mapping.materialize()
+
+
+def check_columns_type(df:pl.DataFrame, cols:list[str]) -> str:
+    types = set()
+    temp = df.select(cols)
+    for t in temp.dtypes:
+        types.add(dtype_mapping(t))
+    
+    if len(types) > 1:
+        return "|".join(types)
+    elif len(types) == 1:
+        return types.pop()
+    else:
+        return "empty"
+
 
 def impute(df:pl.DataFrame
     , cols:list[str]
@@ -222,6 +244,9 @@ def scale(df:pl.DataFrame
             const: only uses this value if strategy = ImputationStartegy.CONST
     
     '''
+    types = check_columns_type(df, cols)
+    if types != "numeric":
+        raise ValueError(f"Scaling can only be used on numeric columns, not {types} types.")
     
     if strategy == ScalingStrategy.NORMALIZE:
         all_means = df[cols].mean().to_numpy().ravel()
@@ -273,9 +298,13 @@ def one_hot_encode(df:pl.DataFrame, cols:Optional[list[str]]=None, separator:str
     # This is enforced because we want to be able to extract separator from EncoderRecord
     if len(separator) != 1:
         raise ValueError(f"Separator must be a single character for the system to work, not {separator}")
+    
 
     str_cols = []
     if isinstance(cols, list):
+        types = check_columns_type(df, cols)
+        if types != "string":
+            raise ValueError(f"One-hot encoding can only be used on string columns, not {types} types.")
         str_cols.extend(cols)
     else:
         str_cols = get_string_cols(df)
@@ -328,6 +357,9 @@ def percentile_encode(df:pl.DataFrame
     num_list:list[str] = []
     exclude_list:list[str] = [] if exclude is None else exclude
     if isinstance(cols, list):
+        types = check_columns_type(df, cols)
+        if types != "numeric":
+            raise ValueError(f"Percentile encoding can only be used on numeric columns, not {types} types.")
         num_list.extend(cols)
     else:
         num_list.extend(get_numeric_cols(df, exclude=exclude_list))
@@ -498,6 +530,9 @@ def ordinal_auto_encode(df:pl.DataFrame
     '''
     ordinal_list:list[str] = []
     if isinstance(cols, list):
+        types = check_columns_type(df, cols)
+        if types != "string":
+            raise ValueError(f"Ordinal encoding can only be used on string columns, not {types} types.")
         ordinal_list.extend(cols)
     else:
         ordinal_list.extend(get_string_cols(df, exclude=exclude))
@@ -569,6 +604,9 @@ def smooth_target_encode(df:pl.DataFrame, target:str
     '''
     str_cols = []
     if isinstance(cols, list):
+        types = check_columns_type(df, cols)
+        if types != "string":
+            raise ValueError(f"Target encoding can only be used on string columns, not {types} types.")
         str_cols.extend(cols)
     else:
         str_cols = get_string_cols(df)
