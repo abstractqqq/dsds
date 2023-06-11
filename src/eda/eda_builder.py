@@ -29,6 +29,7 @@ import pandas as pd
 from typing import ParamSpec, Self, TypeVar, Optional, Any, Callable, Iterable
 from enum import Enum
 from pathlib import Path
+from time import perf_counter
 import orjson
 import logging
 import importlib
@@ -70,14 +71,17 @@ class BuiltinExecutions(Enum):
 @dataclass
 class ExecStep():
     name:str
-    module:str|Path|None
+    module:str|Path
     desc:str = ""
     args:Optional[dict[str, Any]] = None # None if it is record.
     is_transform:bool = False
     # Is this a transfromation call? 
     # If so, the output is expected to be of type TransformationResult.
     # If not, the output is expected to be of type pl.DataFrame.
-    encoder_rec: Optional[TransformationRecord] = None # Will only be not none in blueprints.
+
+    transform_name:Optional[str] = None # name of transformation
+    transform_module:Optional[str] = None # module where this transformation belongs to
+    transform_record: Optional[TransformationRecord] = None # Will only be Not none in blueprints.
     is_custom:bool = False 
 
     def get_args(self) -> str:
@@ -99,7 +103,7 @@ class ExecStep():
 class ExecPlan():
     steps:list[ExecStep]
 
-    def __iter__(self) -> Iterable:
+    def __iter__(self) -> Iterable[ExecStep]:
         return iter(self.steps)
 
     def __str__(self) -> str:
@@ -112,9 +116,6 @@ class ExecPlan():
             return text
         else:
             return "No step has been set."
-    
-    def __repr__(self):
-        print(str(self))
         
     def __len__(self) -> int:
         return len(self.steps)
@@ -154,7 +155,7 @@ class ExecPlan():
 def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
     return df.select(cols)
 
-class TransformationBuilder:
+class DataBuilder:
 
     def __init__(self, target:str, project_name:str="my_project"):
         if target == "":
@@ -171,10 +172,9 @@ class TransformationBuilder:
     
     def __str__(self) -> str:
         if not self._execution_plan.is_empty():
-            text = f"Project name: {self.project_name}"
-            f"\nTotal steps: {len(self)} | Ready to build: {self._is_ready()} | Is built: {self._built}\n"
+            text = f"Project name: {self.project_name}\nTotal steps: {len(self)} | Ready to build: {self._is_ready()} |"
             if self.target != "":
-                text += f"Target variable: {self.target}"
+                text += f" Target variable: {self.target}"
             text += "\n"
             text += str(self._execution_plan)
             return text
@@ -214,11 +214,6 @@ class TransformationBuilder:
 
     ### End of project meta data section
     
-    ### IO Section 
-    def from_blueprint(self) -> Self:
-        pass
-
-    ### End of IO Section 
     ### Column removal section
     def set_null_removal(self, threshold:float) -> Self:
         if threshold > 1 or threshold <= 0:
@@ -358,7 +353,8 @@ class TransformationBuilder:
             self._execution_plan.add_step(
                 func = smooth_target_encode,
                 desc = BuiltinExecutions.TARGET_ENCODE.value,
-                args = {"target":self.target, "cols": cols, "min_samples_leaf":min_samples_leaf, "smoothing":smoothing},  # noqa: E501
+                args = {"target":self.target, "cols": cols, "min_samples_leaf":min_samples_leaf
+                        , "smoothing":smoothing},
                 is_transform = True
             )
             return self
@@ -381,7 +377,7 @@ class TransformationBuilder:
         return self
     
     def set_percentile_encoding(self, cols:list[str]) -> Self:
-        
+
         self._execution_plan.add_step(
             func = percentile_encode,
             desc = BuiltinExecutions.PERCENTILE_ENCODE.value,
@@ -426,7 +422,6 @@ class TransformationBuilder:
         
         '''
 
-
         if isinstance(df, pd.DataFrame):
             logger.warning("Found input to be a Pandas dataframe. Turning it into a Polars dataframe.")
             try:
@@ -437,9 +432,13 @@ class TransformationBuilder:
             input_df:pl.DataFrame = df
         
         logger.info(f"Starting to build. Total steps: {len(self._execution_plan)}.")
-        
         if self.target not in input_df.columns:
             raise ValueError(f"The target {self.target} is not found in input dataframe's columns.")
+        
+        if self._built:
+            logger.warning("The DataBuilder is built once already. It is not intended to build again. "
+                           "To avoid unexpected behavior, make sure the new pipeline is constructed after calling "
+                           ".clear().")
         
         i = 0
         n = len(self._execution_plan)
@@ -447,7 +446,9 @@ class TransformationBuilder:
         while not self._execution_plan.is_empty():
             i += 1
             step = self._execution_plan.popleft()
-            logger.info(f"|{i}/{n}|: Step: {step.name}")
+            logger.info(f"|{i}/{n}|: Executed Step: {step.name} | is_transform: {step.is_transform}")
+            start = perf_counter()
+            success = True
             if step.is_transform: # Essentially the fit step.
                 transf:Callable[[pl.DataFrame, T], TransformationResult] = getattr(importlib.import_module(step.module)
                                                                                    , step.name)
@@ -457,9 +458,13 @@ class TransformationBuilder:
                 input_df = transf
                 new_step = ExecStep(
                     name = step.name,
-                    module = None,
+                    module = "N/A",
+                    desc = step.desc, # 
+                    # args = step.args, # don't need this when applying
                     is_transform = True,
-                    encoder_rec = rec,
+                    transform_name = type(rec).__name__,
+                    transform_module = rec.__module__,
+                    transform_record = rec,
                     is_custom = step.is_custom
                 )
                 self._blueprint.add(new_step)
@@ -469,13 +474,52 @@ class TransformationBuilder:
                 input_df = apply_func(input_df, **step.args)
                 self._blueprint.add(step)
 
+            end = perf_counter()
+            logger.info(f"|{i}/{n}|: Finished in {end-start:.2f}s | Status: {success}")
+
         logger.info("Build success. A blueprint has been built and can be viewed by calling .blueprint(), "
                     "and can be saved as a json by calling .write()")
         self._built = True
         return input_df
+    
+    def apply(self, df:pl.DataFrame|pd.DataFrame) -> pl.DataFrame:
+        if not self._built:
+            raise ValueError("The builder must have a valid blueprint before applying it to new datasets.")
+        
+        if isinstance(df, pd.DataFrame):
+            logger.warning("Found input to be a Pandas dataframe. Turning it into a Polars dataframe.")
+            try:
+                input_df:pl.DataFrame = pl.from_pandas(df)
+            except Exception as e:
+                logger.error(e)
+        else:
+            input_df:pl.DataFrame = df
 
-    def blueprint(self) -> str:
-        return str(self._blueprint)
+        n = len(self._blueprint)
+        step:ExecStep
+        for i, step in enumerate(self._blueprint):
+            logger.info(f"|{i+1}/{n}|: Performing Step: {step.name} | is_transform: {step.is_transform}")
+            start = perf_counter()
+            success = True
+            if step.is_transform:
+                try:
+                    rec:TransformationRecord = step.transform_record
+                    input_df = rec.transform(input_df)
+                except Exception as e:
+                    success = False
+                    logger.error(e)
+            else:
+                apply_func:Callable[[pl.DataFrame, T], pl.DataFrame] = getattr(importlib.import_module(step.module)
+                                                                               , step.name)
+                input_df = apply_func(input_df, **step.args)
+
+            end = perf_counter()
+            logger.info(f"|{i+1}/{n}|: Finished in {end-start:.2f}s | Success: {success}")
+        
+        return input_df
+
+    def blueprint(self):
+        return print(self._blueprint)
         
     def write(self, name:str="") -> None:
         if self._blueprint.is_empty():
@@ -484,8 +528,8 @@ class TransformationBuilder:
 
         directory = "./blueprints/"
         if name == "":
-            logger.info("No name is specified, using project name as default.")
             name += self.project_name + ".json"
+            logger.info(f"No name is specified, using project name ({name}) as default.")
         else:
             if not name.endswith(".json"):
                 name += ".json"
@@ -493,13 +537,48 @@ class TransformationBuilder:
         if not os.path.isdir(directory):
             logger.info("Local ./blueprints/ directory is not found. It will be created.")
             os.mkdir(directory)
-
         try:
-            data = orjson.dumps(self._blueprint, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS)
-            with open(directory+name, "wb") as f:
+            data = orjson.dumps(self._blueprint, option=orjson.OPT_NON_STR_KEYS|orjson.OPT_SERIALIZE_NUMPY)
+            destination = directory+name
+            with open(destination, "wb") as f:
                 f.write(data)
+
+            logger.info(f"Successfully saved to {destination}.")
         except Exception as e:
             logger.error(e)
+
+    def from_blueprint(self, path:str|Path):
+        logger.info("Reading from a blueprint. The builder will reset itself.")
+        self.clear()
+        try:
+            f = open(path, "rb")
+            data = orjson.loads(f.read())
+            f.close()
+            steps:list[dict[str, Any]] = data["steps"]
+            for s in steps:
+                if s["is_transform"]: # Need to recreate TransformRecord objects from dict
+                    name = s.get("transform_name", None)
+                    module = s.get("transform_module", None)
+                    record = s.get("transform_record", None)
+                    if (name is not None) or (module is not None) or (record is not None):
+                        if (name is None) or (module is None) or (record is None):
+                            raise ValueError(f"Something went wrong with the transform: {s['name']}. "
+                                             "All transform_name, transform_module and transform_record fields "
+                                             "must not be null.")
+                    # Get the class the TransformationRecord belongs to.
+                    c = getattr(importlib.import_module(module), name)
+                    # Create an instance of c
+                    rec = c(**record)
+                    s["transform_record"] = rec # Make transform_record to be a real TransformRecord object.
+
+                self._blueprint.add(ExecStep(**s))
+
+            self._built = True
+            logger.info("Successfully read from a blueprint.")
+        except Exception as e:
+            logger.error(e)
+
+    ### End of IO Section 
 
 
 

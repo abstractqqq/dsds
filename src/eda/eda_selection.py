@@ -2,17 +2,21 @@ import os
 import polars as pl
 import numpy as np
 from enum import Enum
-from typing import Final, Any
+from typing import Final, Any, Optional
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .eda_prescreen import get_string_cols, get_numeric_cols, get_unique_count
+from .eda_prescreen import discrete_inferral, get_numeric_cols, get_unique_count
 from tqdm import tqdm
 
 CPU_COUNT:Final[int] = os.cpu_count()
 # Some will return dataframe as output, some list of str
 
-def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.DataFrame:
+def _conditional_entropy(df:pl.DataFrame
+    , target:str
+    , predictive:str
+) -> pl.DataFrame:
+    
     temp = df.groupby(predictive).agg(
         pl.count().alias("prob(predictive)")
     ).with_columns(
@@ -31,9 +35,11 @@ def _conditional_entropy(df:pl.DataFrame, target:str, predictive:str) -> pl.Data
     ))
 
 # NEED REVIEW OF CORRECTNESS
-def naive_sample_ig(df:pl.DataFrame, target:str
-    , discrete_cols:list[str] = None
-    , n_threads:int = CPU_COUNT) -> pl.DataFrame:
+def naive_sample_ig(df:pl.DataFrame
+    , target:str
+    , discrete_cols:Optional[list[str]] = None
+    , n_threads:int = CPU_COUNT
+) -> pl.DataFrame:
     '''
         The entropy here is "sample entropy". This is not a good estimation of real entropy of the target variable.
         Thus I do not recommend using this method for now. That said, this computation computes sample entropy and the the sample
@@ -62,7 +68,7 @@ def naive_sample_ig(df:pl.DataFrame, target:str
     if isinstance(discrete_cols, list):
         discretes.extend(discrete_cols)
     else: # If discrete_cols is not passed, infer it
-        discretes.extend(get_string_cols(df, exclude=[target]))
+        discretes.extend(discrete_inferral(df, exclude=[target]))
     
     # Compute target entropy. This only needs to be done once.
     target_entropy = df.groupby(target).agg(
@@ -74,7 +80,7 @@ def naive_sample_ig(df:pl.DataFrame, target:str
         (pl.col("n_unique") / len(df)).alias("unique_pct")
     ).rename({"column":"feature"})
 
-    with ThreadPoolExecutor(max_workers=n_threads) as ex:
+    with ThreadPoolExecutor(max_workers=n_threads) as ex: # 10% gain actually. Small but ok.
         futures = (ex.submit(_conditional_entropy, df, target, predictive) for predictive in discretes)
         with tqdm(total=len(discretes)) as pbar:
             for res in as_completed(futures):
@@ -100,7 +106,8 @@ def mutual_info(df:pl.DataFrame
     , target:str
     , n_neighbors:int=3
     , random_state:int=42
-    , n_threads:int=CPU_COUNT) -> pl.DataFrame:
+    , n_threads:int=CPU_COUNT
+) -> pl.DataFrame:
     
     '''Approximates mutual information (information gain) between the continuous variables and the target.
 
@@ -167,7 +174,10 @@ def mutual_info(df:pl.DataFrame
     output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
     return output
 
-def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
+def _f_score(df:pl.DataFrame
+    , target:str
+    , num_list:list[str]
+) -> np.ndarray:
     '''
         Same as f_classification, but returns a numpy array of f scores only. 
         This is used in algorithms like MRMR for easier-to-work-with output datatype.
@@ -200,8 +210,8 @@ def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
 
     # Get in class average and var
     ref = df.groupby(target).agg(step_one_expr)
-    n_samples = np.float64(len(df))
-    n_classes = np.float64(len(ref))
+    n_samples = len(df)
+    n_classes = len(ref)
     df_btw_class = n_classes - 1 
     df_in_class = n_samples - n_classes
     
@@ -210,7 +220,10 @@ def _f_score(df:pl.DataFrame, target:str, num_list:list[str]) -> np.ndarray:
     
     return f_score
 
-def f_classification(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl.DataFrame:
+def f_classification(df:pl.DataFrame
+    , target:str
+    , num_cols:Optional[list[str]]=None
+) -> pl.DataFrame:
     '''
         Computes ANOVA one way test, the f value/score and the p value. 
         Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
@@ -273,17 +286,31 @@ def f_classification(df:pl.DataFrame, target:str, num_cols:list[str]=None) -> pl
 
 
 class MRMR_STRATEGY(Enum):
-    F_SCORE = "F-score"
-    RF = "Random Forest"
-    XGB = "XGBoost"
-    MIS = "Mutual Information Score"
+    F_SCORE = "F-SCORE"
+    RF = "RF"
+    XGB = "XGB"
+    MIS = "MIS"
 
-def _mrmr_underlying_score(df:pl.DataFrame, target:str
+    def info(self) -> str:
+        if self.name == self.F_SCORE:
+            return "F Score"
+        elif self.name == self.RF:
+            return "Random Forest"
+        elif self.name == self.XGB:
+            return "XGBoost"
+        elif self.name == self.MIS:
+            return "Mutual Information Score"
+        else:
+            return "Unknown"
+
+def _mrmr_underlying_score(df:pl.DataFrame
+    , target:str
     , num_list:list[str]
-    , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
-    , params:dict[str,Any]={}) -> np.ndarray:
+    , strategy:MRMR_STRATEGY
+    , params:dict[str,Any]
+) -> np.ndarray:
     
-    print(f"Running {strategy.value} to determine feature relevance...")
+    print(f"Running {strategy.info()} to determine feature relevance...")
     if strategy == MRMR_STRATEGY.F_SCORE:
         scores = _f_score(df, target, num_list)
     elif strategy == MRMR_STRATEGY.RF:
@@ -306,10 +333,12 @@ def _mrmr_underlying_score(df:pl.DataFrame, target:str
     return scores
 
 def mrmr(df:pl.DataFrame, target:str
-    , k:int, num_cols:list[str]=None
-    , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
-    , params:dict[str,Any]={}
-    , low_memory:bool=False) -> list[str]:
+    , k:int
+    , num_cols:Optional[list[str]] = None
+    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
+    , params:Optional[dict[str,Any]] = None
+    , low_memory:bool=False
+) -> list[str]:
     '''
         Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
         See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
@@ -337,12 +366,18 @@ def mrmr(df:pl.DataFrame, target:str
     else:
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
-    scores = _mrmr_underlying_score(df, target=target, num_list=num_list, strategy=strategy, params=params)
+    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    scores = _mrmr_underlying_score(df
+                                    , target = target
+                                    , num_list = num_list
+                                    , strategy = s
+                                    , params = {} if params is None else params
+                                    )
 
     # FYI. This part can be removed.
-    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
-                    .top_k(by=str(strategy), k=5)
-    print(f"Top 5 feature importance by {strategy} is:\n{importance}")
+    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(s)])\
+                    .top_k(by=str(s), k=5)
+    print(f"Top 5 feature importance by {s} is:\n{importance}")
 
     if low_memory:
         df_local = df.select(num_list)
@@ -480,12 +515,14 @@ def mrmr(df:pl.DataFrame, target:str
 #     print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
 #     return selected
 
-def knock_out_mrmr(df:pl.DataFrame, target:str
+def knock_out_mrmr(df:pl.DataFrame
+    , target:str
     , k:int 
-    , num_cols:list[str]=None
-    , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
+    , num_cols:Optional[list[str]] = None
+    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
     , corr_threshold:float = 0.7
-    , params:dict[str,Any]={}) -> list[str]:
+    , params:Optional[dict[str,Any]] = None
+) -> list[str]:
 
     '''
         Essentially the same as vanilla MRMR. Instead of using sum(abs(corr)) to "weigh down" correlated 
@@ -501,11 +538,16 @@ def knock_out_mrmr(df:pl.DataFrame, target:str
     else:
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
-    scores = _mrmr_underlying_score(df, target=target, num_list=num_list, strategy=strategy, params=params)
+    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    scores = _mrmr_underlying_score(df
+                                    , target = target
+                                    , num_list = num_list
+                                    , strategy = s
+                                    , params = {} if params is None else params)
     # FYI. This part can be removed.
-    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
-                    .top_k(by=str(strategy), k=5)
-    print(f"Top 5 feature importance by {strategy} is:\n{importance}")
+    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(s)])\
+                    .top_k(by=str(s), k=5)
+    print(f"Top 5 feature importance by {s} is:\n{importance}")
     # true if low correlation, false if high
 
     # Set up

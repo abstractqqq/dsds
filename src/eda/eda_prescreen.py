@@ -1,7 +1,7 @@
 import polars as pl 
 import re, logging  # noqa: E401
 from datetime import datetime 
-from typing import Final, Any
+from typing import Final, Any, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -105,10 +105,6 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
                         , 'unique_pct','mean','std','min','max','25%'
                         , 'median','75%', "skew", "kurtosis",'dtype'))
 
-# Discrete = string or column has < threshold% unique values.
-def discrete_inferral():
-    pass
-
 # Check if column follows the normal distribution. Hmm...
 def normal_inferral():
     pass
@@ -203,6 +199,23 @@ def unique_removal(df:pl.DataFrame, threshold:float=0.9) -> pl.DataFrame:
                 f" {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return df.drop(remove_cols)
+
+# Discrete = string or column that has < max_n_unique count of unique values or having unique_pct < threshold.
+# Is this a good definition?
+def discrete_inferral(df:pl.DataFrame
+    , threshold:float=0.1
+    , max_n_unique:int=100
+    , exclude:Optional[list[str]]=None) -> list[str]:
+    '''
+        A column that satisfies either n_unique < max_n_unique or unique_pct < threshold 
+        will be considered discrete.
+    '''
+    exclude_list = [] if exclude is None else exclude
+    return get_unique_count(df).filter(
+        ((pl.col("n_unique") < max_n_unique) | (pl.col("n_unique")/len(df) < threshold)) 
+        & (~pl.col("column").is_in(exclude_list)) # is not in
+    ).get_column("column").to_list()
+
 
 def constant_inferral(df:pl.DataFrame, include_null:bool=True) -> list[str]:
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)

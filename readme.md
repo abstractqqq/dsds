@@ -1,21 +1,23 @@
-# Goals of this Data Analysis Toolkit
+# Welcome to the Dark Side of Data Science
 
-Still in early development. Name of package undecided yet.
+Still in early development. Name of package undecided yet, well, probably it will be called the DarkSide or DSDS (Dark Side for Data Science). I choose DarkSide because data pipelines are like real life pipelines, buried under the ground. It is the most foundational work that is also the most under-appreciated component of any data science project. Feature selection is often considered a dark art, too. So the name DarkSide/dsds really makes sense to me.
 
-This library aims to be a lightweight altenative to Scikit-learn (Sklearn), especially in the data preparation stage, e.g. feature screening/selection, basic transformations (scale, impute, one-hot encode, target encode, etc.) Its goal is to replace sklearn's pipeline up until model building. Its focuses are on 
+This library aims to be a lightweight altenative to Scikit-learn (Sklearn), especially in the data preparation stage, e.g. feature screening/selection, basic transformations (scale, impute, one-hot encode, target encode, etc.) Its goal is to replace sklearn's pipeline. (Everything except the models are rewritten. The current dataset builder does not have model steps yet.). Its focuses are on:
 
 1. Being more dataframe centric in design. Dataframe in, dataframe out, and try not to convert or copy to NumPy unless necessary, or provide low-memory options.
 
-2. Performance. Many algorithms are 3-5x faster, 10x if you have more cores on your computer, than Scikit-learn's implementation.
+2. Performance. Most algorithms are rewritten and are 3-5x faster, 10x if you have more cores on your computer, than Scikit-learn's implementation.
 
-3. Simplicity and consistency. This library should not be everything. It should stick to the responsibilities outlined above. It shouldn't become a visualization library. It shouldn't overload users with millions of input options, most of which won't be used anyway and which really adds little but side effects to the program.
+3. Simplicity and consistency. This library should not be everything. It should stick to the responsibilities outlined above. It shouldn't become a visualization library. It shouldn't overload users with millions of input options, most of which won't be used anyway and which really adds little but side effects to the program. It shouldn't be a package with models. (We might add some wrappers to Scipy for EDA). This package helps you build and manage the pipeline, from feature selection to basic transformations, and provides you with a powerful builder to build your pipe!
 
-4. Be more developer friendly by introducing useful types and data structures in the backend.
+4. Provide more visibility into data pipelines without all the pomp of a web UI. Make data pipelines editable outside Python.
+
+5. Be more developer friendly by introducing useful types and data structures in the backend.
 
 To this end, I believe the old "stack", Pandas + Sklearn + some NumPy, is inadequate, mostly because
 
 1. Their lack of parallelism
-2. Pandas's "object" types and slow performance.
+2. Pandas's "object" types making things difficult and its slow performance.
 3. Lack of types enforcement, leading to infinitely many quality checks. Lack of types describing outputs.
 
 Dask and PySpark are distributed systems and so are their own universe. But on a single machine, Polars has proven to be more performant and less memory intensive than both of them.
@@ -40,7 +42,7 @@ The point of feature prescreening is to reduce the number of feature to be analy
 
 1. Infer duplicate columns, string columns hiding as dates, distribution of data in column.
 
-2. Remove based on the above characteristics.
+2. Remove based on the above (less trivial) characteristics.
 
 ## EDA Transformation
 
@@ -70,7 +72,7 @@ Feature selection done fast. May need more optimization.
     
     See [here](https://saylordotorg.github.io/text_introductory-statistics/s15-04-f-tests-in-one-way-anova.html).
 
-2. Basic MRMR Algorithm with many options: mrmr, knock-out-mrmr.
+2. Basic MRMR Algorithm with many variations: mrmr, knock-out-mrmr.
 
     See [here](https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b)
 
@@ -78,7 +80,9 @@ Feature selection done fast. May need more optimization.
 
 A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. It is essentially like Sklearn's pipeline, but less object dependent and easier to serialize and edit.
 
-1. In progress.
+1. Connect selections into builder, thus incorporating feature selection into the pipeline.
+
+2. Enable logging so that it actually writes to a log file.
 
 ## EDA Misc
 
@@ -100,14 +104,14 @@ Note: nltk, scikit-learn, and xgboost are needed for full functionalities.
 
 ## General Considerations and Guidelines Before Making Contributions:
 
-1. If you can read the data into memory, your code should process it faster than Scikit-learn and Pandas. "Abuse" Polars' multi-core capabilities as much as possible before sending data to NumPy. (If you write it in Rust and want a Python wrapper, let me know!)
+0. All guidelines below can be discussed and are merely guidelines which may be challenged.
 
-2. Provide proof that the algorithm generates exact/very close results as Scikit-learn's implementation.
+1. If you can read the data into memory, your code should process it faster than Scikit-learn and Pandas. "Abuse" Polars' multi-core capabilities as much as possible before sending data to NumPy.
 
-3. Try not to include other packages than NumPy, Scipy and Polars. The preferred serialization strategy is dataclasses + Orjson, not pickling.
+2. Provide proof that the algorithm generates exact/very close results to Scikit-learn's implementation.
+
+3. Try not to include other core packages. NumPy, Scipy and Polars should be all. The preferred serialization strategy is dataclasses + Orjson, not pickling. Avoid nested dataclasses.
 
 4. Fucntion annotaions are required and functions should have one output type only.
 
 5. Obscure algorithms that do not have a lot of usages should not be included in the package. The package is designed in such a way that it can be customized (A lot more work to be done here.)
-
-6. All guidelines above can be discussed.

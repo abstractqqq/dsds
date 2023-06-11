@@ -8,7 +8,13 @@ import numpy as np
 from enum import Enum
 from typing import Any, Tuple, Iterable, Optional
 from dataclasses import dataclass
-from .eda_prescreen import get_bool_cols, get_numeric_cols, get_string_cols, get_unique_count, dtype_mapping
+from .eda_prescreen import (
+    get_bool_cols
+    , get_numeric_cols
+    , get_string_cols
+    , get_unique_count
+    , dtype_mapping
+)
 
 # ADD A COLUMN TYPE SAFE GUARD
 
@@ -27,7 +33,7 @@ class ScalingStrategy(Enum):
 
 class EncodingStrategy(Enum):
     ORDINAL = "ORDINAL"
-    ORDINAL_AUTO = "ORDINAL_AUTO"
+    ORDINAL_AUTO = "ORDINAL-AUTO"
     TARGET = "TARGET"
     ONE_HOT = "ONE-HOT"
     BINARY = "BINARY"
@@ -35,7 +41,7 @@ class EncodingStrategy(Enum):
 
 # It is highly recommended that this should be a dataclass and serializable by orjson.
 class TransformationRecord(ABC):
-    
+
     @abstractmethod
     def materialize(self) -> pl.DataFrame | str:
         # A pretty way to print or visualize itself, 
@@ -51,7 +57,12 @@ class TransformationRecord(ABC):
 class ImputationRecord(TransformationRecord):
     features:list[str]
     strategy:ImputationStartegy
-    values:list[float] | np.ndarray
+    values:list[float]|np.ndarray
+
+    def __init__(self, features:list[str], strategy:EncodingStrategy|str, values:list[float]|np.ndarray):
+        self.features = features
+        self.strategy = ImputationStartegy(strategy) if isinstance(strategy, str) else strategy
+        self.values = values
 
     def __iter__(self) -> Iterable:
         return zip(self.features, [self.strategy]*len(self.features), self.values)
@@ -73,6 +84,11 @@ class ScalingRecord(TransformationRecord):
     strategy:ScalingStrategy
     values:list[dict[str, float]]
 
+    def __init__(self, features:list[str], strategy:EncodingStrategy|str, values:list[dict[str, float]]):
+        self.features = features
+        self.strategy = ScalingStrategy(strategy) if isinstance(strategy, str) else strategy
+        self.values = values
+
     def __iter__(self) -> Iterable:
         return zip(self.features, [self.strategy]*len(self.features), self.values)
     
@@ -85,7 +101,7 @@ class ScalingRecord(TransformationRecord):
         return pl.from_records(list(presentable), schema=["feature", "scaling_strategy", "scaling_meta_data"])
     
     def transform(self, df:pl.DataFrame) -> pl.DataFrame:
-    
+
         if self.strategy == ScalingStrategy.NORMALIZE:
             return df.with_columns(
                 (pl.col(f)-pl.lit(v["mean"]))/pl.lit(v["std"]) for f, v in zip(self.features, self.values)
@@ -105,7 +121,12 @@ class ScalingRecord(TransformationRecord):
 class EncoderRecord:
     features:list[str]
     strategy:EncodingStrategy
-    mappings:list[dict[Any, Any]]
+    mappings:list[dict]
+
+    def __init__(self, features:list[str], strategy:EncodingStrategy|str, mappings:list[dict[Any, Any]]):
+        self.features = features
+        self.strategy = EncodingStrategy(strategy) if isinstance(strategy, str) else strategy
+        self.mappings = mappings
 
     def __iter__(self) -> Iterable:
         return zip(self.features, [self.strategy]*len(self.features), self.mappings)
@@ -118,10 +139,15 @@ class EncoderRecord:
         presentable =  zip(self.features, [self.strategy]*len(self.features), vals)
         return pl.from_records(list(presentable), schema=["feature", "encoding_strategy", "maps"])
     
-    def _find_first_index_of_smaller(self, u:float, order:list[Tuple[float, int]]) -> int:
-        order = order.sort(key=lambda x: x[1])
+    ###
+    # NEED TO FIND WAYS TO OPTIMIZE ENCODINGS FOR Numeric values...
+    ###
+
+    @staticmethod
+    def _find_first_index_of_smaller(u:float, order:list[Tuple[str, int]]) -> int:
+        order.sort(key=lambda x: x[1])
         for v, i in order: # order looks like [(18.21, 1), (22.32, 2), ...]
-            if u < v:
+            if u <= float(v):
                 return i
         # percentile max out at 100. It is possible that in future data, there will be some
         # that is > current max. So assign all that to 101
@@ -132,7 +158,7 @@ class EncoderRecord:
         if self.strategy == EncodingStrategy.PERCENTILE:
             for i,f in enumerate(self.features):
                 # Construct a new series for each column. SLOW SLOW SLOW...
-                order = list(self.mappings[i].items())
+                order = list(self.mappings[i].items()) # JSON KEY IS ALWAYS A STR
                 percentiles = []
                 already_mapped = {}
                 for v in df.get_column(f):
@@ -146,7 +172,7 @@ class EncoderRecord:
                             already_mapped[v] = percentile
                             percentiles.append(percentile)
                 
-                new_f = pl.Series(f, percentiles)
+                new_f = pl.Series(f, percentiles).cast(pl.UInt8)
                 df.replace_at_idx(df.find_idx_by_name(f), new_f)
             return df
         
@@ -162,7 +188,6 @@ class EncoderRecord:
         return df.with_columns(
             pl.col(f).map_dict(d) for f,d in zip(self.features, self.mappings)
         )
-
 
 class TransformationResult: # It is a dataclass just for convenience.
 
@@ -193,8 +218,9 @@ def check_columns_type(df:pl.DataFrame, cols:list[str]) -> str:
 
 def impute(df:pl.DataFrame
     , cols:list[str]
-    , strategy:ImputationStartegy=ImputationStartegy.MEDIAN
-    , const:int = 1) -> TransformationResult:
+    , strategy:ImputationStartegy|str = ImputationStartegy.MEDIAN
+    , const:int = 1
+) -> TransformationResult:
     
     '''
         Arguments:
@@ -205,28 +231,29 @@ def impute(df:pl.DataFrame
     
     '''
 
+    s = ImputationStartegy(strategy.replace("-","_")) if isinstance(strategy, str) else strategy
     # Given Strategy, define expressions
-    if strategy == ImputationStartegy.MEDIAN:
+    if s == ImputationStartegy.MEDIAN:
         all_medians = df[cols].median().to_numpy().ravel()
         exprs = (pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols))
         impute_record = ImputationRecord(cols, strategy, all_medians)
 
-    elif strategy == ImputationStartegy.MEAN:
+    elif s == ImputationStartegy.MEAN:
         all_means = df[cols].mean().to_numpy().ravel()
         exprs = (pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols))
         impute_record = ImputationRecord(cols, strategy, all_means)
 
-    elif strategy == ImputationStartegy.CONST:
+    elif s == ImputationStartegy.CONST:
         exprs = (pl.col(c).fill_null(const) for c in cols)
-        impute_record = ImputationRecord(cols, strategy, [const]*len(cols))
+        impute_record = ImputationRecord(cols, strategy, np.full(shape=len(cols), fill_value=const))
 
-    elif strategy == ImputationStartegy.MODE:
+    elif s == ImputationStartegy.MODE:
         all_modes = df.select(pl.col(c).mode() for c in cols).to_numpy().ravel()
         exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols))
         impute_record = ImputationRecord(cols, strategy, all_modes)
 
     else:
-        raise ValueError(f"Unknown imputation strategy: {strategy}")
+        raise ValueError(f"Unknown imputation strategy: {s}")
 
     transformed = df.with_columns(exprs)
     return TransformationResult(transformed=transformed, mapping=impute_record)
@@ -248,21 +275,22 @@ def scale(df:pl.DataFrame
     if types != "numeric":
         raise ValueError(f"Scaling can only be used on numeric columns, not {types} types.")
     
-    if strategy == ScalingStrategy.NORMALIZE:
+    s = ScalingStrategy(strategy.replace("-","_")) if isinstance(strategy, str) else strategy
+    if s == ScalingStrategy.NORMALIZE:
         all_means = df[cols].mean().to_numpy().ravel()
         all_stds = df[cols].std().to_numpy().ravel()
         exprs = (((pl.col(c) - pl.lit(all_means[i]))/(pl.lit(all_stds[i])) for i,c in enumerate(cols)))
         scale_data = [{"mean":m, "std":s} for m,s in zip(all_means, all_stds)]
         scaling_records = ScalingRecord(cols, strategy, scale_data)
 
-    elif strategy == ScalingStrategy.MIN_MAX:
+    elif s == ScalingStrategy.MIN_MAX:
         all_mins = df[cols].min().to_numpy().ravel()
         all_maxs = df[cols].max().to_numpy().ravel()
         exprs = ((pl.col(c) - pl.lit(all_mins[i]))/(pl.lit(all_maxs[i] - all_mins[i])) for i,c in enumerate(cols))
         scale_data = [{"min":m, "max":mm} for m, mm in zip(all_mins, all_maxs)]
         scaling_records = ScalingRecord(cols, strategy, scale_data)
 
-    elif strategy == ScalingStrategy.CONST:
+    elif s == ScalingStrategy.CONST:
         exprs = (pl.col(c)/const for c in cols)
         scale_data = [{"const":const} for _ in cols]
         scaling_records = ScalingRecord(cols, strategy, scale_data)
@@ -417,29 +445,28 @@ def percentile_encode(df:pl.DataFrame
     return TransformationResult(transformed=res, mapping=encoder_rec)
 
 def binary_encode(df:pl.DataFrame
-    , cols:list[str]=None
-    , exclude:list[str]=None) -> TransformationResult:
+    , cols:Optional[list[str]]=None
+    , exclude:Optional[list[str]]=None) -> TransformationResult:
     
     '''Encode the given columns as binary values.
 
-        The goal of this function is to map binary categorical values into [0, 1], therefore reducing the amount of encoding
-        you will have to do later. This is important when you want to keep feature dimension low and when you have many binary categorical
-        variables. The values will be mapped to [0, 1] by the following rule:
+        The goal of this function is to map binary string values into [0, 1], therefore reducing the amount of encoding
+        you will have to do later. The values will be mapped to [0, 1] by the following rule:
             if value_1 < value_2, value_1 --> 0, value_2 --> 1. E.g. 'N' < 'Y' ==> 'N' --> 0 and 'Y' --> 1
         
-        In case the two distinct values are [None, value_1], and you decide to treat this variable as a binary category, then
-        None --> 0 and value_1 --> 1. (If you apply constant_removal first then this column will be seen as constant and dropped.)
+        In case the two distinct values are [None, value_1], and you decide to treat this variable as a binary category
+        , then None --> 0 and value_1 --> 1. 
         
-        Using one-hot-encoding will map binary categorical values to 2 columns (except when you specify drop_first=True in pd.get_dummies),
-        therefore introducing unnecessary dimension. So it is better to prevent it.
+        Using one-hot-encoding will map binary categorical values to 2 columns (except when you specify drop_first=True 
+        in pd.get_dummies), therefore introducing unnecessary dimension. So it is better to prevent it.
 
-        In case the distinct values the column are [null, value_1, value_2], you must first impute this column if you want this method
-        to count this as a binary column. 
+        If case the distinct values are [null, value_1, value_2], then this is not currently considered as a 
+        binary column.
 
         Arguments:
             df:
-            binary_cols: the binary_cols you wish to convert. If no input, will infer (might take time because counting unique values for each column is not cheap).
-            exclude: the columns you wish to exclude in this transformation. (Only applies if you are letting the system auto-detecting binary columns.)
+            binary_cols: the binary_cols you wish to convert. If no input, will infer.
+            exclude: the columns you wish to exclude in this transformation. 
 
         Returns: 
             (the transformed dataframe, mapping table between old values to [0,1])
@@ -451,7 +478,14 @@ def binary_encode(df:pl.DataFrame
     if isinstance(cols, list):
         binary_list.extend(cols)
     else:
-        binary_columns = get_unique_count(df).filter((pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude))).get_column("column")
+        str_cols = get_string_cols(df)
+        exclude = [] if exclude is None else exclude
+        binary_columns = get_unique_count(df)\
+            .filter( # Binary + Not Exclude + String
+                (pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude)) & (pl.col("column").is_in(str_cols))
+            ).get_column("column")
+
+        # Binary numericals are kept the way they are.
         binary_list.extend(binary_columns)     
     
     # Doing some repetitive operations here, but I am not sure how I can get all the data in one go.
@@ -469,7 +503,7 @@ def binary_encode(df:pl.DataFrame
             vals.sort()
 
         # In Python, None can be a dictionary key.
-        mappings.append({vals[0]: 0, vals[1]: 1})        
+        mappings.append({vals[0]: 0, vals[1]: 1})
         exprs.append(
             pl.when(pl.col(b).is_null()).then(0).otherwise(
                 pl.when(pl.col(b) < vals[1]).then(0).otherwise(1)
@@ -511,7 +545,8 @@ def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
 def ordinal_auto_encode(df:pl.DataFrame
     , cols:list[str]=None
     , default:int|None=None
-    , exclude:list[str]=None) -> TransformationResult:
+    , exclude:Optional[list[str]]=None
+) -> TransformationResult:
     '''
         Automatically applies ordinal encoding to the provided columns by the following logic:
             Sort the column, smallest value will be assigned to 0, second smallest will be assigned to 1...
@@ -551,7 +586,8 @@ def ordinal_auto_encode(df:pl.DataFrame
 
 def ordinal_encode(df:pl.DataFrame
     , ordinal_mapping:dict[str, dict[str,int]]
-    , default:int|None=None) -> TransformationResult:
+    , default:int|None=None
+) -> TransformationResult:
     '''
         Ordinal encode the data with given mapping.
 
@@ -583,11 +619,13 @@ def ordinal_encode(df:pl.DataFrame
     encoder_rec = EncoderRecord(features=f, strategy=EncodingStrategy.ORDINAL, mappings=all_mappings)
     return TransformationResult(transformed=res, mapping=encoder_rec)
 
-def smooth_target_encode(df:pl.DataFrame, target:str
+def smooth_target_encode(df:pl.DataFrame
+    , target:str
     , cols:list[str]
     , min_samples_leaf:int
     , smoothing:float
-    , check_binary:bool=True) -> TransformationResult:
+    , check_binary:bool=True
+) -> TransformationResult:
     
     '''Smooth target encoding for binary classification. Currently only implemented for binary target.
 
