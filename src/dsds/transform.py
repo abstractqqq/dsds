@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-import logging
-import orjson
-import polars as pl
-import numpy as np 
-from enum import Enum
-from typing import Any, Tuple, Iterable, Optional
-from dataclasses import dataclass
-from .eda_prescreen import (
+from .prescreen import (
     get_bool_cols
     , get_numeric_cols
     , get_string_cols
     , get_unique_count
     , dtype_mapping
 )
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import logging
+import orjson
+import polars as pl
+import numpy as np 
+from enum import Enum
+from typing import Any, Tuple, Iterable, Optional
 
 # ADD A COLUMN TYPE SAFE GUARD
 
@@ -122,6 +123,10 @@ class EncoderRecord:
     features:list[str]
     strategy:EncodingStrategy
     mappings:list[dict]
+
+    ### FOR str encoders, mapping looks like "dict[str, float]", except one-hot. See one-hot for more info.
+    ### For numeric encoder, like percentile encoder, the key of the mapping is of type str despite the fact that
+    ### it is a number. This is because json has to have str as keys. See percentile_encode for more info.
 
     def __init__(self, features:list[str], strategy:EncodingStrategy|str, mappings:list[dict[Any, Any]]):
         self.features = features

@@ -1,4 +1,6 @@
-# Welcome to the Dark Side of Data Science
+# Welcome to the Dark Side of Data Science (DSDS)
+
+Need to reorganize before publishing.
 
 Still in early development. Name of package undecided yet, well, probably it will be called the DarkSide or DSDS (Dark Side for Data Science). I choose DarkSide because data pipelines are like real life pipelines, buried under the ground. It is the most foundational work that is also the most under-appreciated component of any data science project. Feature selection is often considered a dark art, too. So the name DarkSide/dsds really makes sense to me.
 
@@ -78,11 +80,13 @@ Feature selection done fast. May need more optimization.
 
 ## EDA Builder
 
-A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. It is essentially like Sklearn's pipeline, but less object dependent and easier to serialize and edit.
+A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. It is essentially like Sklearn's pipeline, but less object dependent and easier to serialize and edit, and is much cleaner and follows "chain of thought".
 
-1. Connect selections into builder, thus incorporating feature selection into the pipeline.
+1. Build feature selections into builder, thus incorporating feature selection into the pipeline. This will enable "just try it" type of blind 
 
 2. Enable logging so that it actually writes to a log file.
+
+3. 
 
 ## EDA Misc
 

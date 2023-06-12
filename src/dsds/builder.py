@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .eda_prescreen import (
+from .prescreen import (
     remove_if_exists
     , regex_removal
     , var_removal
@@ -9,7 +9,7 @@ from .eda_prescreen import (
     , constant_removal
 )
 # from .eda_selection import *
-from .eda_transformations import (
+from .transform import (
     TransformationResult
     , TransformationRecord
     , ScalingStrategy
@@ -23,6 +23,7 @@ from .eda_transformations import (
     , ordinal_encode
     , ordinal_auto_encode
 )
+
 from dataclasses import dataclass
 import polars as pl
 import pandas as pd
@@ -475,7 +476,7 @@ class DataBuilder:
                 self._blueprint.add(step)
 
             end = perf_counter()
-            logger.info(f"|{i}/{n}|: Finished in {end-start:.2f}s | Status: {success}")
+            logger.info(f"|{i}/{n}|: Finished in {end-start:.2f}s | Success: {success}")
 
         logger.info("Build success. A blueprint has been built and can be viewed by calling .blueprint(), "
                     "and can be saved as a json by calling .write()")

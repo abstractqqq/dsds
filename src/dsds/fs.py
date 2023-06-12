@@ -1,3 +1,5 @@
+from .prescreen import discrete_inferral, get_numeric_cols, get_unique_count
+
 import os
 import polars as pl
 import numpy as np
@@ -6,7 +8,6 @@ from typing import Final, Any, Optional
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .eda_prescreen import discrete_inferral, get_numeric_cols, get_unique_count
 from tqdm import tqdm
 
 CPU_COUNT:Final[int] = os.cpu_count()
@@ -151,7 +152,7 @@ def mutual_info(df:pl.DataFrame
 
     estimates = []
     psi_n_and_k = psi(n) + psi(n_neighbors)
-    for col in tqdm(conti_cols):
+    for col in tqdm(conti_cols, desc = "Mutual Info"):
         c = df[col].to_numpy().reshape(-1,1)
         c = c + (1e-10 * np.mean(c) * rng.standard_normal(size=c.shape))
         radius = np.empty(n)
@@ -341,8 +342,6 @@ def mrmr(df:pl.DataFrame, target:str
 ) -> list[str]:
     '''
         Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
-        See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
-        for more information.
 
         Currently this only supports classification.
 
@@ -389,7 +388,7 @@ def mrmr(df:pl.DataFrame, target:str
     output_size = min(k, len(num_list))
     print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
     cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
-    pbar = tqdm(total=output_size)
+    pbar = tqdm(total=output_size, desc = f"MRMR, {s}")
     top_idx = np.argmax(scores)
     selected = [num_list[top_idx]]
     pbar.update(1)
