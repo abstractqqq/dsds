@@ -7,6 +7,7 @@ from .prescreen import (
     , null_removal
     , unique_removal
     , constant_removal
+    , date_removal
 )
 # from .eda_selection import *
 from .transform import (
@@ -57,6 +58,7 @@ class BuiltinExecutions(Enum):
     CONST_REMOVAL = "Remove columns that are constants."
     UNIQUE_REMOVAL = "Remove columns that are like unique identifiers, e.g. with more than {:.2f}% unique values."
     COL_REMOVAL = "Remove given if they exist in dataframe."
+    DATE_REMOVAL = "Remove columns that are inferred to be dates."
     REGX_REMOVAL = "Remove all columns whose names satisfy the regex rule {}."
     BINARY_ENCODE = "Encode given into binary [0,1] values."
     ORDINAL_ENCODE = "Encode string values of given columns into numbers with given mapping."
@@ -68,6 +70,7 @@ class BuiltinExecutions(Enum):
     IMPUTE = "Impute using specified the {} imputation method."
     CHECKPOINT = "Unavailable for now."
     SELECT = "Select only the given columns."
+    LOWER = "Lower all column names in the incoming dataframe."
 
 @dataclass
 class ExecStep():
@@ -156,6 +159,10 @@ class ExecPlan():
 def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
     return df.select(cols)
 
+def _lower_columns(df:pl.DataFrame) -> pl.DataFrame:
+    rename_dict = {c: c.lower() for c in df.columns}
+    return df.rename(rename_dict)
+
 class DataBuilder:
 
     def __init__(self, target:str, project_name:str="my_project"):
@@ -195,6 +202,14 @@ class DataBuilder:
             func = _select_cols,
             desc = BuiltinExecutions.SELECT.value,
             args = {"cols":cols}
+        )
+        return self
+    
+    def set_lower_cols(self) -> Self:
+        self._execution_plan.add_step(
+            func = _lower_columns,
+            desc = BuiltinExecutions.LOWER.value,
+            args = {}
         )
         return self
 
@@ -262,7 +277,7 @@ class DataBuilder:
         return self 
     
     def set_regex_removal(self, pat:str, lowercase:bool=False) -> Self:
-
+        '''Removes columns that satisfies the regex rule. May optionally only check on lowercased column names.'''
         description = BuiltinExecutions.REGX_REMOVAL.value.format(pat)
         if lowercase:
             description += ". Everything will be lowercased."
@@ -275,12 +290,22 @@ class DataBuilder:
         return self
     
     def set_col_removal(self, cols:list[str]) -> Self:
+        '''Removes the given columns.'''
         self._execution_plan.add_step(
             func = remove_if_exists,
             desc = BuiltinExecutions.COL_REMOVAL.value,
             args = {"to_drop":cols},
         )
         return self
+    
+    def set_date_removal(self) -> Self:
+        '''Removes columns that are inferred to be dates.'''
+        self._execution_plan.add_step(
+            func = date_removal ,
+            desc = BuiltinExecutions.DATE_REMOVAL.value,
+            args = {}
+        )
+        return self 
         
     ### End of column removal section
 

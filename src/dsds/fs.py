@@ -341,7 +341,8 @@ def mrmr(df:pl.DataFrame, target:str
     , low_memory:bool=False
 ) -> list[str]:
     '''
-        Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
+        Implements MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators
+        , aka relevance)
 
         Currently this only supports classification.
 

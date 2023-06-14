@@ -117,9 +117,40 @@ def duplicate_inferral():
     # Use ==
     pass
 
-# Check if string column is date
-def date_inferral():
-    pass
+# Check if a column is date
+def date_inferral(df:pl.DataFrame) -> list[str]:
+
+    logger.info("Data Inferral is error prone due to the huge variety of date formats. Please use with caution.")
+    
+    dates = [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
+    strings = get_string_cols(df)
+    sample_df = df.select(strings).drop_nulls()\
+        .sample(n = 1000).select(
+            # Cleaning the string first. Only try to catch string dates in the first 10 digits 
+           pl.col(s).str.strip().str.replace_all("(/|\.)", "-").str.split(by= " ").list.first()
+            for s in strings
+        )
+    for s in strings:
+        try:
+            c = sample_df[s].str.to_date(strict=False)
+            if 1 - c.null_count()/1000 >= 0.15: # if at least 15% valid (able to be converted)
+                # This last check is to account for single digit months.
+                # 3/3/1995 will not be parsed to a string because standard formats require 03/03/1995
+                # At least 15% of dates naturally have both month and day as 2 digits numbers
+                dates.append(s)
+        except: # noqa: E722
+            # Very stupid code, but I have to do it...
+            pass
+    
+    return dates
+
+def date_removal(df:pl.DataFrame) -> pl.DataFrame:
+    '''Removes all date columns from dataframe. (Will infer if string column is date.)'''
+
+    remove_cols = date_inferral(df) 
+    logger.info(f"The following columns are dropped because they are dates. {remove_cols}.\n"
+                f"Removed a total of {len(remove_cols)} columns.")
+    return df.drop(remove_cols)
 
 def null_inferral(df:pl.DataFrame, threshold:float=0.5) -> list[str]:
     return (df.null_count()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
@@ -205,7 +236,8 @@ def unique_removal(df:pl.DataFrame, threshold:float=0.9) -> pl.DataFrame:
 def discrete_inferral(df:pl.DataFrame
     , threshold:float=0.1
     , max_n_unique:int=100
-    , exclude:Optional[list[str]]=None) -> list[str]:
+    , exclude:Optional[list[str]]=None
+) -> list[str]:
     '''
         A column that satisfies either n_unique < max_n_unique or unique_pct < threshold 
         will be considered discrete.
