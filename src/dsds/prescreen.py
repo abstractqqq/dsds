@@ -1,5 +1,6 @@
 import polars as pl 
-import re, logging  # noqa: E401
+import re
+import logging  
 from datetime import datetime 
 from typing import Final, Any, Optional
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ def get_string_cols(df:pl.DataFrame, exclude:list[str]=None) -> list[str]:
     return output
 
 def get_datetime_cols(df:pl.DataFrame) -> list[str]:
+    '''Only gets datetime columns, will not infer from strings.'''
     return [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
 
 def get_bool_cols(df:pl.DataFrame) -> list[str]:
@@ -43,10 +45,10 @@ def get_cols_regex(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> list[s
 def dtype_mapping(d: Any) -> str:
     if isinstance(d, str) or d == pl.Utf8:
         return "string"
-    elif isinstance(d, (int,float)) or d in POLARS_NUMERICAL_TYPES:
-        return "numeric"
     elif isinstance(d, bool) or d == pl.Boolean:
         return "bool"
+    elif isinstance(d, (int,float)) or d in POLARS_NUMERICAL_TYPES:
+        return "numeric"
     elif isinstance(d, datetime) or d in POLARS_DATETIME_TYPES:
         return "datetime"
     else:
@@ -109,26 +111,35 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
 def normal_inferral():
     pass
 
-# Check if columns are duplicates. Slow
+# Check if columns are duplicates. Might take time.
 def duplicate_inferral():
-    # Get profiles first. 
-    # Cut down list to columns that have the same min, max, n_unique, null_count.
-    # Then divide into strings and numerics and bools.
-    # Use ==
+    # Get profiles first.
+    # Divide into categories: bools, strings, numerics, datetimes.
+    # Then cut down list to columns that have the same min, max, n_unique and null_count.
+    # Then check equality..
+    pass
+
+# Check if column is an email column. This is easy. Email regex is easy.
+# But email column might have many nulls. Check only on non-null values.
+def email_inferral():
+    pass
+
+# Check for columns that are US zip codes.
+def zipcode_inferral():
     pass
 
 # Check if a column is date
 def date_inferral(df:pl.DataFrame) -> list[str]:
 
-    logger.info("Data Inferral is error prone due to the huge variety of date formats. Please use with caution.")
+    logger.info("Date Inferral is error prone due to the huge variety of date formats. Please use with caution.")
     
     dates = [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
     strings = get_string_cols(df)
     sample_df = df.select(strings).drop_nulls()\
         .sample(n = 1000).select(
             # Cleaning the string first. Only try to catch string dates in the first 10 digits 
-           pl.col(s).str.strip().str.replace_all("(/|\.)", "-").str.split(by= " ").list.first()
-            for s in strings
+           pl.col(s).str.strip().str.replace_all("(/|\.)", "-").str.split(by= " ").list.first() 
+           for s in strings
         )
     for s in strings:
         try:
@@ -158,8 +169,7 @@ def null_inferral(df:pl.DataFrame, threshold:float=0.5) -> list[str]:
                     .get_column("column").to_list() 
 
 def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
-    '''
-        Removes columns with more than threshold% null values.
+    '''Removes columns with more than threshold% null values.
 
         Arguments:
             df:
@@ -275,6 +285,7 @@ def constant_removal(df:pl.DataFrame, include_null:bool=True) -> pl.DataFrame:
     return df.drop(remove_cols)
 
 def remove_if_exists(df:pl.DataFrame, to_drop:list[str]) -> pl.DataFrame:
+    '''Removes the given columns if they exist in the dataframe.'''
     drop = list(set(to_drop).intersection(set(df.columns)))
     logger.info(f"The following columns are dropped. {drop}.\nRemoved a total of {len(drop)} columns.")
     return df.drop(columns=drop)

@@ -624,7 +624,8 @@ def ordinal_encode(df:pl.DataFrame
     encoder_rec = EncoderRecord(features=f, strategy=EncodingStrategy.ORDINAL, mappings=all_mappings)
     return TransformationResult(transformed=res, mapping=encoder_rec)
 
-def smooth_target_encode(df:pl.DataFrame
+def smooth_target_encode(
+    df:pl.DataFrame
     , target:str
     , cols:list[str]
     , min_samples_leaf:int

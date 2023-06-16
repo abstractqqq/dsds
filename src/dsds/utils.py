@@ -54,3 +54,8 @@ def get_numpy(df:pl.DataFrame, target:str, flatten:bool=True, low_memory:bool=Tr
     return NumPyDataCube(X, y, features, target)
 
 
+# Turns zip9 into standard 5 digit zipcodes.
+def clean_zip_codes():
+    pass
+
+

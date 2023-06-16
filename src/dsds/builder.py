@@ -28,7 +28,7 @@ from .transform import (
 from dataclasses import dataclass
 import polars as pl
 import pandas as pd
-from typing import ParamSpec, Self, TypeVar, Optional, Any, Callable, Iterable
+from typing import ParamSpec, Self, TypeVar, Optional, Any, Callable, Iterable, Concatenate
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
@@ -39,6 +39,7 @@ import os
 
 T = TypeVar("T")
 P = ParamSpec("P")
+
 logger = logging.getLogger(__name__)
 ################################################################################################
 # WORK IN PROGRESS
@@ -160,10 +161,9 @@ def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
     return df.select(cols)
 
 def _lower_columns(df:pl.DataFrame) -> pl.DataFrame:
-    rename_dict = {c: c.lower() for c in df.columns}
-    return df.rename(rename_dict)
+    return df.rename({c: c.lower() for c in df.columns})
 
-class DataBuilder:
+class PipeBuilder:
 
     def __init__(self, target:str, project_name:str="my_project"):
         if target == "":
@@ -495,9 +495,10 @@ class DataBuilder:
                 )
                 self._blueprint.add(new_step)
             else:
-                apply_func:Callable[[pl.DataFrame, T], pl.DataFrame] = getattr(importlib.import_module(step.module)
-                                                                               , step.name)
-                input_df = apply_func(input_df, **step.args)
+                apply_func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame]  
+                apply_func = getattr(importlib.import_module(step.module), step.name)
+                
+                input_df = input_df.pipe(apply_func, **step.args)
                 self._blueprint.add(step)
 
             end = perf_counter()
@@ -508,6 +509,7 @@ class DataBuilder:
         self._built = True
         return input_df
     
+    # Rename this in the future?
     def apply(self, df:pl.DataFrame|pd.DataFrame) -> pl.DataFrame:
         if not self._built:
             raise ValueError("The builder must have a valid blueprint before applying it to new datasets.")
@@ -530,14 +532,14 @@ class DataBuilder:
             if step.is_transform:
                 try:
                     rec:TransformationRecord = step.transform_record
-                    input_df = rec.transform(input_df)
+                    input_df = input_df.pipe(rec.transform)
                 except Exception as e:
                     success = False
                     logger.error(e)
             else:
-                apply_func:Callable[[pl.DataFrame, T], pl.DataFrame] = getattr(importlib.import_module(step.module)
-                                                                               , step.name)
-                input_df = apply_func(input_df, **step.args)
+                apply_func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame] 
+                apply_func = getattr(importlib.import_module(step.module), step.name)
+                input_df = input_df.pipe(apply_func, **step.args)
 
             end = perf_counter()
             logger.info(f"|{i+1}/{n}|: Finished in {end-start:.2f}s | Success: {success}")
