@@ -18,7 +18,8 @@ from tqdm import tqdm
 CPU_COUNT:Final[int] = os.cpu_count()
 # Some will return dataframe as output, some list of str
 
-def _conditional_entropy(df:pl.DataFrame
+def _conditional_entropy(
+    df:pl.DataFrame
     , target:str
     , predictive:str
 ) -> pl.DataFrame:
@@ -41,7 +42,8 @@ def _conditional_entropy(df:pl.DataFrame
     ))
 
 # NEED REVIEW OF CORRECTNESS
-def naive_sample_ig(df:pl.DataFrame
+def naive_sample_ig(
+    df:pl.DataFrame
     , target:str
     , discrete_cols:Optional[list[str]] = None
     , n_threads:int = CPU_COUNT
@@ -107,7 +109,8 @@ def naive_sample_ig(df:pl.DataFrame
 
 naive_sample_mi = naive_sample_ig
 
-def mutual_info(df:pl.DataFrame
+def mutual_info(
+    df:pl.DataFrame
     , conti_cols:list[str]
     , target:str
     , n_neighbors:int=3
@@ -180,7 +183,8 @@ def mutual_info(df:pl.DataFrame
     output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
     return output
 
-def _f_score(df:pl.DataFrame
+def _f_score(
+    df:pl.DataFrame
     , target:str
     , num_list:list[str]
 ) -> np.ndarray:
@@ -226,7 +230,8 @@ def _f_score(df:pl.DataFrame
     
     return f_score
 
-def f_classification(df:pl.DataFrame
+def f_classification(
+    df:pl.DataFrame
     , target:str
     , num_cols:Optional[list[str]]=None
 ) -> pl.DataFrame:
@@ -309,7 +314,8 @@ class MRMR_STRATEGY(Enum):
         else:
             return "Unknown"
 
-def _mrmr_underlying_score(df:pl.DataFrame
+def _mrmr_underlying_score(
+    df:pl.DataFrame
     , target:str
     , num_list:list[str]
     , strategy:MRMR_STRATEGY
@@ -338,7 +344,9 @@ def _mrmr_underlying_score(df:pl.DataFrame
     
     return scores
 
-def mrmr(df:pl.DataFrame, target:str
+def mrmr(
+    df:pl.DataFrame
+    , target:str
     , k:int
     , num_cols:Optional[list[str]] = None
     , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
@@ -520,7 +528,8 @@ def mrmr(df:pl.DataFrame, target:str
 #     print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
 #     return selected
 
-def knock_out_mrmr(df:pl.DataFrame
+def knock_out_mrmr(
+    df:pl.DataFrame
     , target:str
     , k:int 
     , num_cols:Optional[list[str]] = None

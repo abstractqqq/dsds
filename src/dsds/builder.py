@@ -165,11 +165,10 @@ def _lower_columns(df:pl.DataFrame) -> pl.DataFrame:
 
 class PipeBuilder:
 
-    def __init__(self, target:str, project_name:str="my_project"):
-        if target == "":
-            raise ValueError("Target cannot be empty string. Please rename it if it is the case.")
+    def __init__(self, project_name:str="my_project"):
 
-        self.target = target
+        self.target:str = ""
+        self.data:Optional[pl.DataFrame] = None
         self.project_name:str = project_name
         self._built:bool = False
         self._execution_plan:ExecPlan = ExecPlan(steps=[])
@@ -188,11 +187,92 @@ class PipeBuilder:
             return text
         return "The current builder has no execution plan."
     
+    ### I/O
+    def set_target(self, target:str) -> Self:
+        if target == "":
+            raise ValueError("Target cannot be empty string.")
+        
+        if self.data is not None:
+            if target not in self.data.columns:
+                raise ValueError("Target is not found in the dataframe.")
+            
+        self.target = target 
+        return self
+        
+    def set_data(self, df:pl.DataFrame|pd.DataFrame) -> Self:
+        '''Set the data on which to "fit" the pipeline.'''
+        try:
+            if isinstance(df, pd.DataFrame):
+                logger.warning("Found input to be a Pandas Dataframe. It will be converted to a Polars dataframe, "
+                            "and the original Pandas dataframe will be erased.")
+                
+                self.data = pl.from_pandas(df)
+                df = df.iloc[0:0]
+            elif isinstance(df, pl.DataFrame):
+                self.data = df.clone()
+            else:
+                raise TypeError("Input df must either be Pandas or Polars dataframe.")
+        except Exception as e:
+            logger.error(e)
+
+        return Self
+    
+    def set_data_and_target(self, df:pl.DataFrame|pd.DataFrame, target:str) -> Self:
+        _ = self.set_target(target)        
+        _ = self.set_data(df)
+        if target not in self.data.columns:
+            raise ValueError("Target is not found in the dataframe.")
+        
+        self.target = target
+        return self 
+
+    def from_csv(self, path:str|Path, **csv_args) -> Self:
+        '''
+        
+        '''
+        try:
+            self.data = pl.read_csv(path, **csv_args)
+            return Self
+        except Exception as e:
+            logger.error(e)
+
+    def from_parquet(self, path:str|Path, **parquet_args) -> Self:
+        '''
+        
+        '''
+        try:
+            self.data = pl.read_parquet(path, **parquet_args)
+            return Self
+        except Exception as e:
+            logger.error(e)
+    
+    def from_json(self, path:str|Path, **json_args) -> Self:
+        '''
+        
+        '''
+        try:
+            self.data = pl.read_json(path, **json_args)
+            return Self
+        except Exception as e:
+            logger.error(e)
+
+    def from_excel(self, path:str|Path, **excel_args) -> Self:
+        '''
+        
+        '''
+        try:
+            self.data = pl.read_json(path, **excel_args)
+            return Self
+        except Exception as e:
+            logger.error(e)
+    ### End of I/O
+    
     ### Miscellaneous
     def show(self):
         print(self)
 
     def clear(self):
+        self.data = self.data.clear()
         self._execution_plan.clear()
         self._blueprint.clear()
         self._built = False
@@ -217,7 +297,10 @@ class PipeBuilder:
 
     ### Checks
     def _is_ready(self) -> bool:
-        return self.target != ""
+        if self.data is None:
+            return False
+        
+        return self.target != "" and self.target in self.data.columns
     
     ### End of Checks.
 
@@ -415,21 +498,52 @@ class PipeBuilder:
     ### End of Encoding Section
 
     ### Custom Actions
-    def add_custom_action(self
-        , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
+
+    # Step and transforms are differentiated in order to prevent error.
+    # If the custom action/transformation of func is not dependent on the dataset (self.data)
+    # then you should use add_custom_step.
+    #
+    # If the transformation is dependent on information about the dataset (self.data),
+    # then the output type of func should be something that inherits from TransformationResult.
+    # We need a "record" that holds enough information about (self.data) to fully repeat
+    # this transformation.
+
+
+    def add_custom_step(self
+        , func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame]
         , desc:str
         , args:dict[str, Any]
-        , is_transform:bool) -> Self:
+        ) -> Self:
 
-        if is_transform or ("return" not in func.__annotations__):
-            logger.info("It is highly recommended that the custom function returns " 
-                        "a type that inherits from the TransformationRecord class.")
+        if "return" not in func.__annotations__:
+            logger.info("It is highly recommended that the custom step returns " 
+                        "a Polars dataframe. If this returns a TransformationResult, use add_custom_transform instead.")
 
         self._execution_plan.add_custom_step(
             func = func,
             desc = desc,
             args = args,
-            is_transform = is_transform
+            is_transform = False
+        )
+
+        return self
+    # Should I rename transform to something else?    
+    def add_custom_transform(self
+        , func:Callable[Concatenate[pl.DataFrame, P], TransformationResult]
+        , desc:str
+        , args:dict[str, Any]
+        ) -> Self:
+
+        if "return" not in func.__annotations__:
+            logger.info("It is highly recommended that the custom transform returns "
+                        "a type that inherits from TransformationResult."
+                        "If this returns a pl.DataFrame, use add_custom_step instead.")
+
+        self._execution_plan.add_custom_step(
+            func = func,
+            desc = desc,
+            args = args,
+            is_transform = True
         )
 
         return self
@@ -439,35 +553,33 @@ class PipeBuilder:
     def fit(self, X, y) -> Self:
         pass
 
-    def build(self, df:pl.DataFrame|pd.DataFrame) -> pl.DataFrame:
+    def build(self
+              , df:Optional[pl.DataFrame|pd.DataFrame]=None
+              ) -> pl.DataFrame:
         '''
             Build according to the steps.
+
+            Arguments:
+                df: Another chance to set input df if it has not been set.
 
             Returns:
                 A dataframe.
         
         '''
-
-        if isinstance(df, pd.DataFrame):
-            logger.warning("Found input to be a Pandas dataframe. Turning it into a Polars dataframe.")
-            try:
-                input_df:pl.DataFrame = pl.from_pandas(df)
-            except Exception as e:
-                logger.error(e)
-        else:
-            input_df:pl.DataFrame = df
+        if df is not None:
+            _ = self.set_data(df)
         
-        logger.info(f"Starting to build. Total steps: {len(self._execution_plan)}.")
-        if self.target not in input_df.columns:
-            raise ValueError(f"The target {self.target} is not found in input dataframe's columns.")
+        n = len(self._execution_plan)
+        logger.info(f"Starting to build. Total steps: {n}.")
+        if not self._is_ready():
+            raise ValueError(f"Dataframe is not set properly, or the target {self.target} is not found "
+                             "in the dataframe.")
         
         if self._built:
-            logger.warning("The DataBuilder is built once already. It is not intended to build again. "
-                           "To avoid unexpected behavior, make sure the new pipeline is constructed after calling "
-                           ".clear().")
+            logger.warning("The PipeBuilder is built once already. It is not intended to be built again. "
+                           "To avoid unexpected behavior, construct a new pipe only after calling .clear().")
         
         i = 0
-        n = len(self._execution_plan)
         # Todo! If something failed, save a backup dataframe to a temp folder.
         while not self._execution_plan.is_empty():
             i += 1
@@ -476,12 +588,10 @@ class PipeBuilder:
             start = perf_counter()
             success = True
             if step.is_transform: # Essentially the fit step.
-                transf:Callable[[pl.DataFrame, T], TransformationResult] = getattr(importlib.import_module(step.module)
-                                                                                   , step.name)
-                transf: pl.DataFrame
+                apply_transf:Callable[Concatenate[pl.DataFrame, P], TransformationResult] 
+                apply_transf = getattr(importlib.import_module(step.module), step.name)
                 rec: TransformationRecord
-                transf, rec = transf(input_df, **step.args)
-                input_df = transf
+                self.data, rec = apply_transf(self.data, **step.args)
                 new_step = ExecStep(
                     name = step.name,
                     module = "N/A",
@@ -498,7 +608,7 @@ class PipeBuilder:
                 apply_func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame]  
                 apply_func = getattr(importlib.import_module(step.module), step.name)
                 
-                input_df = input_df.pipe(apply_func, **step.args)
+                self.data = self.data.pipe(apply_func, **step.args)
                 self._blueprint.add(step)
 
             end = perf_counter()
@@ -506,13 +616,22 @@ class PipeBuilder:
 
         logger.info("Build success. A blueprint has been built and can be viewed by calling .blueprint(), "
                     "and can be saved as a json by calling .write()")
+
         self._built = True
-        return input_df
+        output = self.data.clone()
+        return output
+    
+    def get_final_data(self) -> Optional[pl.DataFrame]:
+        if self._built:
+            return self.data.clone()
+        else:
+            logger.info("Pipeline has not been built. There cannot be any final data.")
+            return None
     
     # Rename this in the future?
     def apply(self, df:pl.DataFrame|pd.DataFrame) -> pl.DataFrame:
         if not self._built:
-            raise ValueError("The builder must have a valid blueprint before applying it to new datasets.")
+            raise ValueError("The builder must be built before applying it to new datasets.")
         
         if isinstance(df, pd.DataFrame):
             logger.warning("Found input to be a Pandas dataframe. Turning it into a Polars dataframe.")
