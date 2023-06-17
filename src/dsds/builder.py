@@ -81,7 +81,7 @@ class ExecStep():
     args:Optional[dict[str, Any]] = None # None if it is record.
     is_transform:bool = False
     # Is this a transfromation call? 
-    # If so, the output is expected to be of type TransformationResult.
+    # If so, the output is expected to be of type TransformationRecord.
     # If not, the output is expected to be of type pl.DataFrame.
 
     transform_name:Optional[str] = None # name of transformation
@@ -504,7 +504,7 @@ class PipeBuilder:
     # then you should use add_custom_step.
     #
     # If the transformation is dependent on information about the dataset (self.data),
-    # then the output type of func should be something that inherits from TransformationResult.
+    # then the output type of func should be something that inherits from TransformationRecord.
     # We need a "record" that holds enough information about (self.data) to fully repeat
     # this transformation.
 
@@ -550,6 +550,7 @@ class PipeBuilder:
 
     ### End of Custom Actions
 
+    ### Build (fit), and some others
     def fit(self, X, y) -> Self:
         pass
 
@@ -725,7 +726,7 @@ class PipeBuilder:
         except Exception as e:
             logger.error(e)
 
-    ### End of IO Section 
+    ### End of Building section
 
 
 
