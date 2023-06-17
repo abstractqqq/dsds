@@ -41,7 +41,7 @@ class EncodingStrategy(Enum):
     PERCENTILE = "PERCENTILE"
 
 # It is highly recommended that this should be a dataclass and serializable by orjson.
-class TransformationRecord(ABC):
+class FitRecord(ABC):
 
     @abstractmethod
     def materialize(self) -> pl.DataFrame | str:
@@ -55,7 +55,7 @@ class TransformationRecord(ABC):
         pass
 
 @dataclass
-class ImputationRecord(TransformationRecord):
+class ImputationRecord(FitRecord):
     features:list[str]
     strategy:ImputationStartegy
     values:list[float]|np.ndarray
@@ -80,7 +80,7 @@ class ImputationRecord(TransformationRecord):
         )
     
 @dataclass
-class ScalingRecord(TransformationRecord):
+class ScalingRecord(FitRecord):
     features:list[str]
     strategy:ScalingStrategy
     values:list[dict[str, float]]
@@ -119,7 +119,7 @@ class ScalingRecord(TransformationRecord):
             raise ValueError(f"Unknown scaling strategy: {self.strategy}")
 
 @dataclass
-class EncoderRecord:
+class EncoderRecord(FitRecord):
     features:list[str]
     strategy:EncodingStrategy
     mappings:list[dict]
@@ -194,13 +194,13 @@ class EncoderRecord:
             pl.col(f).map_dict(d) for f,d in zip(self.features, self.mappings)
         )
 
-class TransformationResult: # It is a dataclass just for convenience.
+class FitTransform:
 
-    def __init__(self, transformed:pl.DataFrame, mapping: TransformationRecord):
+    def __init__(self, transformed:pl.DataFrame, mapping: FitRecord):
         self.transformed = transformed
         self.mapping = mapping
         
-    def __iter__(self) -> Iterable[Tuple[pl.DataFrame, TransformationRecord]]:
+    def __iter__(self) -> Iterable[Tuple[pl.DataFrame, FitRecord]]:
         return iter((self.transformed, self.mapping))
     
     def materialize(self) -> pl.DataFrame | str:
@@ -225,7 +225,7 @@ def impute(df:pl.DataFrame
     , cols:list[str]
     , strategy:ImputationStartegy|str = ImputationStartegy.MEDIAN
     , const:int = 1
-) -> TransformationResult:
+) -> FitTransform:
     
     '''
         Arguments:
@@ -261,12 +261,13 @@ def impute(df:pl.DataFrame
         raise ValueError(f"Unknown imputation strategy: {s}")
 
     transformed = df.with_columns(exprs)
-    return TransformationResult(transformed=transformed, mapping=impute_record)
+    return FitTransform(transformed=transformed, mapping=impute_record)
 
 def scale(df:pl.DataFrame
     , cols:list[str]
     , strategy:ScalingStrategy=ScalingStrategy.NORMALIZE
-    , const:int = 1) -> TransformationResult:
+    , const:int = 1
+) -> FitTransform:
     
     '''
         Arguments:
@@ -304,7 +305,7 @@ def scale(df:pl.DataFrame
         raise ValueError(f"Unknown scaling strategy: {strategy}")
 
     transformed = df.with_columns(exprs)
-    return TransformationResult(transformed=transformed, mapping=scaling_records)
+    return FitTransform(transformed=transformed, mapping=scaling_records)
 
 def boolean_transform(df:pl.DataFrame, keep_null:bool=True) -> pl.DataFrame:
     '''
@@ -322,7 +323,7 @@ def boolean_transform(df:pl.DataFrame, keep_null:bool=True) -> pl.DataFrame:
 
     return df.with_columns(exprs)
 
-def one_hot_encode(df:pl.DataFrame, cols:Optional[list[str]]=None, separator:str="_") -> TransformationResult:
+def one_hot_encode(df:pl.DataFrame, cols:Optional[list[str]]=None, separator:str="_") -> FitTransform:
     '''
 
     
@@ -354,7 +355,7 @@ def one_hot_encode(df:pl.DataFrame, cols:Optional[list[str]]=None, separator:str
         all_mappings.append(mapping)
 
     encoder_rec = EncoderRecord(features=str_cols, strategy=EncodingStrategy.ONE_HOT, mappings=all_mappings)
-    return TransformationResult(transformed = res, mapping = encoder_rec)
+    return FitTransform(transformed = res, mapping = encoder_rec)
 
 # def fixed_sized_encode(df:pl.DataFrame, num_cols:list[str], bin_size:int=50) -> TransformationResult:
 #     '''Given a continuous variable, take the smallest `bin_size` of them, and call them bin 1, take the next
@@ -367,7 +368,7 @@ def one_hot_encode(df:pl.DataFrame, cols:Optional[list[str]]=None, separator:str
 def percentile_encode(df:pl.DataFrame
     , cols:list[str]=None
     , exclude:list[str]=None
-) -> TransformationResult:
+) -> FitTransform:
     '''
         Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, where each percentile could
         potentially be a bin and null will be mapped to bin = 0. Bin 1 means percentile 0 to 1. Generally, bin X groups the
@@ -447,11 +448,12 @@ def percentile_encode(df:pl.DataFrame
 
     res = df.with_columns(exprs)
     encoder_rec = EncoderRecord(features=num_list, strategy=EncodingStrategy.PERCENTILE, mappings=all_mappings)
-    return TransformationResult(transformed=res, mapping=encoder_rec)
+    return FitTransform(transformed=res, mapping=encoder_rec)
 
 def binary_encode(df:pl.DataFrame
     , cols:Optional[list[str]]=None
-    , exclude:Optional[list[str]]=None) -> TransformationResult:
+    , exclude:Optional[list[str]]=None
+) -> FitTransform:
     
     '''Encode the given columns as binary values.
 
@@ -517,7 +519,7 @@ def binary_encode(df:pl.DataFrame
 
     res = df.with_columns(exprs)
     encoder_rec = EncoderRecord(features=binary_list, strategy=EncodingStrategy.BINARY, mappings=mappings)
-    return TransformationResult(transformed = res, mapping = encoder_rec)
+    return FitTransform(transformed = res, mapping = encoder_rec)
 
 def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
     '''
@@ -551,7 +553,7 @@ def ordinal_auto_encode(df:pl.DataFrame
     , cols:list[str]=None
     , default:int|None=None
     , exclude:Optional[list[str]]=None
-) -> TransformationResult:
+) -> FitTransform:
     '''
         Automatically applies ordinal encoding to the provided columns by the following logic:
             Sort the column, smallest value will be assigned to 0, second smallest will be assigned to 1...
@@ -587,12 +589,12 @@ def ordinal_auto_encode(df:pl.DataFrame
 
     res = df.with_columns(exprs)
     encoder_rec = EncoderRecord(features=ordinal_list, strategy=EncodingStrategy.ORDINAL_AUTO, mappings=all_mappings)
-    return TransformationResult(transformed=res, mapping=encoder_rec)
+    return FitTransform(transformed=res, mapping=encoder_rec)
 
 def ordinal_encode(df:pl.DataFrame
     , ordinal_mapping:dict[str, dict[str,int]]
     , default:int|None=None
-) -> TransformationResult:
+) -> FitTransform:
     '''
         Ordinal encode the data with given mapping.
 
@@ -622,7 +624,7 @@ def ordinal_encode(df:pl.DataFrame
 
     res = df.with_columns(exprs)
     encoder_rec = EncoderRecord(features=f, strategy=EncodingStrategy.ORDINAL, mappings=all_mappings)
-    return TransformationResult(transformed=res, mapping=encoder_rec)
+    return FitTransform(transformed=res, mapping=encoder_rec)
 
 def smooth_target_encode(
     df:pl.DataFrame
@@ -631,7 +633,7 @@ def smooth_target_encode(
     , min_samples_leaf:int
     , smoothing:float
     , check_binary:bool=True
-) -> TransformationResult:
+) -> FitTransform:
     
     '''Smooth target encoding for binary classification. Currently only implemented for binary target.
 
@@ -685,4 +687,4 @@ def smooth_target_encode(
         
     res = df.with_columns(exprs)
     encoder_rec = EncoderRecord(features=str_cols, strategy=EncodingStrategy.TARGET, mappings=all_mappings)
-    return TransformationResult(transformed=res, mapping=encoder_rec)
+    return FitTransform(transformed=res, mapping=encoder_rec)

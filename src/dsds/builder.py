@@ -11,8 +11,8 @@ from .prescreen import (
 )
 # from .eda_selection import *
 from .transform import (
-    TransformationResult
-    , TransformationRecord
+    FitRecord
+    , FitTransform
     , ScalingStrategy
     , ImputationStartegy
     , scale
@@ -79,14 +79,14 @@ class ExecStep():
     module:str|Path
     desc:str = ""
     args:Optional[dict[str, Any]] = None # None if it is record.
-    is_transform:bool = False
-    # Is this a transfromation call? 
-    # If so, the output is expected to be of type TransformationRecord.
-    # If not, the output is expected to be of type pl.DataFrame.
+    is_fit:bool = False
+    # Is this a function that produces a FitTransform output? 
+    # If so, the output is expected to be of type FitRecord (pl.DataFrame, FitRecord).
+    # If not, the output is expected to be of type pl.DataFrame. (Normal, natural output)
 
-    transform_name:Optional[str] = None # name of transformation
-    transform_module:Optional[str] = None # module where this transformation belongs to
-    transform_record: Optional[TransformationRecord] = None # Will only be Not none in blueprints.
+    fit_name:Optional[str] = None # name of the FitRecord class (The class that inherits from FitRecord)
+    fit_module:Optional[str] = None # module where this FitRecord class belongs to
+    fit_record: Optional[FitRecord] = None # The actual content of the Record, will only be not none in blueprints.
     is_custom:bool = False 
 
     def get_args(self) -> str:
@@ -98,8 +98,8 @@ class ExecStep():
     def __str__(self) -> str:
         text = f"Function: {self.name} | Module: {self.module} | Arguments:\n{self.args}\n"
         text += f"Brief description: {self.desc}"
-        if self.is_transform:
-            text += "\nThis step is a transformation step."
+        if self.is_fit:
+            text += "\nThis step is will fit and transform the data."
         if self.is_custom:
             text += "\nThis step is a user defined function."
         return text
@@ -138,23 +138,23 @@ class ExecPlan():
         return self.steps.pop(0)
 
     def add_step(self
-        , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
+        , func:Callable[[pl.DataFrame, T], pl.DataFrame|FitTransform]
         , desc:str
         , args:dict[str, Any] # Technically is not Any, but Anything that can be serialized by orjson..
-        , is_transform:bool=False) -> None:
+        , is_fit:bool=False) -> None:
         
         self.steps.append(
-            ExecStep(func.__name__, func.__module__, desc, args, is_transform, False)
+            ExecStep(func.__name__, func.__module__, desc, args, is_fit, False)
         )
 
     def add_custom_step(self
-        , func:Callable[[pl.DataFrame, T], pl.DataFrame|TransformationResult]
+        , func:Callable[[pl.DataFrame, T], pl.DataFrame|FitTransform]
         , desc:str
         , args:dict[str, Any]
-        , is_transform:bool=False) -> None:
+        , is_fit:bool=False) -> None:
         
         self.steps.append(
-            ExecStep(func.__name__, func.__module__, desc, args, is_transform, True)
+            ExecStep(func.__name__, func.__module__, desc, args, is_fit, True)
         )
 
 def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
@@ -401,7 +401,7 @@ class PipeBuilder:
             func = scale,
             desc = BuiltinExecutions.SCALE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
-            is_transform = True
+            is_fit = True
         )
         return self
     
@@ -414,7 +414,7 @@ class PipeBuilder:
             func = impute,
             desc = BuiltinExecutions.IMPUTE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
-            is_transform = True
+            is_fit = True
         )
         return self
     
@@ -432,7 +432,7 @@ class PipeBuilder:
             func = binary_encode,
             desc = description,
             args = {"cols":cols},
-            is_transform = True
+            is_fit = True
         )
         return self
 
@@ -442,7 +442,7 @@ class PipeBuilder:
             func = ordinal_encode,
             desc = BuiltinExecutions.ORDINAL_ENCODE.value,
             args = {"ordinal_mapping":mapping, "default": default},
-            is_transform = True
+            is_fit = True
         )
         return self
     
@@ -452,7 +452,7 @@ class PipeBuilder:
             func = ordinal_auto_encode,
             desc = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value,
             args = {"cols":cols, "default": default},
-            is_transform = True
+            is_fit = True
         )
         return self
     
@@ -464,7 +464,7 @@ class PipeBuilder:
                 desc = BuiltinExecutions.TARGET_ENCODE.value,
                 args = {"target":self.target, "cols": cols, "min_samples_leaf":min_samples_leaf
                         , "smoothing":smoothing},
-                is_transform = True
+                is_fit = True
             )
             return self
         else:
@@ -481,7 +481,7 @@ class PipeBuilder:
             func = one_hot_encode,
             desc = description,
             args = {"cols":cols, "separator": separator},
-            is_transform = True
+            is_fit = True
         )
         return self
     
@@ -491,7 +491,7 @@ class PipeBuilder:
             func = percentile_encode,
             desc = BuiltinExecutions.PERCENTILE_ENCODE.value,
             args = {"cols":cols},
-            is_transform = True
+            is_fit = True
         )
         return self
     
@@ -499,22 +499,20 @@ class PipeBuilder:
 
     ### Custom Actions
 
-    # Step and transforms are differentiated in order to prevent error.
-    # If the custom action/transformation of func is not dependent on the dataset (self.data)
-    # then you should use add_custom_step.
+    # Step and FitTransforms are differentiated in order to prevent error.
+    # A normal step is a function that takes in a dataframe, some other args, and 
+    # outputs a dataframe. Use add_custom_step for this case.
     #
-    # If the transformation is dependent on information about the dataset (self.data),
-    # then the output type of func should be something that inherits from TransformationRecord.
-    # We need a "record" that holds enough information about (self.data) to fully repeat
-    # this transformation.
-
+    # A FitTransform is essentially a function that outputs the type FitTransform.
+    # This means that the transformation is dependent on information about the dataset (self.data),
+    # If this is the case, use add_custom_fit_transform
 
     def add_custom_step(self
         , func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame]
         , desc:str
         , args:dict[str, Any]
         ) -> Self:
-
+        '''A normal step is a function that takes in a dataframe, some other args, and outputs a dataframe.'''
         if "return" not in func.__annotations__:
             logger.info("It is highly recommended that the custom step returns " 
                         "a Polars dataframe. If this returns a TransformationResult, use add_custom_transform instead.")
@@ -523,16 +521,19 @@ class PipeBuilder:
             func = func,
             desc = desc,
             args = args,
-            is_transform = False
+            is_fit = False
         )
 
         return self
-    # Should I rename transform to something else?    
-    def add_custom_transform(self
-        , func:Callable[Concatenate[pl.DataFrame, P], TransformationResult]
+
+    def add_custom_fit_transform(self
+        , func:Callable[Concatenate[pl.DataFrame, P], FitTransform]
         , desc:str
         , args:dict[str, Any]
         ) -> Self:
+        '''A FitTransform is essentially a function that outputs the type FitTransform.
+        This means that the transformation is dependent on information about the dataset (self.data),
+        '''
 
         if "return" not in func.__annotations__:
             logger.info("It is highly recommended that the custom transform returns "
@@ -543,7 +544,7 @@ class PipeBuilder:
             func = func,
             desc = desc,
             args = args,
-            is_transform = True
+            is_fit = True
         )
 
         return self
@@ -554,9 +555,7 @@ class PipeBuilder:
     def fit(self, X, y) -> Self:
         pass
 
-    def build(self
-              , df:Optional[pl.DataFrame|pd.DataFrame]=None
-              ) -> pl.DataFrame:
+    def build(self, df:Optional[pl.DataFrame|pd.DataFrame]=None) -> pl.DataFrame:
         '''
             Build according to the steps.
 
@@ -585,23 +584,23 @@ class PipeBuilder:
         while not self._execution_plan.is_empty():
             i += 1
             step = self._execution_plan.popleft()
-            logger.info(f"|{i}/{n}|: Executed Step: {step.name} | is_transform: {step.is_transform}")
+            logger.info(f"|{i}/{n}|: Executed Step: {step.name} | is_fit: {step.is_fit}")
             start = perf_counter()
             success = True
-            if step.is_transform: # Essentially the fit step.
-                apply_transf:Callable[Concatenate[pl.DataFrame, P], TransformationResult] 
+            if step.is_fit: # Essentially the fit step.
+                apply_transf:Callable[Concatenate[pl.DataFrame, P], FitTransform] 
                 apply_transf = getattr(importlib.import_module(step.module), step.name)
-                rec: TransformationRecord
+                rec: FitRecord
                 self.data, rec = apply_transf(self.data, **step.args)
                 new_step = ExecStep(
                     name = step.name,
                     module = "N/A",
                     desc = step.desc, # 
                     # args = step.args, # don't need this when applying
-                    is_transform = True,
-                    transform_name = type(rec).__name__,
-                    transform_module = rec.__module__,
-                    transform_record = rec,
+                    is_fit = True,
+                    fit_name = type(rec).__name__,
+                    fit_module = rec.__module__,
+                    fit_record = rec,
                     is_custom = step.is_custom
                 )
                 self._blueprint.add(new_step)
@@ -646,12 +645,12 @@ class PipeBuilder:
         n = len(self._blueprint)
         step:ExecStep
         for i, step in enumerate(self._blueprint):
-            logger.info(f"|{i+1}/{n}|: Performing Step: {step.name} | is_transform: {step.is_transform}")
+            logger.info(f"|{i+1}/{n}|: Performing Step: {step.name} | is_fit: {step.is_fit}")
             start = perf_counter()
             success = True
-            if step.is_transform:
+            if step.is_fit:
                 try:
-                    rec:TransformationRecord = step.transform_record
+                    rec:FitRecord = step.fit_record
                     input_df = input_df.pipe(rec.transform)
                 except Exception as e:
                     success = False
@@ -704,20 +703,19 @@ class PipeBuilder:
             f.close()
             steps:list[dict[str, Any]] = data["steps"]
             for s in steps:
-                if s["is_transform"]: # Need to recreate TransformRecord objects from dict
-                    name = s.get("transform_name", None)
-                    module = s.get("transform_module", None)
-                    record = s.get("transform_record", None)
+                if s["is_fit"]: # Need to recreate TransformRecord objects from dict
+                    name = s.get("fit_name", None)
+                    module = s.get("fit_module", None)
+                    record = s.get("fit_record", None)
                     if (name is not None) or (module is not None) or (record is not None):
                         if (name is None) or (module is None) or (record is None):
-                            raise ValueError(f"Something went wrong with the transform: {s['name']}. "
-                                             "All transform_name, transform_module and transform_record fields "
-                                             "must not be null.")
-                    # Get the class the TransformationRecord belongs to.
+                            raise ValueError(f"Something went wrong with the FitRecord: {s['name']}. "
+                                             "All of fit_name, fit_module and fit_record fields must not be null.")
+                    # Get the class the FitRecord belongs to.
                     c = getattr(importlib.import_module(module), name)
                     # Create an instance of c
-                    rec = c(**record)
-                    s["transform_record"] = rec # Make transform_record to be a real TransformRecord object.
+                    rec = c(**record) # Turn this json into a real Python object.
+                    s["fit_record"] = rec # Set "fit_record" field to be the object, not the dict.
 
                 self._blueprint.add(ExecStep(**s))
 
