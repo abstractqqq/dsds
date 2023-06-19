@@ -258,7 +258,6 @@ def discrete_inferral(df:pl.DataFrame
         & (~pl.col("column").is_in(exclude_list)) # is not in
     ).get_column("column").to_list()
 
-
 def constant_inferral(df:pl.DataFrame, include_null:bool=True) -> list[str]:
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)
     remove_cols = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list() # These are constants, remove.

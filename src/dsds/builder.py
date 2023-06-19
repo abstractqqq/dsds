@@ -158,6 +158,7 @@ class ExecPlan():
         )
 
 def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
+    # don't check if c in cols belongs to df. Let it error.
     return df.select(cols)
 
 def _lower_columns(df:pl.DataFrame) -> pl.DataFrame:

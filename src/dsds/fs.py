@@ -8,11 +8,13 @@ import os
 import polars as pl
 import numpy as np
 from enum import Enum
-from typing import Final, Any, Optional
+from typing import Final, Any, Optional, Tuple
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+
+# Everything named as a selector must return a list of str
 
 CPU_COUNT:Final[int] = os.cpu_count()
 # Some will return dataframe as output, some list of str
@@ -21,36 +23,34 @@ def _conditional_entropy(
     df:pl.DataFrame
     , target:str
     , predictive:str
-) -> pl.DataFrame:
+) -> Tuple[str, float]:
     
-    temp = df.groupby(predictive).agg(
-        pl.count().alias("prob(predictive)")
-    ).with_columns(
-        pl.col("prob(predictive)") / len(df)
-    )
+    # temp = df.groupby(predictive).agg(
+    #     pl.count().alias("prob(predictive)")
+    # ).with_columns(
+    #     pl.col("prob(predictive)") / len(df)
+    # )
 
-    return df.groupby((target, predictive)).agg(
+    cond_entropy = df.groupby((target, predictive)).agg(
         pl.count()
-    ).with_columns(
+    ).with_columns((
+        (pl.col("count").sum().over(predictive) / len(df)).alias("prob(predictive)"),
         (pl.col("count") / pl.col("count").sum()).alias("prob(target,predictive)")
-    ).join(
-        temp, on=predictive
-    ).select((
-        pl.lit(predictive).alias("feature"),
-        (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() * pl.col("prob(target,predictive)")).sum()).alias("conditional_entropy")
-    ))
+    )).select(
+        (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() 
+           * pl.col("prob(target,predictive)")).sum()) # This is the conditional entropy.
+    ).to_numpy()[0,0]
 
-# NEED REVIEW OF CORRECTNESS
-def naive_sample_ig(
+    return (predictive, cond_entropy)
+
+# NEED REVIEW FOR CORRECTNESS
+def discrete_ig(
     df:pl.DataFrame
     , target:str
     , discrete_cols:Optional[list[str]] = None
     , n_threads:int = CPU_COUNT
 ) -> pl.DataFrame:
-    '''
-        The entropy here is "sample entropy". This is not a good estimation of real entropy of the target variable.
-        Thus I do not recommend using this method for now. That said, this computation computes sample entropy and the the sample
-        conditional entropy in a (hopefully) correct and fast way.
+    '''The entropy here is "discrete entropy".
 
         Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in discrete_cols.
         For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
@@ -95,18 +95,35 @@ def naive_sample_ig(
                 output.append(ig)
                 pbar.update(1)
 
-    output = pl.concat(output).with_columns((
-        pl.lit(target_entropy).alias("target_entropy"),
-        (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
-    )).join(unique_count, on="feature")\
+    output_df = pl.from_records(output, schema=["feature", "conditional_entropy"])\
+        .with_columns((
+            pl.lit(target_entropy).alias("target_entropy"),
+            (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
+        )).join(unique_count, on="feature")\
         .select(("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"))\
         .with_columns(
             ((1 - pl.col("unique_pct")) * pl.col("information_gain")).alias("weighted_information_gain")
         )
 
-    return output
+    return output_df
 
-naive_sample_mi = naive_sample_ig
+discrete_mi = discrete_ig
+
+def discrete_ig_selector(
+    df:pl.DataFrame
+    , target:str
+    , top_k:int
+    , n_threads:int = CPU_COUNT
+) -> list[str]:
+    discrete_cols = discrete_inferral(df)
+    # They are not examined by this feature selection method. So keep them.
+    complement = [f for f in df.columns if f not in discrete_cols] 
+    ig = discrete_ig(df, target, discrete_cols, n_threads)\
+            .top_k(by="information_gain", k = top_k)
+
+    selected = ig.get_column("feature").to_list()
+    return selected + complement
+
 
 def mutual_info(
     df:pl.DataFrame
@@ -116,7 +133,6 @@ def mutual_info(
     , random_state:int=42
     , n_threads:int=CPU_COUNT
 ) -> pl.DataFrame:
-    
     '''Approximates mutual information (information gain) between the continuous variables and the target.
 
         This is essentially a "copy-and-paste" of the mutual_info_classif call in sklearn library. 
@@ -150,7 +166,6 @@ def mutual_info(
     target_col = df[target].to_numpy().ravel()
     unique_targets = np.unique(target_col)
     # parts = {t:df.filter((pl.col(target) == t)) for t in df[target].unique()}
-    # To do: If any part size < k, abort. This gets rid of "points with unique labels" issue too.
     all_masks = {}
     for t in unique_targets:
         all_masks[t] = target_col == t
@@ -182,60 +197,63 @@ def mutual_info(
     output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
     return output
 
+def mutual_info_selector(
+    df:pl.DataFrame
+    , conti_cols:list[str]
+    , target:str
+    , n_neighbors:int=3
+    , random_state:int=42
+    , n_threads:int=CPU_COUNT
+    , top_k:int = 50
+) -> list[str]:
+    mi_scores = mutual_info(df, conti_cols, target, n_neighbors, random_state, n_threads)\
+                .top_k(by="estimated_mi", k = top_k)
+
+    return mi_scores.get_column("feature").to_list()    
+
 def _f_score(
     df:pl.DataFrame
     , target:str
     , num_list:list[str]
 ) -> np.ndarray:
-    '''
-        Same as f_classification, but returns a numpy array of f scores only. 
-        This is used in algorithms like MRMR for easier-to-work-with output datatype.
-
-    '''
+    '''Same as f_classification, but returns a numpy array of f scores only.'''
     
-    # Get average within group and sample variance within group.
-    ## Could potentially replace this with generators instead of lists. Not sure how impactful that would be... Probably no diff.
-    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
-    step_two_expr:list[pl.Expr] = [] # Get average for each column
-    step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
-    # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
+    # See comments in f_classification
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")]
+    step_two_expr:list[pl.Expr] = []
+    step_three_expr:list[pl.Expr] = []
     for n in num_list:
-        n_avg:str = n + "_avg" # avg within class
-        n_tavg:str = n + "_tavg" # true avg / absolute average
-        n_var:str = n + "_var" # var within class
+        n_avg:str = n + "_avg"
+        n_tavg:str = n + "_tavg"
+        n_var:str = n + "_var"
         step_one_expr.append(
             pl.col(n).mean().alias(n_avg)
         )
         step_one_expr.append(
-            pl.col(n).var(ddof=0).alias(n_var) # ddof = 0 so that we don't need to compute pl.col("cnt") - 1
+            pl.col(n).var(ddof=0).alias(n_var)
         )
-        step_two_expr.append( # True average of this column
+        step_two_expr.append(
             (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
         )
         step_three_expr.append(
-            # Between class var (without diving by df_btw_class) / Within class var (without dividng by df_in_class) 
             (pl.col(n_avg) - pl.col(n_tavg)).pow(2).dot(pl.col("cnt"))/ pl.col(n_var).dot(pl.col("cnt"))
         )
 
-    # Get in class average and var
     ref = df.groupby(target).agg(step_one_expr)
     n_samples = len(df)
     n_classes = len(ref)
     df_btw_class = n_classes - 1 
     df_in_class = n_samples - n_classes
-    
-    f_score = ref.with_columns(step_two_expr).select(step_three_expr)\
+    # This is f-score, score in the order of num_list
+    return ref.with_columns(step_two_expr).select(step_three_expr)\
             .to_numpy().ravel() * (df_in_class / df_btw_class)
-    
-    return f_score
 
 def f_classification(
     df:pl.DataFrame
     , target:str
     , num_cols:Optional[list[str]]=None
 ) -> pl.DataFrame:
-    '''
-        Computes ANOVA one way test, the f value/score and the p value. 
+    '''Computes ANOVA one way test, the f value/score and the p value. 
         Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
         and performs better on bigger data.
 
@@ -263,7 +281,7 @@ def f_classification(
     # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
     for n in num_list:
         n_avg:str = n + "_avg" # avg within class
-        n_tavg:str = n + "_tavg" # true avg / absolute average
+        n_tavg:str = n + "_tavg" # true avg / overall average
         n_var:str = n + "_var" # var within class
         step_one_expr.append(
             pl.col(n).mean().alias(n_avg)
@@ -271,7 +289,8 @@ def f_classification(
         step_one_expr.append(
             pl.col(n).var(ddof=0).alias(n_var) # ddof = 0 so that we don't need to compute pl.col("cnt") - 1
         )
-        step_two_expr.append( # True average of this column
+        step_two_expr.append( # True average of this column, reduce the amount of repeated computation.
+            # by using n_avg column dotted with cnt
             (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
         )
         step_three_expr.append(
@@ -289,10 +308,28 @@ def f_classification(
     f_values = ref.with_columns(step_two_expr).select(step_three_expr)\
             .to_numpy().ravel() * (df_in_class / df_btw_class)
     # We should scale this by (df_in_class / df_btw_class) because we did not do this earlier
-    # At this point, f_values should be a pretty small dataframe. Cast to numpy, so that fdtrc can process it properly.
+    # At this point, f_values should be a pretty small dataframe. 
+    # Cast to numpy, so that fdtrc can process it properly.
 
     p_values = fdtrc(df_btw_class, df_in_class, f_values) # get p values 
     return pl.from_records([num_list, f_values, p_values], schema=["feature","f_value","p_value"])
+
+def f_score_selector(
+    df:pl.DataFrame
+    , target:str
+    , top_k:int
+) -> list[str]:
+    
+    nums = get_numeric_cols(df)
+    # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
+    complement = [f for f in df.columns if f not in nums]
+    scores = _f_score(df, target, nums)
+    temp_df = pl.DataFrame({"feature":nums, "fscore":scores}).top_k(
+        by = "fscore", k = top_k
+    )
+
+    selected = temp_df.get_column("feature").to_list()
+    return selected + complement
 
 
 class MRMR_STRATEGY(Enum):
@@ -352,8 +389,7 @@ def mrmr(
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
 ) -> list[str]:
-    '''
-        Implements MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators
+    '''Implements MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators
         , aka relevance)
 
         Currently this only supports classification.
@@ -385,11 +421,6 @@ def mrmr(
                                     , strategy = s
                                     , params = {} if params is None else params
                                     )
-
-    # FYI. This part can be removed.
-    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(s)])\
-                    .top_k(by=str(s), k=5)
-    print(f"Top 5 feature importance by {s} is:\n{importance}")
 
     if low_memory:
         df_local = df.select(num_list)
@@ -423,7 +454,7 @@ def mrmr(
                 # In the rare case this calculation yields a NaN, we punish by adding 1.
                 # Otherwise, proceed as usual. +1 is a punishment because
                 # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
-                cumulating_abs_corr[i] += (1-np.isnan(a)) * np.abs(a) 
+                cumulating_abs_corr[i] += 1 if np.isnan(a) else np.abs(a)
                 denominator = cumulating_abs_corr[i]/j 
                 new_score = scores[i] / denominator
                 if new_score > current_max:
@@ -437,95 +468,22 @@ def mrmr(
     print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
     return selected
 
-# def __mrmr_par_step(c1:pl.Series, c2:pl.Series, i:int, low_memory:bool) -> Tuple[float, float]:
-#     if low_memory:
-#         c2_scaled = (c2 - c2.mean())/c2.std()
-#     else:
-#         c2_scaled = c2
-    
-#     corr = (c1 * c2_scaled).mean()
-#     return np.isnan(corr) * np.abs(corr), i
+def mrmr_selector(
+    df:pl.DataFrame
+    , target:str
+    , top_k:int
+    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
+    , params:Optional[dict[str,Any]] = None
+    , low_memory:bool=False
+) -> list[str]:
 
-# def mrmr_par(df:pl.DataFrame, target:str
-#     , k:int, num_cols:list[str]=None
-#     , strategy:MRMR_STRATEGY=MRMR_STRATEGY.F_SCORE
-#     , params:dict[str,Any]={}
-#     , low_memory:bool=False
-#     , n_threads:int=CPU_COUNT) -> list[str]:
-#     '''
-#         Implements FCQ MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators)
-#         See https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b
-#         for more information.
+    num_cols = get_numeric_cols(df)
+    # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
+    complement = [f for f in df.columns if f not in num_cols]
+    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    mrmr_selected = mrmr(df, target, top_k, num_cols, s, params, low_memory)
 
-#         Currently this only supports classification.
-
-#         Arguments:
-#             df:
-#             target:
-#             k:
-#             num_cols:
-#             strategy: by default, f-score will be used.
-#             params: if a RF/XGB strategy is selected, params is a dict of parameters for the model.
-#             low_memory: 
-
-#         Returns:
-#             pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
-    
-#     '''
-
-#     num_list = []
-#     if isinstance(num_cols, list):
-#         num_list.extend(num_cols)
-#     else:
-#         num_list.extend(get_numeric_cols(df, exclude=[target]))
-
-#     scores = _mrmr_underlying_score(df, target=target, num_list=num_list, strategy=strategy, params=params)
-
-#     # FYI. This part can be removed.
-#     importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(strategy)])\
-#                     .top_k(by=str(strategy), k=5)
-#     print(f"Top 5 feature importance by {strategy} is:\n{importance}")
-
-#     if low_memory:
-#         df_local = df.select(num_list)
-#     else: # this could potentially double memory usage. so I provided a low_memory flag.
-#         df_local = df.select(num_list).with_columns(
-#             (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
-#         ) # Note that if we get a const column, the entire column will be NaN
-
-#     output_size = min(k, len(num_list))
-#     print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
-#     cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
-#     pbar = tqdm(total=output_size)
-#     top_idx = np.argmax(scores)
-#     selected = [num_list[top_idx]]
-#     pbar.update(1)
-#     for j in range(1, output_size): 
-#         argmax = -1
-#         curmax = -1
-#         last_selected_col = df_local.drop_in_place(selected[-1])
-#         if low_memory:
-#             last_selected_col = (last_selected_col - last_selected_col.mean())/last_selected_col.std()
-#         with ThreadPoolExecutor(max_workers=n_threads) as ex:
-#             futures = (
-#                 ex.submit(__mrmr_par_step, last_selected_col, df_local.get_column(f), i, low_memory) 
-#                 for i,f in enumerate(num_list) if f not in selected
-#             )
-#             for res in as_completed(futures):
-#                 corr, i = res.result()
-#                 cumulating_abs_corr[i] += corr
-#                 denominator = cumulating_abs_corr[i]/j
-#                 new_score = scores[i] / denominator
-#                 if new_score > curmax:
-#                     curmax = new_score
-#                     argmax = i
-
-#         selected.append(num_list[argmax])
-#         pbar.update(1)
-
-#     pbar.close()
-#     print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
-#     return selected
+    return mrmr_selected + complement
 
 def knock_out_mrmr(
     df:pl.DataFrame
@@ -536,7 +494,6 @@ def knock_out_mrmr(
     , corr_threshold:float = 0.7
     , params:Optional[dict[str,Any]] = None
 ) -> list[str]:
-
     '''
         Essentially the same as vanilla MRMR. Instead of using sum(abs(corr)) to "weigh down" correlated 
         variables, here we use a simpler knock out rule based on absolute correlation.
@@ -557,11 +514,6 @@ def knock_out_mrmr(
                                     , num_list = num_list
                                     , strategy = s
                                     , params = {} if params is None else params)
-    # FYI. This part can be removed.
-    importance = pl.from_records(list(zip(num_list, scores)), schema=["feature", str(s)])\
-                    .top_k(by=str(s), k=5)
-    print(f"Top 5 feature importance by {s} is:\n{importance}")
-    # true if low correlation, false if high
 
     # Set up
     low_corr = np.abs(df[num_list].corr().to_numpy()) < corr_threshold
@@ -589,7 +541,22 @@ def knock_out_mrmr(
     print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
     return selected
 
-  
+def knock_out_mrmr_selector(
+    df:pl.DataFrame
+    , target:str
+    , top_k:int 
+    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
+    , corr_threshold:float = 0.7
+    , params:Optional[dict[str,Any]] = None
+) -> list[str]:
+
+    num_cols = get_numeric_cols(df)
+    # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
+    complement = [f for f in df.columns if f not in num_cols]
+    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    mrmr_selected = knock_out_mrmr(df, target, top_k, num_cols, s, corr_threshold, params)
+
+    return mrmr_selected + complement
                     
 
 
