@@ -87,6 +87,7 @@ class ExecStep():
     fit_name:Optional[str] = None # name of the FitRecord class (The class that inherits from FitRecord)
     fit_module:Optional[str] = None # module where this FitRecord class belongs to
     fit_record: Optional[FitRecord] = None # The actual content of the Record, will only be not none in blueprints.
+    is_selector:bool = False
     is_custom:bool = False 
 
     def get_args(self) -> str:
@@ -107,6 +108,7 @@ class ExecStep():
 @dataclass
 class ExecPlan():
     steps:list[ExecStep]
+    target:str = ""
 
     def __iter__(self) -> Iterable[ExecStep]:
         return iter(self.steps)
@@ -138,13 +140,26 @@ class ExecPlan():
         return self.steps.pop(0)
 
     def add_step(self
-        , func:Callable[[pl.DataFrame, T], pl.DataFrame|FitTransform]
+        , func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame|FitTransform]
         , desc:str
         , args:dict[str, Any] # Technically is not Any, but Anything that can be serialized by orjson..
-        , is_fit:bool=False) -> None:
+        , is_fit:bool=False
+        ) -> None:
+
+        self.steps.append(
+            ExecStep(func.__name__, func.__module__, desc = desc, args = args
+                    , is_fit = is_fit, is_selector = False, is_custom = False)
+        )
+
+    def add_selector_step(self
+        , func:Callable[Concatenate[pl.DataFrame, P], list[str]]
+        , desc:str
+        , args:dict[str, Any]
+        ) -> None:
         
         self.steps.append(
-            ExecStep(func.__name__, func.__module__, desc, args, is_fit, False)
+            ExecStep(func.__name__, func.__module__, desc = desc, args = args, 
+                    is_fit = False, is_selector = True, is_custom = False)
         )
 
     def add_custom_step(self
@@ -154,10 +169,29 @@ class ExecPlan():
         , is_fit:bool=False) -> None:
         
         self.steps.append(
-            ExecStep(func.__name__, func.__module__, desc, args, is_fit, True)
+            ExecStep(func.__name__, func.__module__, desc = desc, args = args, 
+                    is_fit = is_fit, is_selector = False, is_custom = True)
         )
 
-def _select_cols(df:pl.DataFrame, cols:list[str]) -> pl.DataFrame:
+    def add_custom_selector_step(self
+        , func:Callable[[pl.DataFrame, T], list[str]]
+        , desc:str
+        , args:dict[str, Any]
+        ) -> None:
+        
+        self.steps.append(
+            ExecStep(func.__name__, func.__module__, desc = desc, args = args, 
+                    is_fit = False, is_selector = True, is_custom = True)
+        )
+
+def _select_cols(df:pl.DataFrame, cols:list[str], target:str) -> pl.DataFrame:
+
+    # Whether to select target or not depends on if df has a target column.
+    if target in df.columns and target not in cols:
+        cols.append(target)
+    elif target not in df.columns and target in cols:
+        cols.remove(target)
+
     # don't check if c in cols belongs to df. Let it error.
     return df.select(cols)
 
@@ -197,7 +231,8 @@ class PipeBuilder:
             if target not in self.data.columns:
                 raise ValueError("Target is not found in the dataframe.")
             
-        self.target = target 
+        self.target = target
+        self._blueprint.target = target
         return self
         
     def set_data(self, df:pl.DataFrame|pd.DataFrame) -> Self:
@@ -279,12 +314,15 @@ class PipeBuilder:
         self._built = False
 
     def select_cols(self, cols:list[str]) -> Self:
-        self._execution_plan.add_step(
-            func = _select_cols,
-            desc = BuiltinExecutions.SELECT.value,
-            args = {"cols":cols}
-        )
-        return self
+        if self._is_ready():
+            self._execution_plan.add_step(
+                func = _select_cols,
+                desc = BuiltinExecutions.SELECT.value,
+                args = {"cols":cols, "target":self.target}
+            )
+            return self
+        else:
+            raise ValueError("Target must be set before setting column selections.")
     
     def set_lower_cols(self) -> Self:
         self._execution_plan.add_step(
@@ -526,6 +564,50 @@ class PipeBuilder:
         )
 
         return self
+    
+    def add_selector(self
+        , func:Callable[Concatenate[pl.DataFrame, P], list[str]]
+        , desc:str
+        , args:dict[str, Any]
+        ) -> Self:
+        '''A normal step is a function that takes in a dataframe, some other args, and outputs a dataframe.'''
+        if func.__annotations__.get("return", "") != list[str]:
+            raise TypeError("A selector function must explicitly provide a list[str] return type.")
+
+        if self._is_ready():
+            if "target" not in args:
+                args["target"] = self.target
+            self._execution_plan.add_selector_step(
+                func = func,
+                desc = desc,
+                args = args
+            )
+            return self
+        else:
+            raise ValueError("Selectors can only be queued after df and target are set.")
+    
+    def add_custom_selector(self
+        , func:Callable[Concatenate[pl.DataFrame, P], list[str]]
+        , desc:str
+        , args:dict[str, Any]
+        ) -> Self:
+        '''A normal step is a function that takes in a dataframe, some other args, and outputs a dataframe.'''
+        if func.__annotations__.get("return", "") != list[str]:
+            raise TypeError("A selector function must explicitly provide a list[str] return type.")
+
+        if self._is_ready():
+            if "target" not in args:
+                args["target"] = self.target
+            self._execution_plan.add_custom_selector_step(
+                func = func,
+                desc = desc,
+                args = args
+            )
+            return self
+        else:
+            raise ValueError("Selectors can only be queued after df and target are set.")
+
+        return self
 
     def add_custom_fit_transform(self
         , func:Callable[Concatenate[pl.DataFrame, P], FitTransform]
@@ -538,7 +620,7 @@ class PipeBuilder:
 
         if "return" not in func.__annotations__:
             logger.info("It is highly recommended that the custom transform returns "
-                        "a type that inherits from TransformationResult."
+                        "a type that inherits from FitTransform in the transform.py module."
                         "If this returns a pl.DataFrame, use add_custom_step instead.")
 
         self._execution_plan.add_custom_step(
@@ -553,13 +635,11 @@ class PipeBuilder:
     ### End of Custom Actions
 
     ### Build (fit), and some others
-    def fit(self, X, y) -> Self:
-        pass
+    # def fit(self, X, y) -> Self:
+    #     pass
 
-    def build(self, df:Optional[pl.DataFrame|pd.DataFrame]=None) -> pl.DataFrame:
-        '''
-            Build according to the steps.
-
+    def build(self) -> pl.DataFrame:
+        '''Build according to the steps.
             Arguments:
                 df: Another chance to set input df if it has not been set.
 
@@ -567,14 +647,11 @@ class PipeBuilder:
                 A dataframe.
         
         '''
-        if df is not None:
-            _ = self.set_data(df)
-        
         n = len(self._execution_plan)
         logger.info(f"Starting to build. Total steps: {n}.")
         if not self._is_ready():
             raise ValueError(f"Dataframe is not set properly, or the target {self.target} is not found "
-                             "in the dataframe.")
+                             "in the dataframe. Cannot build without target.")
         
         if self._built:
             logger.warning("The PipeBuilder is built once already. It is not intended to be built again. "
@@ -585,10 +662,26 @@ class PipeBuilder:
         while not self._execution_plan.is_empty():
             i += 1
             step = self._execution_plan.popleft()
-            logger.info(f"|{i}/{n}|: Executed Step: {step.name} | is_fit: {step.is_fit}")
+            logger.info(f"|{i}/{n}|: Step: {step.name} | is_fit: {step.is_fit} | is_selector: {step.is_selector}")
             start = perf_counter()
             success = True
-            if step.is_fit: # Essentially the fit step.
+            if step.is_selector:
+                selector:Callable[Concatenate[pl.DataFrame, P], list[str]]
+                selector = getattr(importlib.import_module(step.module), step.name)
+                selected_cols:list[str] = selector(self.data, **step.args)
+                print(selected_cols)
+                if self.target in selected_cols:
+                    self.data = self.data.select(selected_cols)
+                else:
+                    self.data = self.data.select(selected_cols + [self.target])
+
+                logger.info(f"The following features are kept: {selected_cols}.")
+                self._blueprint.add_step(
+                    func = _select_cols,
+                    desc = step.desc,
+                    args = {"cols": selected_cols, "target": self.target}
+                )
+            elif step.is_fit:
                 apply_transf:Callable[Concatenate[pl.DataFrame, P], FitTransform] 
                 apply_transf = getattr(importlib.import_module(step.module), step.name)
                 rec: FitRecord
@@ -619,8 +712,7 @@ class PipeBuilder:
                     "and can be saved as a json by calling .write()")
 
         self._built = True
-        output = self.data.clone()
-        return output
+        return self.data
     
     def get_final_data(self) -> Optional[pl.DataFrame]:
         if self._built:
@@ -686,9 +778,9 @@ class PipeBuilder:
             logger.info("Local ./blueprints/ directory is not found. It will be created.")
             os.mkdir(directory)
         try:
-            data = orjson.dumps(self._blueprint, option=orjson.OPT_NON_STR_KEYS|orjson.OPT_SERIALIZE_NUMPY)
             destination = directory+name
             with open(destination, "wb") as f:
+                data = orjson.dumps(self._blueprint, option=orjson.OPT_NON_STR_KEYS|orjson.OPT_SERIALIZE_NUMPY)
                 f.write(data)
 
             logger.info(f"Successfully saved to {destination}.")
@@ -703,6 +795,7 @@ class PipeBuilder:
             data = orjson.loads(f.read())
             f.close()
             steps:list[dict[str, Any]] = data["steps"]
+            self.target = data["target"]
             for s in steps:
                 if s["is_fit"]: # Need to recreate TransformRecord objects from dict
                     name = s.get("fit_name", None)

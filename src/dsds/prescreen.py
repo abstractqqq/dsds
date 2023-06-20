@@ -260,7 +260,7 @@ def discrete_inferral(df:pl.DataFrame
 
 def constant_inferral(df:pl.DataFrame, include_null:bool=True) -> list[str]:
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)
-    remove_cols = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list() # These are constants, remove.
+    remove_cols = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list() 
     if include_null: # This step is kind of inefficient right now.
         binary = temp.filter(pl.col("n_unique") == 2).get_column("column")
         for b in binary: 

@@ -115,13 +115,16 @@ def discrete_ig_selector(
     , top_k:int
     , n_threads:int = CPU_COUNT
 ) -> list[str]:
-    discrete_cols = discrete_inferral(df)
+    discrete_cols = discrete_inferral(df, exclude=[target])
     # They are not examined by this feature selection method. So keep them.
-    complement = [f for f in df.columns if f not in discrete_cols] 
+    complement = [f for f in df.columns if f not in discrete_cols and f != target] 
     ig = discrete_ig(df, target, discrete_cols, n_threads)\
             .top_k(by="information_gain", k = top_k)
 
     selected = ig.get_column("feature").to_list()
+    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+        "cannot process. They are also returned.")
+
     return selected + complement
 
 
@@ -199,17 +202,22 @@ def mutual_info(
 
 def mutual_info_selector(
     df:pl.DataFrame
-    , conti_cols:list[str]
     , target:str
     , n_neighbors:int=3
     , random_state:int=42
     , n_threads:int=CPU_COUNT
     , top_k:int = 50
 ) -> list[str]:
-    mi_scores = mutual_info(df, conti_cols, target, n_neighbors, random_state, n_threads)\
+    
+    nums = get_numeric_cols(df, exclude=[target])
+    complement = [f for f in df.columns if f not in nums and f != target]
+    mi_scores = mutual_info(df, nums, target, n_neighbors, random_state, n_threads)\
                 .top_k(by="estimated_mi", k = top_k)
 
-    return mi_scores.get_column("feature").to_list()    
+    selected = mi_scores.get_column("feature").to_list()
+    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+        "cannot process. They are also returned.")
+    return selected + complement
 
 def _f_score(
     df:pl.DataFrame
@@ -320,15 +328,18 @@ def f_score_selector(
     , top_k:int
 ) -> list[str]:
     
-    nums = get_numeric_cols(df)
+    nums = get_numeric_cols(df, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in df.columns if f not in nums]
+    complement = [f for f in df.columns if f not in nums and f != target]
     scores = _f_score(df, target, nums)
     temp_df = pl.DataFrame({"feature":nums, "fscore":scores}).top_k(
         by = "fscore", k = top_k
     )
-
     selected = temp_df.get_column("feature").to_list()
+    
+    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+    "cannot process. They are also returned.")
+
     return selected + complement
 
 
@@ -477,13 +488,15 @@ def mrmr_selector(
     , low_memory:bool=False
 ) -> list[str]:
 
-    num_cols = get_numeric_cols(df)
+    num_cols = get_numeric_cols(df, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in df.columns if f not in num_cols]
+    complement = [f for f in df.columns if f not in num_cols and f != target]
     s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
-    mrmr_selected = mrmr(df, target, top_k, num_cols, s, params, low_memory)
+    selected = mrmr(df, target, top_k, num_cols, s, params, low_memory)
 
-    return mrmr_selected + complement
+    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+          "cannot process. They are also returned.")
+    return selected + complement
 
 def knock_out_mrmr(
     df:pl.DataFrame
@@ -550,13 +563,14 @@ def knock_out_mrmr_selector(
     , params:Optional[dict[str,Any]] = None
 ) -> list[str]:
 
-    num_cols = get_numeric_cols(df)
+    num_cols = get_numeric_cols(df, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in df.columns if f not in num_cols]
+    complement = [f for f in df.columns if f not in num_cols and f != target]
     s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
-    mrmr_selected = knock_out_mrmr(df, target, top_k, num_cols, s, corr_threshold, params)
-
-    return mrmr_selected + complement
+    selected = knock_out_mrmr(df, target, top_k, num_cols, s, corr_threshold, params)
+    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+        "cannot process. They are also returned.")
+    return selected + complement
                     
 
 
