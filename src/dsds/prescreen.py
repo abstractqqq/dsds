@@ -8,6 +8,7 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]  # noqa: E501
 POLARS_DATETIME_TYPES:Final[list[pl.DataType]] = [pl.Datetime, pl.Date, pl.Time]
+
 #----------------------------------------------------------------------------------------------#
 # Generic columns checks | Only works with Polars because Pandas's data types suck!            #
 #----------------------------------------------------------------------------------------------#
@@ -122,7 +123,7 @@ def duplicate_inferral():
 # Check if column is an email column. This is easy. Email regex is easy.
 # But email column might have many nulls. Check only on non-null values.
 def email_inferral():
-    pass
+    pass 
 
 # Check for columns that are US zip codes.
 def zipcode_inferral():
@@ -130,7 +131,7 @@ def zipcode_inferral():
 
 # Check if a column is date
 def date_inferral(df:pl.DataFrame) -> list[str]:
-
+    '''Infers date columns in dataframe. This inferral is not perfect.'''
     logger.info("Date Inferral is error prone due to the huge variety of date formats. Please use with caution.")
     
     dates = [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
@@ -156,7 +157,7 @@ def date_inferral(df:pl.DataFrame) -> list[str]:
     return dates
 
 def date_removal(df:pl.DataFrame) -> pl.DataFrame:
-    '''Removes all date columns from dataframe. (Will infer if string column is date.)'''
+    '''Removes all date columns from dataframe. This algorithm will try to infer if string column is date.'''
 
     remove_cols = date_inferral(df) 
     logger.info(f"The following columns are dropped because they are dates. {remove_cols}.\n"
@@ -164,20 +165,13 @@ def date_removal(df:pl.DataFrame) -> pl.DataFrame:
     return df.drop(remove_cols)
 
 def null_inferral(df:pl.DataFrame, threshold:float=0.5) -> list[str]:
+    '''Infers columns that have more than threshold pct of null values. Threshold should be between 0 and 1.'''
     return (df.null_count()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
                     .filter(pl.col("null_pct") >= threshold)\
                     .get_column("column").to_list() 
 
 def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
-    '''Removes columns with more than threshold% null values.
-
-        Arguments:
-            df:
-            threshold:
-
-        Returns:
-            df without null_pct > threshold columns
-    '''
+    '''Removes columns with more than threshold pct of null values. Threshold should be between 0 and 1.'''
 
     remove_cols = null_inferral(df, threshold) 
     logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
@@ -186,27 +180,14 @@ def null_removal(df:pl.DataFrame, threshold:float=0.5) -> pl.DataFrame:
     return df.drop(remove_cols)
 
 def var_inferral(df:pl.DataFrame, threshold:float, target:str) -> list[str]:
+    '''Infers columns that have lower than threshold variance. Target will not be included.'''
     var_expr = (pl.col(x).var() for x in get_numeric_cols(df) if x != target)
     return df.select(var_expr).transpose(include_header=True, column_names=["var"])\
                     .filter(pl.col("var") < threshold).get_column("column").to_list() 
 
 def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
-    '''
-        Removes features with low variance. Features with > threshold variance will be kept. This only works for 
-        numerical columns.
-        
-        Note that this can effectively remove (numerical) constants as well. It is, however, hard to come up with
-        a uniform threshold for all features, as numerical features can be at very different scales. 
-
-        Arguments:
-            df:
-            threshold:
-            target: target in your predictive model. Some targets may have low variance, e.g. imbalanced binary targets. 
-                So we should exclude it.
-
-        Returns:
-            df without columns with < threshold var.
-    '''
+    '''Removes features with low variance. Features with > threshold variance will be kept. 
+        Threshold should be positive.'''
 
     remove_cols = var_inferral(df, threshold, target) 
     logger.info(f"The following columns are dropped because they have lower than {threshold} variance. {remove_cols}.\n"
@@ -217,6 +198,7 @@ def var_removal(df:pl.DataFrame, threshold:float, target:str) -> pl.DataFrame:
 regex_inferral = get_cols_regex
 
 def regex_removal(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> pl.DataFrame:
+    '''Remove columns if they satisfy some regex rules.'''
     remove_cols = get_cols_regex(df, pattern, lowercase)
     logger.info(f"The following columns are dropped because their names satisfy the regex rule: {pattern}."
                 f" {remove_cols}.\n"
@@ -224,17 +206,21 @@ def regex_removal(df:pl.DataFrame, pattern:str, lowercase:bool=False) -> pl.Data
     return df.drop(remove_cols)
 
 def get_unique_count(df:pl.DataFrame) -> pl.DataFrame:
+    '''Gets unique counts for columns.'''
     return df.select(
         (pl.col(x).n_unique() for x in df.columns)
     ).transpose(include_header=True, column_names=["n_unique"])
 
 # Really this is just an alias
 def unique_inferral(df:pl.DataFrame, threshold:float=0.9) -> list[str]:
+    '''Infers columns that have higher than threshold pct of unique values.'''
     return get_unique_count(df).with_columns(
         (pl.col("n_unique")/len(df)).alias("unique_pct")
     ).filter(pl.col("unique_pct") >= threshold).get_column("column").to_list()
 
 def unique_removal(df:pl.DataFrame, threshold:float=0.9) -> pl.DataFrame:
+    '''Remove columns that have higher than threshold pct of unique values.'''
+
     remove_cols = unique_inferral(df, threshold)
     logger.info(f"The following columns are dropped because more than {threshold*100:.2f}% of unique values."
                 f" {remove_cols}.\n"

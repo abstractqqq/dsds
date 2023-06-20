@@ -33,10 +33,10 @@ def _conditional_entropy(
 
     cond_entropy = df.groupby((target, predictive)).agg(
         pl.count()
-    ).with_columns((
+    ).with_columns(
         (pl.col("count").sum().over(predictive) / len(df)).alias("prob(predictive)"),
         (pl.col("count") / pl.col("count").sum()).alias("prob(target,predictive)")
-    )).select(
+    ).select(
         (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() 
            * pl.col("prob(target,predictive)")).sum()) # This is the conditional entropy.
     ).to_numpy()[0,0]
@@ -96,11 +96,11 @@ def discrete_ig(
                 pbar.update(1)
 
     output_df = pl.from_records(output, schema=["feature", "conditional_entropy"])\
-        .with_columns((
+        .with_columns(
             pl.lit(target_entropy).alias("target_entropy"),
             (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
-        )).join(unique_count, on="feature")\
-        .select(("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain"))\
+        ).join(unique_count, on="feature")\
+        .select("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain")\
         .with_columns(
             ((1 - pl.col("unique_pct")) * pl.col("information_gain")).alias("weighted_information_gain")
         )

@@ -17,7 +17,9 @@ import numpy as np
 from enum import Enum
 from typing import Any, Tuple, Iterable, Optional
 
-# ADD A COLUMN TYPE SAFE GUARD
+# A lot of companies are still using Python < 3.10
+# So I am not using match statements
+# Well, it does say in project description that we need Python 3.10.
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +151,13 @@ class EncoderRecord(FitRecord):
     ###
 
     @staticmethod
-    def _find_first_index_of_smaller(u:float, order:list[Tuple[str, int]]) -> int:
+    def _find_first_index_of_smaller(u:float, order:list[Tuple[float, int]]) -> int:
         order.sort(key=lambda x: x[1])
         for v, i in order: # order looks like [(18.21, 1), (22.32, 2), ...]
-            if u <= float(v):
+            if u <= v:
                 return i
         # percentile max out at 100. It is possible that in future data, there will be some
-        # that is > current max. So assign all that to 101
+        # that is > existing max. So assign all that to 101
         return 101 
 
     def transform(self, df:pl.DataFrame) -> pl.DataFrame:
@@ -163,7 +165,12 @@ class EncoderRecord(FitRecord):
         if self.strategy == EncodingStrategy.PERCENTILE:
             for i,f in enumerate(self.features):
                 # Construct a new series for each column. SLOW SLOW SLOW...
-                order = list(self.mappings[i].items()) # JSON KEY IS ALWAYS A STR
+
+                # If this comes from a blue_print, then we will get a dict with str keys
+                # because JSON KEY IS ALWAYS A STR.
+                # If we are running this after generating this record, the original key is 
+                # numeric. So either way, this works.
+                order = [(float(v), p) for v, p in self.mappings[i].items()] 
                 percentiles = []
                 already_mapped = {}
                 for v in df.get_column(f):
@@ -179,11 +186,12 @@ class EncoderRecord(FitRecord):
                 
                 new_f = pl.Series(f, percentiles).cast(pl.UInt8)
                 df.replace_at_idx(df.find_idx_by_name(f), new_f)
+                
             return df
         
         elif self.strategy == EncodingStrategy.ONE_HOT:
             one_hot_cols = self.features
-            one_hot_map = self.mappings[0]
+            one_hot_map = self.mappings[0] # One hot mapping only has 1 mapping in the list.
             key:str = list(one_hot_map.keys())[0]
             value:str = one_hot_map[key] # must be a string
             separator = value[value.rfind(key) - 1]
@@ -207,18 +215,23 @@ class FitTransform:
         return self.mapping.materialize()
 
 
-def check_columns_type(df:pl.DataFrame, cols:list[str]) -> str:
+def check_columns_types(df:pl.DataFrame, cols:Optional[list[str]]=None) -> str:
+    '''Returns the unique types of given columns in a single string. If multiple types are present
+    they are joined by a |. If cols is not given, automatically uses all df's columns.'''
     types = set()
-    temp = df.select(cols)
+    if cols is None:
+        check_cols:list[str] = df.columns
+    else:
+        check_cols:list[str] = cols 
+
+    temp = df.select(check_cols)
     for t in temp.dtypes:
         types.add(dtype_mapping(t))
     
-    if len(types) > 1:
+    if len(types) > 0:
         return "|".join(types)
-    elif len(types) == 1:
-        return types.pop()
     else:
-        return "empty"
+        return "unknown"
 
 
 def impute(df:pl.DataFrame
@@ -226,7 +239,6 @@ def impute(df:pl.DataFrame
     , strategy:ImputationStartegy|str = ImputationStartegy.MEDIAN
     , const:int = 1
 ) -> FitTransform:
-    
     '''
         Arguments:
             df:
@@ -277,7 +289,7 @@ def scale(df:pl.DataFrame
             const: only uses this value if strategy = ImputationStartegy.CONST
     
     '''
-    types = check_columns_type(df, cols)
+    types = check_columns_types(df, cols)
     if types != "numeric":
         raise ValueError(f"Scaling can only be used on numeric columns, not {types} types.")
     
@@ -324,19 +336,16 @@ def boolean_transform(df:pl.DataFrame, keep_null:bool=True) -> pl.DataFrame:
     return df.with_columns(exprs)
 
 def one_hot_encode(df:pl.DataFrame, cols:Optional[list[str]]=None, separator:str="_") -> FitTransform:
-    '''
+    '''One hot encoding. The separator must be a single character.'''
 
-    
-    '''
     # Here is a rule: Separator must be a single char
     # This is enforced because we want to be able to extract separator from EncoderRecord
     if len(separator) != 1:
         raise ValueError(f"Separator must be a single character for the system to work, not {separator}")
     
-
     str_cols = []
     if isinstance(cols, list):
-        types = check_columns_type(df, cols)
+        types = check_columns_types(df, cols)
         if types != "string":
             raise ValueError(f"One-hot encoding can only be used on string columns, not {types} types.")
         str_cols.extend(cols)
@@ -391,7 +400,7 @@ def percentile_encode(df:pl.DataFrame
     num_list:list[str] = []
     exclude_list:list[str] = [] if exclude is None else exclude
     if isinstance(cols, list):
-        types = check_columns_type(df, cols)
+        types = check_columns_types(df, cols)
         if types != "numeric":
             raise ValueError(f"Percentile encoding can only be used on numeric columns, not {types} types.")
         num_list.extend(cols)
@@ -572,7 +581,7 @@ def ordinal_auto_encode(df:pl.DataFrame
     '''
     ordinal_list:list[str] = []
     if isinstance(cols, list):
-        types = check_columns_type(df, cols)
+        types = check_columns_types(df, cols)
         if types != "string":
             raise ValueError(f"Ordinal encoding can only be used on string columns, not {types} types.")
         ordinal_list.extend(cols)
@@ -634,7 +643,6 @@ def smooth_target_encode(
     , smoothing:float
     , check_binary:bool=True
 ) -> FitTransform:
-    
     '''Smooth target encoding for binary classification. Currently only implemented for binary target.
 
         See https://towardsdatascience.com/dealing-with-categorical-variables-by-using-target-encoder-a0f1733a4c69
@@ -648,9 +656,9 @@ def smooth_target_encode(
             check_binary:
     
     '''
-    str_cols = []
+    str_cols:list[str] = []
     if isinstance(cols, list):
-        types = check_columns_type(df, cols)
+        types = check_columns_types(df, cols)
         if types != "string":
             raise ValueError(f"Target encoding can only be used on string columns, not {types} types.")
         str_cols.extend(cols)
@@ -660,28 +668,25 @@ def smooth_target_encode(
     # Only works for binary target for now 
     # Check if it is binary or not.
     if check_binary:
-        target_uniques = list(df.get_column(target).unique().sort())
-        if target_uniques != [0,1]:
-            raise ValueError(f"The target column {target} must be a binary target with 0 and 1 representing the two classes.")
+        target_uniques = df.get_column(target).unique()
+        if len(target_uniques) != 2 or (not (0 in target_uniques and 1 in target_uniques)):
+            raise ValueError(f"The target column {target} must be a binary target with 0s and 1s.")
 
     p = df.get_column(target).mean() # probability of target = 1
     all_mappings:list[dict[Any, Any]] = []
     exprs:list[pl.Expr] = []
-    # Test and see how null will be encoded.
+    # If c has null, null will become a group when we group by.
     for c in str_cols:
-        ref = df.groupby(c).agg((
+        ref = df.groupby(c).agg(
             pl.col(target).sum().alias("cnt"),
             pl.col(target).mean().alias("cond_p")
-        )).with_columns(
-            (1 / (1 + ((-(pl.col("cnt") - pl.lit(min_samples_leaf)))/pl.lit(smoothing)).exp())).alias("alpha")
+        ).with_columns(
+            (1/(1 + ((-(pl.col("cnt") - pl.lit(min_samples_leaf)))/pl.lit(smoothing)).exp())).alias("alpha")
         ).with_columns(
             (pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)).alias("encoded_as")
-        ).select(
-            pl.col(c).alias("originally_as"),
-            pl.col("encoded_as")
         )
-
-        mapping = dict(zip(ref["originally_as"], ref["encoded_as"]))
+        
+        mapping = dict(zip(ref[c], ref["encoded_as"]))
         all_mappings.append(mapping)
         exprs.append(pl.col(c).map_dict(mapping))
         

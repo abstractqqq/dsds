@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from .prescreen import (
     remove_if_exists
     , regex_removal
@@ -41,19 +42,44 @@ T = TypeVar("T")
 P = ParamSpec("P")
 
 logger = logging.getLogger(__name__)
+
 ################################################################################################
 # WORK IN PROGRESS
+# 
+# For everyone who is reading this, my coding style is primarily influenced by the Primeagen,
+# some Rust conventions, and a little bit of functional style, although unfortunately we have to 
+# work with classes in Python.
+#
+# Terminologies: 
+# A ExecStep/transformation is canonical if the transformation on the dataset does not require
+# any information about the dataset to be performed or repeated.
+# e.g. raise the value of a column to the power of 2
+# e.g. remove columns with names a, b, c
+# They should be ExecSteps with is_fit = False and is_selector = False.
+# A canonical transformation should have the following signature:
+# Concatenate[pl.DataFrame, P] ---> pl.DataFrame, where
+# the output is just the transformed dataframe.
+# 
+# A non-canonical transformation is a transformation that requires information about the data to
+# be repeated.
+# e.g. impute (because we might need the mean/median of columns), scale, encoding... 
+# They should be ExecSteps with is_fit = True and is_selector = False.
+# A non-canonical transfromation should have the signature:
+# Concatenate[pl.DataFrame, P] ---> FitTransform, where
+# P = placeholder for other parameters
+# FitTransform is a data container that contains 
+# 1. transformed: the transformed dataframe
+# 2. mapping: a FitRecord that contains the necessary info about the data to repeat this fit
+#
+# A selector is a function that has the following signature:
+# Concatenate[pl.DataFrame, P] ---> list[str], where
+# P = placeholder for other parameters
+#
 ################################################################################################
 
-# We need this abstraction for the following reasons
-# 1. In the future, I want to add "checkpoint" (save to local)
-# But if something is saved to local before, I want the plan to 
-# notice it and read directly to local and skip the "checkpointed" steps.
-# 2. Better organization for the execution.
-#
 
 # This is just a builtin mapping for desc.
-class BuiltinExecutions(Enum):
+class BuiltinExecs(Enum):
     NULL_REMOVAL = "Remove columns with more than {:.2f}% nulls."
     VAR_REMOVAL = "Remove columns with less than {} variance. (Not recommended.)"
     CONST_REMOVAL = "Remove columns that are constants."
@@ -198,6 +224,19 @@ def _select_cols(df:pl.DataFrame, cols:list[str], target:str) -> pl.DataFrame:
 def _lower_columns(df:pl.DataFrame) -> pl.DataFrame:
     return df.rename({c: c.lower() for c in df.columns})
 
+
+# 1. The exact logic 
+# Pipebuilder -> ExecPlan (as execution_plan)
+#             -> ExecPlan (as _blueprint)
+# can be improved. Especially in execution_plan, we can totally just use the callable,
+# instead of importing it in the build process.
+# 
+# 2. Can we make output json smaller (slim down ExecStep)? Do we really need all the fields?
+# I want to avoid nesting. So it is flatter. Can we be more precise?
+#
+# 3. Better text representation
+#
+
 class PipeBuilder:
 
     def __init__(self, project_name:str="my_project"):
@@ -317,7 +356,7 @@ class PipeBuilder:
         if self._is_ready():
             self._execution_plan.add_step(
                 func = _select_cols,
-                desc = BuiltinExecutions.SELECT.value,
+                desc = BuiltinExecs.SELECT.value,
                 args = {"cols":cols, "target":self.target}
             )
             return self
@@ -327,7 +366,7 @@ class PipeBuilder:
     def set_lower_cols(self) -> Self:
         self._execution_plan.add_step(
             func = _lower_columns,
-            desc = BuiltinExecutions.LOWER.value,
+            desc = BuiltinExecs.LOWER.value,
             args = {}
         )
         return self
@@ -359,7 +398,7 @@ class PipeBuilder:
 
         self._execution_plan.add_step(
             func = null_removal ,
-            desc = BuiltinExecutions.NULL_REMOVAL.value.format(threshold*100),
+            desc = BuiltinExecs.NULL_REMOVAL.value.format(threshold*100),
             args = {"threshold":threshold}  
         )
         return self 
@@ -371,7 +410,7 @@ class PipeBuilder:
         if self._is_ready():
             self._execution_plan.add_step(
                 func = var_removal,
-                desc = BuiltinExecutions.VAR_REMOVAL.value.format(threshold),
+                desc = BuiltinExecs.VAR_REMOVAL.value.format(threshold),
                 args = {"threshold":threshold, "target":self.target},
             )
             return self
@@ -382,7 +421,7 @@ class PipeBuilder:
         
         self._execution_plan.add_step(
             func = constant_removal,
-            desc = BuiltinExecutions.CONST_REMOVAL.value,
+            desc = BuiltinExecs.CONST_REMOVAL.value,
             args = {"include_null":include_null},
         )
         return self
@@ -393,14 +432,14 @@ class PipeBuilder:
 
         self._execution_plan.add_step(
             func = unique_removal ,
-            desc = BuiltinExecutions.UNIQUE_REMOVAL.value.format(threshold*100),
+            desc = BuiltinExecs.UNIQUE_REMOVAL.value.format(threshold*100),
             args = {"threshold":threshold}  
         )
         return self 
     
     def set_regex_removal(self, pat:str, lowercase:bool=False) -> Self:
         '''Removes columns that satisfies the regex rule. May optionally only check on lowercased column names.'''
-        description = BuiltinExecutions.REGX_REMOVAL.value.format(pat)
+        description = BuiltinExecs.REGX_REMOVAL.value.format(pat)
         if lowercase:
             description += ". Everything will be lowercased."
 
@@ -415,7 +454,7 @@ class PipeBuilder:
         '''Removes the given columns.'''
         self._execution_plan.add_step(
             func = remove_if_exists,
-            desc = BuiltinExecutions.COL_REMOVAL.value,
+            desc = BuiltinExecs.COL_REMOVAL.value,
             args = {"to_drop":cols},
         )
         return self
@@ -424,7 +463,7 @@ class PipeBuilder:
         '''Removes columns that are inferred to be dates.'''
         self._execution_plan.add_step(
             func = date_removal ,
-            desc = BuiltinExecutions.DATE_REMOVAL.value,
+            desc = BuiltinExecs.DATE_REMOVAL.value,
             args = {}
         )
         return self 
@@ -438,7 +477,7 @@ class PipeBuilder:
         # const only matters if startegy is constant
         self._execution_plan.add_step(
             func = scale,
-            desc = BuiltinExecutions.SCALE.value.format(strategy),
+            desc = BuiltinExecs.SCALE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
             is_fit = True
         )
@@ -451,7 +490,7 @@ class PipeBuilder:
         # const only matters if startegy is constant
         self._execution_plan.add_step(
             func = impute,
-            desc = BuiltinExecutions.IMPUTE.value.format(strategy),
+            desc = BuiltinExecs.IMPUTE.value.format(strategy),
             args = {"cols":cols, "strategy": strategy, "const":const},
             is_fit = True
         )
@@ -463,7 +502,7 @@ class PipeBuilder:
     def set_binary_encoding(self, cols:Optional[list[str]]=None) -> Self:
         
         if cols:
-            description = BuiltinExecutions.BINARY_ENCODE.value
+            description = BuiltinExecs.BINARY_ENCODE.value
         else:
             description = "Automatically detect binary columns and turn them into [0,1] values by their order."
 
@@ -479,7 +518,7 @@ class PipeBuilder:
         
         self._execution_plan.add_step(
             func = ordinal_encode,
-            desc = BuiltinExecutions.ORDINAL_ENCODE.value,
+            desc = BuiltinExecs.ORDINAL_ENCODE.value,
             args = {"ordinal_mapping":mapping, "default": default},
             is_fit = True
         )
@@ -489,7 +528,7 @@ class PipeBuilder:
         
         self._execution_plan.add_step(
             func = ordinal_auto_encode,
-            desc = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value,
+            desc = BuiltinExecs.ORDINAL_AUTO_ENCODE.value,
             args = {"cols":cols, "default": default},
             is_fit = True
         )
@@ -500,7 +539,7 @@ class PipeBuilder:
         if self._is_ready():
             self._execution_plan.add_step(
                 func = smooth_target_encode,
-                desc = BuiltinExecutions.TARGET_ENCODE.value,
+                desc = BuiltinExecs.TARGET_ENCODE.value,
                 args = {"target":self.target, "cols": cols, "min_samples_leaf":min_samples_leaf
                         , "smoothing":smoothing},
                 is_fit = True
@@ -512,7 +551,7 @@ class PipeBuilder:
     def set_one_hot_encoding(self, cols:Optional[list[str]]=None, separator:str="_") -> Self:
         
         if cols:
-            description = BuiltinExecutions.ORDINAL_AUTO_ENCODE.value
+            description = BuiltinExecs.ORDINAL_AUTO_ENCODE.value
         else:
             description = "Automatically detect string columns and one-hot encode them."
 
@@ -528,7 +567,7 @@ class PipeBuilder:
 
         self._execution_plan.add_step(
             func = percentile_encode,
-            desc = BuiltinExecutions.PERCENTILE_ENCODE.value,
+            desc = BuiltinExecs.PERCENTILE_ENCODE.value,
             args = {"cols":cols},
             is_fit = True
         )
@@ -570,8 +609,8 @@ class PipeBuilder:
         , desc:str
         , args:dict[str, Any]
         ) -> Self:
-        '''A normal step is a function that takes in a dataframe, some other args, and outputs a dataframe.'''
-        if func.__annotations__.get("return", "") != list[str]:
+
+        if str(inspect.signature(func).return_annotation) != "list[str]":
             raise TypeError("A selector function must explicitly provide a list[str] return type.")
 
         if self._is_ready():
@@ -592,7 +631,7 @@ class PipeBuilder:
         , args:dict[str, Any]
         ) -> Self:
         '''A normal step is a function that takes in a dataframe, some other args, and outputs a dataframe.'''
-        if func.__annotations__.get("return", "") != list[str]:
+        if str(inspect.signature(func).return_annotation) != "list[str]":
             raise TypeError("A selector function must explicitly provide a list[str] return type.")
 
         if self._is_ready():
@@ -634,9 +673,42 @@ class PipeBuilder:
 
     ### End of Custom Actions
 
-    ### Build (fit), and some others
-    # def fit(self, X, y) -> Self:
-    #     pass
+
+    def _process_fit_in_build(self, step:ExecStep) -> None:
+
+        apply_transf:Callable[Concatenate[pl.DataFrame, P], FitTransform] 
+        apply_transf = getattr(importlib.import_module(step.module), step.name)
+        rec: FitRecord
+        self.data, rec = apply_transf(self.data, **step.args)
+        new_step = ExecStep(
+            name = step.name,
+            module = "N/A",
+            desc = step.desc, # 
+            # args = step.args, # don't need this when applying
+            is_fit = True,
+            fit_name = type(rec).__name__,
+            fit_module = rec.__module__,
+            fit_record = rec,
+            is_custom = step.is_custom
+        )
+        self._blueprint.add(new_step)
+
+    def _process_selector_in_build(self, step:ExecStep) -> None:
+
+        selector:Callable[Concatenate[pl.DataFrame, P], list[str]]
+        selector = getattr(importlib.import_module(step.module), step.name)
+        selected_cols:list[str] = selector(self.data, **step.args)
+        if self.target in selected_cols:
+            self.data = self.data.select(selected_cols)
+        else:
+            self.data = self.data.select(selected_cols + [self.target])
+
+        logger.info(f"The following features are kept: {selected_cols[:10]} + ... Only showing top 10.")
+        self._blueprint.add_step(
+            func = _select_cols,
+            desc = step.desc,
+            args = {"cols": selected_cols, "target": self.target}
+        )
 
     def build(self) -> pl.DataFrame:
         '''Build according to the steps.
@@ -665,43 +737,14 @@ class PipeBuilder:
             logger.info(f"|{i}/{n}|: Step: {step.name} | is_fit: {step.is_fit} | is_selector: {step.is_selector}")
             start = perf_counter()
             success = True
-            if step.is_selector:
-                selector:Callable[Concatenate[pl.DataFrame, P], list[str]]
-                selector = getattr(importlib.import_module(step.module), step.name)
-                selected_cols:list[str] = selector(self.data, **step.args)
-                print(selected_cols)
-                if self.target in selected_cols:
-                    self.data = self.data.select(selected_cols)
-                else:
-                    self.data = self.data.select(selected_cols + [self.target])
 
-                logger.info(f"The following features are kept: {selected_cols}.")
-                self._blueprint.add_step(
-                    func = _select_cols,
-                    desc = step.desc,
-                    args = {"cols": selected_cols, "target": self.target}
-                )
+            if step.is_selector:
+                self._process_selector_in_build(step)
             elif step.is_fit:
-                apply_transf:Callable[Concatenate[pl.DataFrame, P], FitTransform] 
-                apply_transf = getattr(importlib.import_module(step.module), step.name)
-                rec: FitRecord
-                self.data, rec = apply_transf(self.data, **step.args)
-                new_step = ExecStep(
-                    name = step.name,
-                    module = "N/A",
-                    desc = step.desc, # 
-                    # args = step.args, # don't need this when applying
-                    is_fit = True,
-                    fit_name = type(rec).__name__,
-                    fit_module = rec.__module__,
-                    fit_record = rec,
-                    is_custom = step.is_custom
-                )
-                self._blueprint.add(new_step)
-            else:
+                self._process_fit_in_build(step)
+            else: # Regular, canonical steps.
                 apply_func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame]  
                 apply_func = getattr(importlib.import_module(step.module), step.name)
-                
                 self.data = self.data.pipe(apply_func, **step.args)
                 self._blueprint.add(step)
 

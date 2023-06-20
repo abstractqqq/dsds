@@ -1,7 +1,45 @@
-[tool.ruff]
-line-length = 120
-src = ["src"]
+[build-system]
+requires = ["setuptools"]
 
 [project]
-# Support Python 3.10+.
-requires-python = ">=3.10"
+name = "dsds"
+requires-python = ">=3.9"
+readme = "README.md"
+description = "A feature screening, selection, EDA, pipeline building and management tool centered around Polars dataframes."
+authors = [
+    {name = "Tianren Qin", email = "tq9695@gmail.com"}
+]
+license = {file = "LICENSE"}
+dependencies = [
+    "polars >= 0.18.3",
+    "scipy >= 1.10.1",
+    "orjson >= 3.9.1",
+    "pandas",
+    "numpy",
+    "typing_extensions >= 4.0.1"
+]
+keywords = ["pipeline", "EDA", "feature-screening", "feature-selection"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+scikit-learn = ["scikit-learn"]
+xgboost = ["xgboost"]
+all = ["scikit-learn", "xgboost"]
+
+[tool.ruff]
+line-length = 120
+fix = true
+src = ["src"]
