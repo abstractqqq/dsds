@@ -120,6 +120,9 @@ def duplicate_inferral():
     # Then check equality..
     pass
 
+def pattern_inferral():
+    pass
+
 # Check if column is an email column. This is easy. Email regex is easy.
 # But email column might have many nulls. Check only on non-null values.
 def email_inferral():

@@ -170,7 +170,7 @@ class ExecPlan():
         , desc:str
         , args:dict[str, Any] # Technically is not Any, but Anything that can be serialized by orjson..
         , is_fit:bool=False
-        ) -> None:
+    ) -> None:
 
         self.steps.append(
             ExecStep(func.__name__, func.__module__, desc = desc, args = args
@@ -181,7 +181,7 @@ class ExecPlan():
         , func:Callable[Concatenate[pl.DataFrame, P], list[str]]
         , desc:str
         , args:dict[str, Any]
-        ) -> None:
+    ) -> None:
         
         self.steps.append(
             ExecStep(func.__name__, func.__module__, desc = desc, args = args, 
@@ -192,7 +192,8 @@ class ExecPlan():
         , func:Callable[[pl.DataFrame, T], pl.DataFrame|FitTransform]
         , desc:str
         , args:dict[str, Any]
-        , is_fit:bool=False) -> None:
+        , is_fit:bool=False
+    ) -> None:
         
         self.steps.append(
             ExecStep(func.__name__, func.__module__, desc = desc, args = args, 
@@ -203,7 +204,7 @@ class ExecPlan():
         , func:Callable[[pl.DataFrame, T], list[str]]
         , desc:str
         , args:dict[str, Any]
-        ) -> None:
+    ) -> None:
         
         self.steps.append(
             ExecStep(func.__name__, func.__module__, desc = desc, args = args, 
@@ -239,9 +240,9 @@ def _lower_columns(df:pl.DataFrame) -> pl.DataFrame:
 
 class PipeBuilder:
 
-    def __init__(self, project_name:str="my_project"):
+    def __init__(self, target:str="", project_name:str="my_project"):
 
-        self.target:str = ""
+        self.target:str = target
         self.data:Optional[pl.DataFrame] = None
         self.project_name:str = project_name
         self._built:bool = False
@@ -252,14 +253,17 @@ class PipeBuilder:
         return len(self._execution_plan)
     
     def __str__(self) -> str:
-        if not self._execution_plan.is_empty():
-            text = f"Project name: {self.project_name}\nTotal steps: {len(self)} | Ready to build: {self._is_ready()} |"
-            if self.target != "":
-                text += f" Target variable: {self.target}"
-            text += "\n"
+        text = f"Project name: {self.project_name}\nTotal steps: {len(self)} |"
+        if self.target != "":
+            text += f" Target variable: {self.target}"
+        text += "\n"
+        if not self._execution_plan.is_empty() and not self._built:
             text += str(self._execution_plan)
             return text
-        return "The current builder has no execution plan."
+        elif self._built:
+            text += str(self._blueprint)
+            return text
+        return "Nothing to print."
     
     ### I/O
     def set_target(self, target:str) -> Self:
@@ -285,8 +289,8 @@ class PipeBuilder:
                 df = df.iloc[0:0]
             elif isinstance(df, pl.DataFrame):
                 self.data = df.clone()
-            else:
-                raise TypeError("Input df must either be Pandas or Polars dataframe.")
+            else: # Try this..
+                self.data = pl.DataFrame(df)
         except Exception as e:
             logger.error(e)
 
@@ -347,7 +351,8 @@ class PipeBuilder:
         print(self)
 
     def clear(self):
-        self.data = self.data.clear()
+        if self.data is not None:
+            self.data = self.data.clear()
         self._execution_plan.clear()
         self._blueprint.clear()
         self._built = False
@@ -646,8 +651,6 @@ class PipeBuilder:
         else:
             raise ValueError("Selectors can only be queued after df and target are set.")
 
-        return self
-
     def add_custom_fit_transform(self
         , func:Callable[Concatenate[pl.DataFrame, P], FitTransform]
         , desc:str
@@ -757,26 +760,23 @@ class PipeBuilder:
         self._built = True
         return self.data
     
-    def get_final_data(self) -> Optional[pl.DataFrame]:
-        if self._built:
-            return self.data.clone()
-        else:
-            logger.info("Pipeline has not been built. There cannot be any final data.")
-            return None
-    
     # Rename this in the future?
     def apply(self, df:pl.DataFrame|pd.DataFrame) -> pl.DataFrame:
         if not self._built:
             raise ValueError("The builder must be built before applying it to new datasets.")
-        
-        if isinstance(df, pd.DataFrame):
-            logger.warning("Found input to be a Pandas dataframe. Turning it into a Polars dataframe.")
-            try:
-                input_df:pl.DataFrame = pl.from_pandas(df)
-            except Exception as e:
-                logger.error(e)
-        else:
-            input_df:pl.DataFrame = df
+        try:
+            if isinstance(df, pd.DataFrame):
+                logger.warning("Found input to be a Pandas dataframe. Turning it into a Polars dataframe.")
+                try:
+                    input_df:pl.DataFrame = pl.from_pandas(df)
+                except Exception as e:
+                    logger.error(e)
+            elif isinstance(df, pl.DataFrame):
+                input_df:pl.DataFrame = df
+            else:
+                input_df:pl.DataFrame = pl.DataFrame(df)
+        except Exception as e:
+            logger.error(e)
 
         n = len(self._blueprint)
         step:ExecStep
@@ -830,13 +830,17 @@ class PipeBuilder:
         except Exception as e:
             logger.error(e)
 
-    def from_blueprint(self, path:str|Path):
+    def from_blueprint(self, input_file:str|Path|bytes) -> Self:
         logger.info("Reading from a blueprint. The builder will reset itself.")
         self.clear()
         try:
-            f = open(path, "rb")
-            data = orjson.loads(f.read())
-            f.close()
+            if isinstance(input_file, bytes):
+                data = orjson.loads(input_file)
+            else:
+                f = open(input_file, "rb")
+                data = orjson.loads(f.read())
+                f.close()
+            
             steps:list[dict[str, Any]] = data["steps"]
             self.target = data["target"]
             for s in steps:
@@ -861,7 +865,5 @@ class PipeBuilder:
         except Exception as e:
             logger.error(e)
 
+        return self
     ### End of Building section
-
-
-
