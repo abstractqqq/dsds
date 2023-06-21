@@ -3,6 +3,7 @@ requires = ["setuptools"]
 
 [project]
 name = "dsds"
+version = "0.0.1"
 requires-python = ">=3.9"
 readme = "README.md"
 description = "A feature screening, selection, EDA, pipeline building and management tool centered around Polars dataframes."
@@ -18,7 +19,9 @@ dependencies = [
     "numpy",
     "typing_extensions >= 4.0.1"
 ]
+
 keywords = ["pipeline", "EDA", "feature-screening", "feature-selection"]
+
 classifiers = [
   "Development Status :: 2 - Pre-Alpha",
   "Environment :: Console",
@@ -38,6 +41,9 @@ classifiers = [
 scikit-learn = ["scikit-learn"]
 xgboost = ["xgboost"]
 all = ["scikit-learn", "xgboost"]
+
+[project.urls]
+"Homepage" = "https://github.com/abstractqqq/dsds"
 
 [tool.ruff]
 line-length = 120
