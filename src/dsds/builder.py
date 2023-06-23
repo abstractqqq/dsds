@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from .prescreen import (
     remove_if_exists
     , regex_removal
@@ -34,6 +33,8 @@ from enum import Enum
 from pathlib import Path
 from time import perf_counter
 import orjson
+import inspect
+import re
 import logging
 import importlib
 import os
@@ -164,6 +165,15 @@ class ExecPlan():
 
     def popleft(self) -> Optional[ExecStep]:
         return self.steps.pop(0)
+    
+    def find(self, name:str) -> list[int]:
+        found:list[int] = []
+        regex = re.compile(name)
+        for i,step in enumerate(self.steps):
+            if regex.search(step.name) or regex.search(step.desc):
+                found.append(i)
+
+        return found
 
     def add_step(self
         , func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame|FitTransform]
@@ -349,6 +359,14 @@ class PipeBuilder:
     ### Miscellaneous
     def show(self):
         print(self)
+
+    def find(self, name:str) -> None:
+        found = self._execution_plan.find(name)
+        for i in found:
+            print(f"Step at index {i}:")
+            print(self._execution_plan.steps[i])
+
+    # Set, Remove, in a safe way.
 
     def clear(self):
         if self.data is not None:

@@ -68,7 +68,7 @@ class DroppedFeatureResult:
     def __str__(self):
         pass 
 
-# Add a slim option that returns fewer stats.
+# Add a slim option that returns fewer stats. This is generic describe.
 def describe(df:pl.DataFrame) -> pl.DataFrame:
     '''
         The transpose view of df.describe() for easier filtering. Add more statistics in the future (if easily
@@ -108,6 +108,81 @@ def describe(df:pl.DataFrame) -> pl.DataFrame:
                         , 'unique_pct','mean','std','min','max','25%'
                         , 'median','75%', "skew", "kurtosis",'dtype'))
 
+# Numeric only describe. Be more detailed.
+
+# String only describe. Be more detailed about interesting string stats.
+
+def describe_str(df:pl.DataFrame, words_to_count:Optional[list[str]]=None) -> pl.DataFrame:
+    '''Gives some statistics about the string columns. Optionally you may pass a list
+    of strings to compute the total occurrances of each of the words in the string columns.
+
+    '''
+    strs = get_string_cols(df)
+
+    nc = df.select(strs).null_count()\
+        .transpose().to_series().rename("null_count")
+    smax = df.select(strs).select(
+        pl.col(c).max() for c in strs
+    ).transpose().to_series().rename("max")
+    smin = df.select(strs).select(
+        pl.col(c).min() for c in strs
+    ).transpose().to_series().rename("min")
+    mode = df.select(strs).select(
+        pl.col(c).mode().take(0) for c in strs
+    ).transpose().to_series().rename("mode")
+    mins = df.select(strs).select(
+        pl.col(c).str.lengths().min() for c in strs
+    ).transpose().to_series().rename("min_byte_len")
+    maxs = df.select(strs).select(
+        pl.col(c).str.lengths().max() for c in strs
+    ).transpose().to_series().rename("max_byte_len")
+    avgs = df.select(strs).select(
+        pl.col(c).str.lengths().mean() for c in strs
+    ).transpose().to_series().rename("avg_byte_len")
+    medians = df.select(strs).select(
+        pl.col(c).str.lengths().median() for c in strs
+    ).transpose().to_series().rename("median_byte_len")
+    space_counts = df.select(strs).select(
+        pl.col(c).str.count_match(r"\s").mean() for c in strs
+    ).transpose().to_series().rename("avg_space_cnt")
+    nums_counts = df.select(strs).select(
+        pl.col(c).str.count_match(r"[0-9]").mean() for c in strs
+    ).transpose().to_series().rename("avg_digit_cnt")
+    cap_counts = df.select(strs).select(
+        pl.col(c).str.count_match(r"[A-Z]").mean() for c in strs
+    ).transpose().to_series().rename("avg_cap_cnt")
+    lower_counts = df.select(strs).select(
+        pl.col(c).str.count_match(r"[a-z]").mean() for c in strs
+    ).transpose().to_series().rename("avg_lower_cnt")
+
+    output = {
+        "features":strs,
+        nc.name: nc,
+        "null_pct": nc/len(df),
+        smin.name: smin,
+        smax.name: smax,
+        mode.name: mode,
+        mins.name: mins,
+        maxs.name: maxs,
+        avgs.name: avgs,
+        medians.name: medians,
+        space_counts.name: space_counts,
+        nums_counts.name: nums_counts,
+        cap_counts.name: cap_counts,
+        lower_counts.name: lower_counts
+    }
+
+    if isinstance(words_to_count, list):
+        for w in words_to_count:
+            if isinstance(w, str):
+                t = df.select(strs).select(
+                    pl.col(c).str.count_match(w).sum() for c in strs
+                ).transpose().to_series().rename("total_"+ w + "_count")
+                output[t.name] = t
+
+    return pl.from_dict(output) 
+
+
 # Check if column follows the normal distribution. Hmm...
 def normal_inferral():
     pass
@@ -141,8 +216,8 @@ def date_inferral(df:pl.DataFrame) -> list[str]:
     strings = get_string_cols(df)
     sample_df = df.select(strings).drop_nulls()\
         .sample(n = 1000).select(
-            # Cleaning the string first. Only try to catch string dates in the first 10 digits 
-           pl.col(s).str.strip().str.replace_all("(/|\.)", "-").str.split(by= " ").list.first() 
+            # Cleaning the string first. Only try to catch string dates which are in the first split by space
+           pl.col(s).str.strip().str.replace_all("(/|\.)", "-").str.split(by=" ").list.first() 
            for s in strings
         )
     for s in strings:
