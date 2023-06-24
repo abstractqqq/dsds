@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from .type_alias import (
+    PolarsFrame
+)
+
 from .prescreen import (
     remove_if_exists
     , regex_removal
@@ -8,6 +12,7 @@ from .prescreen import (
     , unique_removal
     , constant_removal
     , date_removal
+    , non_numeric_removal
 )
 # from .eda_selection import *
 from .transform import (
@@ -19,7 +24,7 @@ from .transform import (
     , impute
     , binary_encode
     , one_hot_encode
-    , percentile_encode
+    # , percentile_encode
     , smooth_target_encode
     , ordinal_encode
     , ordinal_auto_encode
@@ -27,6 +32,7 @@ from .transform import (
 
 from dataclasses import dataclass
 import polars as pl
+from polars.type_aliases import FrameInitTypes
 import pandas as pd
 from typing import ParamSpec, Self, TypeVar, Optional, Any, Callable, Iterable, Concatenate
 from enum import Enum
@@ -84,6 +90,7 @@ class BuiltinExecs(Enum):
     NULL_REMOVAL = "Remove columns with more than {:.2f}% nulls."
     VAR_REMOVAL = "Remove columns with less than {} variance. (Not recommended.)"
     CONST_REMOVAL = "Remove columns that are constants."
+    NON_NUMERIC_REMOVAL = "Remove all non-numeric columns."
     UNIQUE_REMOVAL = "Remove columns that are like unique identifiers, e.g. with more than {:.2f}% unique values."
     COL_REMOVAL = "Remove given if they exist in dataframe."
     DATE_REMOVAL = "Remove columns that are inferred to be dates."
@@ -221,7 +228,7 @@ class ExecPlan():
                     is_fit = False, is_selector = True, is_custom = True)
         )
 
-def _select_cols(df:pl.DataFrame, cols:list[str], target:str) -> pl.DataFrame:
+def _select_cols(df:PolarsFrame, cols:list[str], target:str) -> PolarsFrame:
 
     # Whether to select target or not depends on if df has a target column.
     if target in df.columns and target not in cols:
@@ -232,9 +239,11 @@ def _select_cols(df:pl.DataFrame, cols:list[str], target:str) -> pl.DataFrame:
     # don't check if c in cols belongs to df. Let it error.
     return df.select(cols)
 
-def _lower_columns(df:pl.DataFrame) -> pl.DataFrame:
+def _lower_columns(df:PolarsFrame) -> PolarsFrame:
     return df.rename({c: c.lower() for c in df.columns})
 
+def _rename(df:PolarsFrame, rename_dict:dict[str, str]) -> PolarsFrame:
+    return df.rename(rename_dict)
 
 # 1. The exact logic 
 # Pipebuilder -> ExecPlan (as execution_plan)
@@ -253,7 +262,7 @@ class PipeBuilder:
     def __init__(self, target:str="", project_name:str="my_project"):
 
         self.target:str = target
-        self.data:Optional[pl.DataFrame] = None
+        self.data:Optional[pl.LazyFrame] = None # This is always lazy
         self.project_name:str = project_name
         self._built:bool = False
         self._execution_plan:ExecPlan = ExecPlan(steps=[])
@@ -288,25 +297,28 @@ class PipeBuilder:
         self._blueprint.target = target
         return self
         
-    def set_data(self, df:pl.DataFrame|pd.DataFrame) -> Self:
+    def set_data(self, df: FrameInitTypes|PolarsFrame) -> Self:
         '''Set the data on which to "fit" the pipeline.'''
         try:
             if isinstance(df, pd.DataFrame):
                 logger.warning("Found input to be a Pandas Dataframe. It will be converted to a Polars dataframe, "
                             "and the original Pandas dataframe will be erased.")
                 
-                self.data = pl.from_pandas(df)
+                self.data = pl.from_pandas(df).lazy() # Keep it lazy for internal stuff.
                 df = df.iloc[0:0]
-            elif isinstance(df, pl.DataFrame):
-                self.data = df.clone()
+            elif isinstance(df, pl.DataFrame, pl.LazyFrame):
+                self.data = df # Keep it lazy for internal stuff
             else: # Try this..
-                self.data = pl.DataFrame(df)
+                self.data = pl.DataFrame(df).lazy() # Keep it lazy for internal stuff
         except Exception as e:
             logger.error(e)
 
         return Self
     
-    def set_data_and_target(self, df:pl.DataFrame|pd.DataFrame, target:str) -> Self:
+    def set_data_and_target(self, df:Any, target:str) -> Self:
+        '''
+            df: Any data that is p
+        '''
         _ = self.set_target(target)        
         _ = self.set_data(df)
         if target not in self.data.columns:
@@ -315,45 +327,45 @@ class PipeBuilder:
         self.target = target
         return self 
 
-    def from_csv(self, path:str|Path, **csv_args) -> Self:
-        '''
+    # def from_csv(self, path:str|Path, **csv_args) -> Self:
+    #     '''
         
-        '''
-        try:
-            self.data = pl.read_csv(path, **csv_args)
-            return Self
-        except Exception as e:
-            logger.error(e)
+    #     '''
+    #     try:
+    #         self.data = pl.read_csv(path, **csv_args)
+    #         return Self
+    #     except Exception as e:
+    #         logger.error(e)
 
-    def from_parquet(self, path:str|Path, **parquet_args) -> Self:
-        '''
+    # def from_parquet(self, path:str|Path, **parquet_args) -> Self:
+    #     '''
         
-        '''
-        try:
-            self.data = pl.read_parquet(path, **parquet_args)
-            return Self
-        except Exception as e:
-            logger.error(e)
+    #     '''
+    #     try:
+    #         self.data = pl.read_parquet(path, **parquet_args)
+    #         return Self
+    #     except Exception as e:
+    #         logger.error(e)
     
-    def from_json(self, path:str|Path, **json_args) -> Self:
-        '''
+    # def from_json(self, path:str|Path, **json_args) -> Self:
+    #     '''
         
-        '''
-        try:
-            self.data = pl.read_json(path, **json_args)
-            return Self
-        except Exception as e:
-            logger.error(e)
+    #     '''
+    #     try:
+    #         self.data = pl.read_json(path, **json_args)
+    #         return Self
+    #     except Exception as e:
+    #         logger.error(e)
 
-    def from_excel(self, path:str|Path, **excel_args) -> Self:
-        '''
+    # def from_excel(self, path:str|Path, **excel_args) -> Self:
+    #     '''
         
-        '''
-        try:
-            self.data = pl.read_json(path, **excel_args)
-            return Self
-        except Exception as e:
-            logger.error(e)
+    #     '''
+    #     try:
+    #         self.data = pl.read_json(path, **excel_args)
+    #         return Self
+    #     except Exception as e:
+    #         logger.error(e)
     ### End of I/O
     
     ### Miscellaneous
@@ -424,7 +436,7 @@ class PipeBuilder:
             desc = BuiltinExecs.NULL_REMOVAL.value.format(threshold*100),
             args = {"threshold":threshold}  
         )
-        return self 
+        return self
     
     def set_var_removal(self, threshold:float) -> Self:
         if threshold <= 0:
@@ -485,8 +497,16 @@ class PipeBuilder:
     def set_date_removal(self) -> Self:
         '''Removes columns that are inferred to be dates.'''
         self._execution_plan.add_step(
-            func = date_removal ,
+            func = date_removal,
             desc = BuiltinExecs.DATE_REMOVAL.value,
+            args = {}
+        )
+        return self
+    
+    def set_non_numeric_removal(self) -> Self:
+        self._execution_plan.add_step(
+            func = non_numeric_removal ,
+            desc = BuiltinExecs.NON_NUMERIC_REMOVAL.value,
             args = {}
         )
         return self 
@@ -586,15 +606,15 @@ class PipeBuilder:
         )
         return self
     
-    def set_percentile_encoding(self, cols:list[str]) -> Self:
+    # def set_percentile_encoding(self, cols:list[str]) -> Self:
 
-        self._execution_plan.add_step(
-            func = percentile_encode,
-            desc = BuiltinExecs.PERCENTILE_ENCODE.value,
-            args = {"cols":cols},
-            is_fit = True
-        )
-        return self
+    #     self._execution_plan.add_step(
+    #         func = percentile_encode,
+    #         desc = BuiltinExecs.PERCENTILE_ENCODE.value,
+    #         args = {"cols":cols},
+    #         is_fit = True
+    #     )
+    #     return self
     
     ### End of Encoding Section
 
@@ -609,7 +629,7 @@ class PipeBuilder:
     # If this is the case, use add_custom_fit_transform
 
     def add_custom_step(self
-        , func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame]
+        , func:Callable[Concatenate[PolarsFrame, P], PolarsFrame]
         , desc:str
         , args:dict[str, Any]
         ) -> Self:
@@ -628,7 +648,7 @@ class PipeBuilder:
         return self
     
     def add_selector(self
-        , func:Callable[Concatenate[pl.DataFrame, P], list[str]]
+        , func:Callable[Concatenate[PolarsFrame, P], list[str]]
         , desc:str
         , args:dict[str, Any]
         ) -> Self:
@@ -649,7 +669,7 @@ class PipeBuilder:
             raise ValueError("Selectors can only be queued after df and target are set.")
     
     def add_custom_selector(self
-        , func:Callable[Concatenate[pl.DataFrame, P], list[str]]
+        , func:Callable[Concatenate[PolarsFrame, P], list[str]]
         , desc:str
         , args:dict[str, Any]
         ) -> Self:
@@ -670,7 +690,7 @@ class PipeBuilder:
             raise ValueError("Selectors can only be queued after df and target are set.")
 
     def add_custom_fit_transform(self
-        , func:Callable[Concatenate[pl.DataFrame, P], FitTransform]
+        , func:Callable[Concatenate[PolarsFrame, P], FitTransform]
         , desc:str
         , args:dict[str, Any]
         ) -> Self:
@@ -697,15 +717,15 @@ class PipeBuilder:
 
     def _process_fit_in_build(self, step:ExecStep) -> None:
 
-        apply_transf:Callable[Concatenate[pl.DataFrame, P], FitTransform] 
+        apply_transf:Callable[Concatenate[PolarsFrame, P], FitTransform] 
         apply_transf = getattr(importlib.import_module(step.module), step.name)
         rec: FitRecord
-        self.data, rec = apply_transf(self.data, **step.args)
+        self.data, rec = self.data.pipe(apply_transf, **step.args)
         new_step = ExecStep(
             name = step.name,
             module = "N/A",
             desc = step.desc, # 
-            # args = step.args, # don't need this when applying
+            # args = step.args, # don't need args when we apply (transform)
             is_fit = True,
             fit_name = type(rec).__name__,
             fit_module = rec.__module__,
@@ -719,10 +739,12 @@ class PipeBuilder:
         selector:Callable[Concatenate[pl.DataFrame, P], list[str]]
         selector = getattr(importlib.import_module(step.module), step.name)
         selected_cols:list[str] = selector(self.data, **step.args)
-        if self.target in selected_cols:
-            self.data = self.data.select(selected_cols)
-        else:
-            self.data = self.data.select(selected_cols + [self.target])
+        to_select = selected_cols.copy()
+        if self.target not in selected_cols:
+            to_select.append(self.target)
+        
+        # In this stage, target should be in to_select and in df.columns.
+        self.data = self.data.pipe(_select_cols, to_select, self.target)
 
         logger.info(f"The following features are kept: {selected_cols[:10]} + ... Only showing top 10.")
         self._blueprint.add_step(
@@ -730,6 +752,12 @@ class PipeBuilder:
             desc = step.desc,
             args = {"cols": selected_cols, "target": self.target}
         )
+
+
+    # RETHINK how to build.
+    # Maybe we should cast df to lazy, then use Polars's Pipe. But how to save Polars's Pipe?
+    def build_2(self) -> pl.DataFrame:
+        pass
 
     def build(self) -> pl.DataFrame:
         '''Build according to the steps.
@@ -764,7 +792,7 @@ class PipeBuilder:
             elif step.is_fit:
                 self._process_fit_in_build(step)
             else: # Regular, canonical steps.
-                apply_func:Callable[Concatenate[pl.DataFrame, P], pl.DataFrame]  
+                apply_func:Callable[Concatenate[PolarsFrame, P], PolarsFrame]  
                 apply_func = getattr(importlib.import_module(step.module), step.name)
                 self.data = self.data.pipe(apply_func, **step.args)
                 self._blueprint.add(step)

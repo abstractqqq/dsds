@@ -4,6 +4,10 @@ from .prescreen import (
     , get_unique_count
 )
 
+from .type_alias import (
+    PolarsFrame
+)
+
 import os
 import polars as pl
 import numpy as np
@@ -110,22 +114,27 @@ def discrete_ig(
 discrete_mi = discrete_ig
 
 def discrete_ig_selector(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , top_k:int
     , n_threads:int = CPU_COUNT
-) -> list[str]:
+) -> PolarsFrame:
     discrete_cols = discrete_inferral(df, exclude=[target])
     # They are not examined by this feature selection method. So keep them.
-    complement = [f for f in df.columns if f not in discrete_cols and f != target] 
-    ig = discrete_ig(df, target, discrete_cols, n_threads)\
+    if isinstance(df, pl.LazyFrame):
+        input_data:pl.DataFrame = df.collect()
+    else:
+        input_data:pl.DataFrame = df
+
+    ig = discrete_ig(input_data, target, discrete_cols, n_threads)\
             .top_k(by="information_gain", k = top_k)
 
+    complement = [f for f in input_data.columns if f not in discrete_cols]
     selected = ig.get_column("feature").to_list()
-    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
 
-    return selected + complement
+    return df.select(selected + complement)
 
 
 def mutual_info(
@@ -200,24 +209,32 @@ def mutual_info(
     output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
     return output
 
+# Selectors should always return target
 def mutual_info_selector(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , n_neighbors:int=3
     , random_state:int=42
     , n_threads:int=CPU_COUNT
     , top_k:int = 50
-) -> list[str]:
+) -> PolarsFrame:
     
-    nums = get_numeric_cols(df, exclude=[target])
-    complement = [f for f in df.columns if f not in nums and f != target]
-    mi_scores = mutual_info(df, nums, target, n_neighbors, random_state, n_threads)\
+    if isinstance(df, pl.LazyFrame):
+        input_data:pl.DataFrame = df.collect()
+    else:
+        input_data:pl.DataFrame = df
+
+    nums = get_numeric_cols(input_data, exclude=[target])
+    complement = [f for f in input_data.columns if f not in nums]
+
+    mi_scores = mutual_info(input_data, nums, target, n_neighbors, random_state, n_threads)\
                 .top_k(by="estimated_mi", k = top_k)
 
     selected = mi_scores.get_column("feature").to_list()
-    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
-    return selected + complement
+    
+    return df.select(selected + complement)
 
 def _f_score(
     df:pl.DataFrame
@@ -323,24 +340,30 @@ def f_classification(
     return pl.from_records([num_list, f_values, p_values], schema=["feature","f_value","p_value"])
 
 def f_score_selector(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , top_k:int
-) -> list[str]:
+) -> PolarsFrame:
     
-    nums = get_numeric_cols(df, exclude=[target])
+    if isinstance(df, pl.LazyFrame):
+        input_data:pl.DataFrame = df.collect()
+    else:
+        input_data:pl.DataFrame = df
+
+    nums = get_numeric_cols(input_data, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in df.columns if f not in nums and f != target]
-    scores = _f_score(df, target, nums)
+    complement = [f for f in input_data.columns if f not in nums]
+
+    scores = _f_score(input_data, target, nums)
     temp_df = pl.DataFrame({"feature":nums, "fscore":scores}).top_k(
         by = "fscore", k = top_k
     )
     selected = temp_df.get_column("feature").to_list()
     
-    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
     "cannot process. They are also returned.")
 
-    return selected + complement
+    return df.select(selected + complement)
 
 
 class MRMR_STRATEGY(Enum):
@@ -480,23 +503,30 @@ def mrmr(
     return selected
 
 def mrmr_selector(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , top_k:int
     , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
-) -> list[str]:
+) -> PolarsFrame:
 
-    num_cols = get_numeric_cols(df, exclude=[target])
+
+    if isinstance(df, pl.LazyFrame):
+        input_data:pl.DataFrame = df.collect()
+    else:
+        input_data:pl.DataFrame = df
+
+    num_cols = get_numeric_cols(input_data, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in df.columns if f not in num_cols and f != target]
-    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
-    selected = mrmr(df, target, top_k, num_cols, s, params, low_memory)
+    complement = [f for f in input_data.columns if f not in num_cols]
 
-    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    selected = mrmr(input_data, target, top_k, num_cols, s, params, low_memory)
+
+    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")
-    return selected + complement
+    return df.select(selected + complement)
 
 def knock_out_mrmr(
     df:pl.DataFrame
@@ -549,28 +579,37 @@ def knock_out_mrmr(
 
     pbar.close()
     if count < k:
-        print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out rule eliminates most of them.")
+        print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out "
+              "rule eliminates most of them.")
 
-    print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
+    print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most "
+          "important, etc.)")
     return selected
 
 def knock_out_mrmr_selector(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , top_k:int 
     , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
     , corr_threshold:float = 0.7
     , params:Optional[dict[str,Any]] = None
-) -> list[str]:
+) -> PolarsFrame:
+
+
+    if isinstance(df, pl.LazyFrame):
+        input_data:pl.DataFrame = df.collect()
+    else:
+        input_data:pl.DataFrame = df
 
     num_cols = get_numeric_cols(df, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in df.columns if f not in num_cols and f != target]
+    complement = [f for f in df.columns if f not in num_cols]
+
     s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
-    selected = knock_out_mrmr(df, target, top_k, num_cols, s, corr_threshold, params)
-    print(f"Selected {len(selected)} features. There are {len(complement)} features the algorithm "
+    selected = knock_out_mrmr(input_data, target, top_k, num_cols, s, corr_threshold, params)
+    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
-    return selected + complement
+    return df.select(selected + complement)
                     
 
 
