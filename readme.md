@@ -80,7 +80,7 @@ Feature selection done fast. May need more optimization.
 
 ## EDA Builder
 
-A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. It is essentially like Sklearn's pipeline, but less object dependent and easier to serialize and edit, and is much cleaner and follows "chain of thought".
+A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. It is essentially like Sklearn's pipeline, but less object dependent and easier to serialize and edit, and is much cleaner and follows "chain of thought". It is Polars's execution plan under the hood.
 
 1. Build feature selections into builder, thus incorporating feature selection into the pipeline. This will enable "just try it" type of blind testing and screening
 
@@ -98,7 +98,7 @@ Miscallenous functions.
 
 Python 3.9, 3.11+ is recommended. We are forward looking.
 
-pip install polars orjson scipy numpy
+pip install polars scipy numpy
 
 pip install dsds[all]
 

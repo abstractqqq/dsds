@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from .type_alias import (
     PolarsFrame
+    , ImputationStrategy
+    , ScalingStrategy
+    , clean_strategy_str
 )
 from .prescreen import (
     get_bool_cols
@@ -11,215 +14,15 @@ from .prescreen import (
     , dtype_mapping
 )
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 import logging
-import orjson
 import polars as pl
-import numpy as np 
-from enum import Enum
-from typing import Any, Tuple, Iterable, Optional
-from scipy.special import expit
+from typing import Optional
 
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
 # Well, it does say in project description that we need Python 3.10.
 
 logger = logging.getLogger(__name__)
-
-class ImputationStartegy(Enum):
-    CONST = "CONST"
-    MEDIAN = 'MEDIAN'
-    MEAN = "MEAN"
-    MODE = "MODE"
-
-class ScalingStrategy(Enum):
-    NORMALIZE = "NORMALIZE"
-    MIN_MAX = "MIN-MAX"
-    CONST = "CONST"
-
-class EncodingStrategy(Enum):
-    ORDINAL = "ORDINAL"
-    ORDINAL_AUTO = "ORDINAL-AUTO"
-    TARGET = "TARGET"
-    ONE_HOT = "ONE-HOT"
-    BINARY = "BINARY"
-    PERCENTILE = "PERCENTILE"
-
-def clean_strategy_str(s:str):
-    return s.replace("-", "_").upper()
-
-# It is highly recommended that this should be a dataclass and serializable by orjson.
-class FitRecord(ABC):
-
-    @abstractmethod
-    def materialize(self) -> pl.DataFrame | str:
-        # A pretty way to print or visualize itself, 
-        # or organize self to something more useful than a data structure.
-        pass 
-
-    @abstractmethod
-    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
-        # Transform according to the record.
-        pass
-
-@dataclass
-class ImputationRecord(FitRecord):
-    features:list[str]
-    strategy:ImputationStartegy
-    values:list[float]|np.ndarray
-
-    def __init__(self, features:list[str], strategy:ImputationStartegy|str, values:list[float]|np.ndarray):
-        self.features = features
-        self.strategy = ImputationStartegy(strategy)
-        self.values = values
-
-    def __iter__(self) -> Iterable:
-        return zip(self.features, [self.strategy]*len(self.features), self.values)
-    
-    def __str__(self) -> str:
-        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY).decode()
-    
-    def materialize(self) -> pl.DataFrame:
-        return pl.from_records(list(self), schema=["feature", "imputation_strategy", "value_used"])
-    
-    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
-        return df.with_columns(
-            pl.col(f).fill_null(v) for f, v in zip(self.features, self.values)
-        )
-    
-@dataclass
-class ScalingRecord(FitRecord):
-    features:list[str]
-    strategy:ScalingStrategy
-    values:list[dict[str, float]]
-
-    def __init__(self, features:list[str], strategy:ScalingStrategy|str, values:list[dict[str, float]]):
-        self.features = features
-        self.strategy = ScalingStrategy(strategy)
-        self.values = values
-
-    def __iter__(self) -> Iterable:
-        return zip(self.features, [self.strategy]*len(self.features), self.values)
-    
-    def __str__(self) -> str:
-        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY).decode()
-    
-    def materialize(self) -> pl.DataFrame:
-        vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY).decode() for v in self.values)
-        presentable =  zip(self.features, [self.strategy]*len(self.features), vals)
-        return pl.from_records(list(presentable), schema=["feature", "scaling_strategy", "scaling_meta_data"])
-    
-    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
-
-        if self.strategy == ScalingStrategy.NORMALIZE:
-            return df.with_columns(
-                (pl.col(f)-pl.lit(v["mean"]))/pl.lit(v["std"]) for f, v in zip(self.features, self.values)
-            )
-        elif self.strategy == ScalingStrategy.MIN_MAX:
-            return df.with_columns(
-                (pl.col(f)-pl.lit(v["min"]))/(pl.lit(v["max"] - v["min"])) for f, v in zip(self.features, self.values)
-            )
-        elif self.strategy == ScalingStrategy.CONST:
-            return df.with_columns(
-                pl.col(f)/v['const'] for f, v in zip(self.features, self.values)
-            )    
-        else:
-            raise ValueError(f"Unknown scaling strategy: {self.strategy}")
-
-@dataclass
-class EncoderRecord(FitRecord):
-    features:list[str]
-    strategy:EncodingStrategy
-    mappings:list[dict]
-
-    ### FOR str encoders, mapping looks like "dict[str, float]", except one-hot. See one-hot for more info.
-    ### For numeric encoder, like percentile encoder, the key of the mapping is of type str despite the fact that
-    ### it is a number. This is because json has to have str as keys. See percentile_encode for more info.
-
-    def __init__(self, features:list[str], strategy:EncodingStrategy|str, mappings:list[dict[Any, Any]]):
-        self.features = features
-        self.strategy = EncodingStrategy(strategy)
-        self.mappings = mappings
-
-    def __iter__(self) -> Iterable:
-        return zip(self.features, [self.strategy]*len(self.features), self.mappings)
-    
-    def __str__(self) -> str:
-        return orjson.dumps(self, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode()
-    
-    def materialize(self) -> pl.DataFrame:
-        vals = (orjson.dumps(v, option=orjson.OPT_SERIALIZE_NUMPY|orjson.OPT_NON_STR_KEYS).decode() for v in self.mappings)
-        presentable =  zip(self.features, [self.strategy]*len(self.features), vals)
-        return pl.from_records(list(presentable), schema=["feature", "encoding_strategy", "maps"])
-    
-    ###
-    # NEED TO FIND WAYS TO OPTIMIZE ENCODINGS FOR Numeric values...
-    ###
-
-    @staticmethod
-    def _find_first_index_of_smaller(u:float, order:list[Tuple[float, int]]) -> int:
-        order.sort(key=lambda x: x[1])
-        for v, i in order: # order looks like [(18.21, 1), (22.32, 2), ...]
-            if u <= v:
-                return i
-        # percentile max out at 100. It is possible that in future data, there will be some
-        # that is > existing max. So assign all that to 101
-        return 101 
-
-    def transform(self, df:pl.DataFrame) -> pl.DataFrame:
-        # Special cases first
-        if self.strategy == EncodingStrategy.PERCENTILE:
-            for i,f in enumerate(self.features):
-                # Construct a new series for each column. SLOW SLOW SLOW...
-
-                # If this comes from a blue_print, then we will get a dict with str keys
-                # because JSON KEY IS ALWAYS A STR.
-                # If we are running this after generating this record, the original key is 
-                # numeric. So either way, this works.
-                order = [(float(v), p) for v, p in self.mappings[i].items()] 
-                percentiles = []
-                already_mapped = {}
-                for v in df.get_column(f):
-                    if v is None or np.isnan(v) or np.isneginf(v): # To 0
-                        percentiles.append(0) 
-                    else:
-                        if v in already_mapped:
-                            percentiles.append(already_mapped[v])
-                        else:
-                            percentile = self._find_first_index_of_smaller(v, order)
-                            already_mapped[v] = percentile
-                            percentiles.append(percentile)
-                
-                new_f = pl.Series(f, percentiles).cast(pl.UInt8)
-                df.replace_at_idx(df.find_idx_by_name(f), new_f)
-                
-            return df
-        
-        elif self.strategy == EncodingStrategy.ONE_HOT:
-            one_hot_cols = self.features
-            one_hot_map = self.mappings[0] # One hot mapping only has 1 mapping in the list.
-            key:str = list(one_hot_map.keys())[0]
-            value:str = one_hot_map[key] # must be a string
-            separator = value[value.rfind(key) - 1]
-            return df.to_dummies(columns=one_hot_cols, separator=separator)
-
-        # Normal case 
-        return df.with_columns(
-            pl.col(f).map_dict(d) for f,d in zip(self.features, self.mappings)
-        )
-
-class FitTransform:
-
-    def __init__(self, transformed:PolarsFrame, mapping: FitRecord):
-        self.transformed = transformed
-        self.mapping = mapping
-        
-    def __iter__(self) -> Iterable[Tuple[PolarsFrame, FitRecord]]:
-        return iter((self.transformed, self.mapping))
-    
-    def materialize(self) -> pl.DataFrame | str:
-        return self.mapping.materialize()
 
 
 def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
@@ -258,8 +61,8 @@ def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
 
 def impute(df:PolarsFrame
     , cols:list[str]
-    , strategy:ImputationStartegy|str = ImputationStartegy.MEDIAN
-    , const:int = 1
+    , strategy:ImputationStrategy = 'median'
+    , const:float = 1.
 ) -> PolarsFrame:
     '''
         Arguments:
@@ -269,33 +72,28 @@ def impute(df:PolarsFrame
             const: only uses this value if strategy = ImputationStartegy.CONST
     
     '''
-
-    s = ImputationStartegy(strategy.replace("-","_")) if isinstance(strategy, str) else strategy
+    s = clean_strategy_str(strategy)
     # Given Strategy, define expressions
-    if s == ImputationStartegy.MEDIAN:
+    if s == "median":
         all_medians = df.lazy().select(cols).median().collect().to_numpy().ravel()
         exprs = (pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols))
-    
-    elif s == ImputationStartegy.MEAN:
+    elif s in ("mean", "avg", "average"):
         all_means = df.lazy().select(cols).mean().collect().to_numpy().ravel()
         exprs = (pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols))
-    
-    elif s == ImputationStartegy.CONST:
+    elif s in ("const", "constant"):
         exprs = (pl.col(c).fill_null(const) for c in cols)
-
-    elif s == ImputationStartegy.MODE:
+    elif s in ("mode", "most_frequent"):
         all_modes = df.lazy().select(pl.col(c).mode() for c in cols).collect().to_numpy().ravel()
         exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols))
-
     else:
-        raise ValueError(f"Unknown imputation strategy: {s}")
+        raise TypeError(f"Unknown imputation strategy: {strategy}")
 
     return df.with_columns(exprs)
 
 def scale(df:PolarsFrame
     , cols:list[str]
-    , strategy:ScalingStrategy=ScalingStrategy.NORMALIZE
-    , const:int = 1
+    , strategy:ScalingStrategy="normal"
+    , const:float = 1.0
 ) -> PolarsFrame:
     
     '''
@@ -310,28 +108,19 @@ def scale(df:PolarsFrame
     if types != "numeric":
         raise ValueError(f"Scaling can only be used on numeric columns, not {types} types.")
 
-    s = ScalingStrategy(strategy.replace("-","_")) if isinstance(strategy, str) else strategy
-    if s == ScalingStrategy.NORMALIZE:
+    s = clean_strategy_str(strategy)
+    if s in ("normal", "standard", "normalize"):
         all_means = df.lazy().select(cols).mean().collect().to_numpy().ravel()
         all_stds = df.lazy().select(cols).std().collect().to_numpy().ravel()
         exprs = ( (pl.col(c) - all_means[i])/(all_stds[i]) for i,c in enumerate(cols) )
-        # scale_data = [{"mean":m, "std":s} for m,s in zip(all_means, all_stds)]
-        # scaling_records = ScalingRecord(cols, strategy, scale_data)
-
-    elif s == ScalingStrategy.MIN_MAX:
+    elif s == "min_max":
         all_mins = df.lazy().select(cols).min().collect().to_numpy().ravel()
         all_maxs = df.lazy().select(cols).max().collect().to_numpy().ravel()
         exprs = ( (pl.col(c) - all_mins[i])/((all_maxs[i] - all_mins[i])) for i,c in enumerate(cols) )
-        # scale_data = [{"min":m, "max":mm} for m, mm in zip(all_mins, all_maxs)]
-        # scaling_records = ScalingRecord(cols, strategy, scale_data)
-
-    elif s == ScalingStrategy.CONST:
+    elif s in ("const", "constant"):
         exprs = (pl.col(c)/const for c in cols)
-        # scale_data = [{"const":const} for _ in cols]
-        # scaling_records = ScalingRecord(cols, strategy, scale_data)
-
     else:
-        raise ValueError(f"Unknown scaling strategy: {strategy}")
+        raise TypeError(f"Unknown scaling strategy: {strategy}")
 
     # transformed = df.with_columns(exprs)
     return df.with_columns(exprs)
@@ -374,7 +163,7 @@ def one_hot_encode(
     ).select(str_cols)
     exprs:list[pl.Expr] = []
     for t in temp.collect().get_columns():
-        uniques:pl.Series = t[0] # t is a Series which contains one element, which is again a Series.
+        uniques:pl.Series = t[0] # t is a Series which contains one subseries
         if drop_one:
             uniques = uniques.slice(offset=1)
         u: str
@@ -394,86 +183,86 @@ def percentile_encode2():
     pass 
 
 # REWRITE THIS
-def percentile_encode(df:pl.DataFrame
-    , cols:list[str]=None
-    , exclude:list[str]=None
-) -> FitTransform:
-    '''Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, 
-        where each percentile could potentially be a bin and null will be mapped to bin = 0. 
-        Bin 1 means percentile 0 to 1. Generally, bin X groups the population from bin X-1 to 
-        bin X into one bucket.
+# def percentile_encode(df:pl.DataFrame
+#     , cols:list[str]=None
+#     , exclude:list[str]=None
+# ) -> FitTransform:
+#     '''Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, 
+#         where each percentile could potentially be a bin and null will be mapped to bin = 0. 
+#         Bin 1 means percentile 0 to 1. Generally, bin X groups the population from bin X-1 to 
+#         bin X into one bucket.
 
-        I see some potential optimization opportunities here.
+#         I see some potential optimization opportunities here.
 
-        Arguments:
-            df:
-            num_cols: 
-            exclude:
+#         Arguments:
+#             df:
+#             num_cols: 
+#             exclude:
 
-        Returns:
-            (A transformed dataframe, a mapping table (value to percentile))
+#         Returns:
+#             (A transformed dataframe, a mapping table (value to percentile))
     
-    '''
+#     '''
 
-    # Percentile Binning
+#     # Percentile Binning
 
-    num_list:list[str] = []
-    exclude_list:list[str] = [] if exclude is None else exclude
-    if isinstance(cols, list):
-        types = check_columns_types(df, cols)
-        if types != "numeric":
-            raise ValueError(f"Percentile encoding can only be used on numeric columns, not {types} types.")
-        num_list.extend(cols)
-    else:
-        num_list.extend(get_numeric_cols(df, exclude=exclude_list))
+#     num_list:list[str] = []
+#     exclude_list:list[str] = [] if exclude is None else exclude
+#     if isinstance(cols, list):
+#         types = check_columns_types(df, cols)
+#         if types != "numeric":
+#             raise ValueError(f"Percentile encoding can only be used on numeric columns, not {types} types.")
+#         num_list.extend(cols)
+#     else:
+#         num_list.extend(get_numeric_cols(df, exclude=exclude_list))
 
-    exprs:list[pl.Expr] = []
-    all_mappings = []
-    for c in num_list:
-        percentile = df.groupby(c).agg(pl.count().alias("cnt"))\
-            .sort(c)\
-            .with_columns(
-                ((pl.col("cnt").cumsum()*100)/len(df)).ceil().alias("percentile")
-            ).groupby("percentile")\
-            .agg(
-                pl.col(c).min().alias("min"),
-                pl.col(c).max().alias("max"),
-                pl.col("cnt").sum().alias("cnt"),
-            ).sort("percentile").select(
-                pl.lit(c).alias("feature"),
-                pl.col("percentile").cast(pl.UInt8),
-                "min",
-                "max",
-                "cnt",
-            )
+#     exprs:list[pl.Expr] = []
+#     all_mappings = []
+#     for c in num_list:
+#         percentile = df.groupby(c).agg(pl.count().alias("cnt"))\
+#             .sort(c)\
+#             .with_columns(
+#                 ((pl.col("cnt").cumsum()*100)/len(df)).ceil().alias("percentile")
+#             ).groupby("percentile")\
+#             .agg(
+#                 pl.col(c).min().alias("min"),
+#                 pl.col(c).max().alias("max"),
+#                 pl.col("cnt").sum().alias("cnt"),
+#             ).sort("percentile").select(
+#                 pl.lit(c).alias("feature"),
+#                 pl.col("percentile").cast(pl.UInt8),
+#                 "min",
+#                 "max",
+#                 "cnt",
+#             )
         
-        first_row = percentile.select("percentile","min", "max").to_numpy()[0, :] # First row
-        # Need to handle an extreme case when percentile looks like 
-        # percentile   min   max
-        #  p1         null  null
-        #  p2          ...   ...
-        # This happens when there are so many nulls in the column.
-        if np.isnan(first_row[2]):
-            # Discard the first row if this is the case. 
-            percentile = percentile.slice(1, length = None)
+#         first_row = percentile.select("percentile","min", "max").to_numpy()[0, :] # First row
+#         # Need to handle an extreme case when percentile looks like 
+#         # percentile   min   max
+#         #  p1         null  null
+#         #  p2          ...   ...
+#         # This happens when there are so many nulls in the column.
+#         if np.isnan(first_row[2]):
+#             # Discard the first row if this is the case. 
+#             percentile = percentile.slice(1, length = None)
 
-        # Only work on non null values. Null will be mapped to default value anyway.
-        temp_df = df.lazy().filter(pl.col(c).is_not_null()).sort(c).set_sorted(c)\
-            .join_asof(other=percentile.lazy().set_sorted("max"), left_on=c, right_on="max", strategy="forward")\
-            .select(c, "percentile")\
-            .unique().collect()
+#         # Only work on non null values. Null will be mapped to default value anyway.
+#         temp_df = df.lazy().filter(pl.col(c).is_not_null()).sort(c).set_sorted(c)\
+#             .join_asof(other=percentile.lazy().set_sorted("max"), left_on=c, right_on="max", strategy="forward")\
+#             .select(c, "percentile")\
+#             .unique().collect()
         
-        real_mapping = dict(zip(temp_df[c], temp_df["percentile"]))
-        # a representation of the mapping, needed for recreating this.
-        repr_mapping = dict(zip(percentile["max"], percentile["percentile"]))
-        all_mappings.append(repr_mapping)
-        exprs.append(
-            pl.col(c).map_dict(real_mapping, default=0).cast(pl.UInt8)
-        )
+#         real_mapping = dict(zip(temp_df[c], temp_df["percentile"]))
+#         # a representation of the mapping, needed for recreating this.
+#         repr_mapping = dict(zip(percentile["max"], percentile["percentile"]))
+#         all_mappings.append(repr_mapping)
+#         exprs.append(
+#             pl.col(c).map_dict(real_mapping, default=0).cast(pl.UInt8)
+#         )
 
-    res = df.with_columns(exprs)
-    encoder_rec = EncoderRecord(features=num_list, strategy=EncodingStrategy.PERCENTILE, mappings=all_mappings)
-    return FitTransform(transformed=res, mapping=encoder_rec)
+#     res = df.with_columns(exprs)
+#     encoder_rec = EncoderRecord(features=num_list, strategy=EncodingStrategy.PERCENTILE, mappings=all_mappings)
+#     return FitTransform(transformed=res, mapping=encoder_rec)
 
 def binary_encode(df:PolarsFrame
     , cols:Optional[list[str]]=None
@@ -523,7 +312,7 @@ def binary_encode(df:PolarsFrame
     ).select(binary_list) # Null will be first in the sort.
     exprs:list[pl.Expr] = []
     for t in temp.collect().get_columns():
-        s:pl.Series = t[0] # t is a len(1) series that contains another series. So s = t[0] will get the series out. 
+        s:pl.Series = t[0] # t is a len 1 series that contains another series. So s = t[0] will get the series out. 
         # s has 2 elements.
         if len(s) == 2: # s is a pl.Series, s is already sorted, and null will come first
             exprs.append(pl.when(pl.col(t.name) == s[0]).then(0).otherwise(1).cast(pl.UInt8).alias(t.name))
@@ -556,7 +345,7 @@ def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
     for feature, mapping in ordinal_mapping.items():
         table = pl.from_records(list(mapping.items()), schema=["value", "mapped_to"]).with_columns(
             pl.lit(feature).alias("feature")
-        ).select(("feature", "value", "mapped_to"))
+        ).select("feature", "value", "mapped_to")
         mapping_tables.append(table)
 
     return pl.concat(mapping_tables)
@@ -600,11 +389,10 @@ def ordinal_auto_encode(
         uniques:pl.Series = t[0]
         ordinal_col_name = t.name + "_ordinal"
         duplicates.append(ordinal_col_name)
-        if is_input_lazy:
-            temp_table = pl.LazyFrame((uniques, pl.Series(range(len(uniques)))), schema=[t.name, ordinal_col_name])
-        else:
-            temp_table = pl.DataFrame((uniques, pl.Series(range(len(uniques)))), schema=[t.name, ordinal_col_name])
-        # Use join instead of map_dict for 1. Performance and 2. LazyFrame's write_json does not work with map_dict.
+        temp_table = pl.LazyFrame((uniques, pl.Series(range(len(uniques)))), schema=[t.name, ordinal_col_name])
+        if not is_input_lazy:
+            temp_table = temp_table.collect()
+        # Use join instead of map_dict because LazyFrame's write_json does not work with map_dict.
         df = df.join(temp_table, on = t.name, how="left").with_columns(
                 pl.col(ordinal_col_name).alias(t.name)
             )
@@ -638,15 +426,13 @@ def ordinal_encode(df:PolarsFrame
             mapping = ordinal_mapping[c]
             new_col_name = c + "_to"
             duplicates.append(new_col_name)
-            if is_lazy_input:
-                temp_df = pl.LazyFrame((mapping.keys(), mapping.values()), schema=[c, new_col_name])
-            else:
-                temp_df = pl.DataFrame((mapping.keys(), mapping.values()), schema=[c, new_col_name])
-            # Use join instead of map_dict for 1. Performance and 2. LazyFrame's write_json does not work with map_dict.
+            temp_df = pl.LazyFrame((mapping.keys(), mapping.values()), schema=[c, new_col_name])
+            if not is_lazy_input:
+                temp_df = temp_df.collect()
+
             df = df.join(temp_df, on = c, how="left").with_columns(
                 pl.col(new_col_name).fill_null(default).alias(c)
             )
-
         else:
             logger.warning(f"Found that column {c} is not in df. Skipped.")
 
@@ -685,11 +471,11 @@ def smooth_target_encode(
     # Only works for binary target for now 
     # Check if it is binary or not.
     if check_binary:
-        target_uniques = df.get_column(target).unique()
+        target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)
         if len(target_uniques) != 2 or (not (0 in target_uniques and 1 in target_uniques)):
             raise ValueError(f"The target column {target} must be a binary target with 0s and 1s.")
 
-    p = df.get_column(target).mean() # probability of target = 1
+    p = df.lazy().select(pl.col(target).mean()).collect().to_numpy()[0,0] # probability of target = 1
     # If c has null, null will become a group when we group by.
     duplicates = []
     for c in str_cols:
@@ -711,8 +497,6 @@ def smooth_target_encode(
         )
         
     return df.drop(duplicates)
-
-# expit((n - self.min_samples_leaf) / self.smoothing)
 
 def power_transform():
     pass

@@ -6,34 +6,26 @@ from .prescreen import (
 
 from .type_alias import (
     PolarsFrame
+    , MRMRStrategy
+    , CPU_COUNT
+    , clean_strategy_str
 )
 
-import os
 import polars as pl
 import numpy as np
-from enum import Enum
-from typing import Final, Any, Optional, Tuple
+from typing import Any, Optional, Tuple
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
-# Everything named as a selector must return a list of str
-
-CPU_COUNT:Final[int] = os.cpu_count()
-# Some will return dataframe as output, some list of str
+# Everything named as a selector must return a list of str. Must work with LazyFrames.
 
 def _conditional_entropy(
     df:pl.DataFrame
     , target:str
     , predictive:str
 ) -> Tuple[str, float]:
-    
-    # temp = df.groupby(predictive).agg(
-    #     pl.count().alias("prob(predictive)")
-    # ).with_columns(
-    #     pl.col("prob(predictive)") / len(df)
-    # )
 
     cond_entropy = df.groupby((target, predictive)).agg(
         pl.count()
@@ -99,7 +91,7 @@ def discrete_ig(
                 output.append(ig)
                 pbar.update(1)
 
-    output_df = pl.from_records(output, schema=["feature", "conditional_entropy"])\
+    return pl.from_records(output, schema=["feature", "conditional_entropy"])\
         .with_columns(
             pl.lit(target_entropy).alias("target_entropy"),
             (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
@@ -108,8 +100,6 @@ def discrete_ig(
         .with_columns(
             ((1 - pl.col("unique_pct")) * pl.col("information_gain")).alias("weighted_information_gain")
         )
-
-    return output_df
 
 discrete_mi = discrete_ig
 
@@ -366,49 +356,39 @@ def f_score_selector(
     return df.select(selected + complement)
 
 
-class MRMR_STRATEGY(Enum):
-    F_SCORE = "F-SCORE"
-    RF = "RF"
-    XGB = "XGB"
-    MIS = "MIS"
-
-    def info(self) -> str:
-        if self.name == self.F_SCORE:
-            return "F Score"
-        elif self.name == self.RF:
-            return "Random Forest"
-        elif self.name == self.XGB:
-            return "XGBoost"
-        elif self.name == self.MIS:
-            return "Mutual Information Score"
-        else:
-            return "Unknown"
 
 def _mrmr_underlying_score(
     df:pl.DataFrame
     , target:str
     , num_list:list[str]
-    , strategy:MRMR_STRATEGY
+    , strategy:MRMRStrategy
     , params:dict[str,Any]
 ) -> np.ndarray:
     
     print(f"Running {strategy.info()} to determine feature relevance...")
-    if strategy == MRMR_STRATEGY.F_SCORE:
+    s = clean_strategy_str(strategy)
+    if s in ("fscore", "f", "f_score"):
         scores = _f_score(df, target, num_list)
-    elif strategy == MRMR_STRATEGY.RF:
+    elif s in ("rf", "random_forest"):
         from sklearn.ensemble import RandomForestClassifier
         print("Random forest is not deterministic by default. Results may vary.")
         rf = RandomForestClassifier(**params)
         rf.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
         scores = rf.feature_importances_
-    elif strategy == MRMR_STRATEGY.XGB:
+    elif s in ("xgb", "xgboost"):
         from xgboost import XGBClassifier
         print("XGB is not deterministic by default. Results may vary.")
         xgb = XGBClassifier(**params)
         xgb.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
         scores = xgb.feature_importances_
-    elif strategy == MRMR_STRATEGY.MIS:
+    elif s in ("mis", "mutual_info_score"):
         scores = mutual_info(df, conti_cols=num_list, target=target).get_column("estimated_mi").to_numpy().ravel()
+    elif s in ("lgbm", "lightgbm"):
+        from lightgbm import LGBMClassifier
+        print("LightGBM is not deterministic by default. Results may vary.")
+        lgbm = LGBMClassifier(**params)
+        lgbm.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+        scores = lgbm.feature_importances_
     else: # Pythonic nonsense
         raise ValueError(f"The strategy {strategy} is not a valid MRMR Strategy.")
     
@@ -419,12 +399,12 @@ def mrmr(
     , target:str
     , k:int
     , num_cols:Optional[list[str]] = None
-    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
+    , strategy: MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
 ) -> list[str]:
-    '''Implements MRMR. Will add a few more strategies in the future. (Likely only strategies for numerators
-        , aka relevance)
+    '''Implements MRMR. Will add a few more strategies in the future. Likely only strategies for numerators
+        , aka relevance. Right now xgb, lgbm and rf strategies only work for classification problems.
 
         Currently this only supports classification.
 
@@ -448,7 +428,7 @@ def mrmr(
     else:
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
-    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    s = clean_strategy_str(strategy)
     scores = _mrmr_underlying_score(df
                                     , target = target
                                     , num_list = num_list
@@ -499,18 +479,17 @@ def mrmr(
         pbar.update(1)
 
     pbar.close()
-    print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most important, etc.)")
+    print("Output is sorted in order of selection (relevance).")
     return selected
 
 def mrmr_selector(
     df:PolarsFrame
     , target:str
     , top_k:int
-    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
+    , strategy:MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
 ) -> PolarsFrame:
-
 
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
@@ -521,7 +500,7 @@ def mrmr_selector(
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
     complement = [f for f in input_data.columns if f not in num_cols]
 
-    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    s = clean_strategy_str(strategy)
     selected = mrmr(input_data, target, top_k, num_cols, s, params, low_memory)
 
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
@@ -533,7 +512,7 @@ def knock_out_mrmr(
     , target:str
     , k:int 
     , num_cols:Optional[list[str]] = None
-    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
+    , strategy:MRMRStrategy = "fscore"
     , corr_threshold:float = 0.7
     , params:Optional[dict[str,Any]] = None
 ) -> list[str]:
@@ -551,7 +530,7 @@ def knock_out_mrmr(
     else:
         num_list.extend(get_numeric_cols(df, exclude=[target]))
 
-    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    s = clean_strategy_str(strategy)
     scores = _mrmr_underlying_score(df
                                     , target = target
                                     , num_list = num_list
@@ -582,19 +561,17 @@ def knock_out_mrmr(
         print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out "
               "rule eliminates most of them.")
 
-    print("Output is sorted in order of selection. (The 1st feature selected is most important, the 2nd the 2nd most "
-          "important, etc.)")
+    print("Output is sorted in order of selection (relevance).")
     return selected
 
 def knock_out_mrmr_selector(
     df:PolarsFrame
     , target:str
     , top_k:int 
-    , strategy:MRMR_STRATEGY|str = MRMR_STRATEGY.F_SCORE
+    , strategy:MRMRStrategy = "fscore"
     , corr_threshold:float = 0.7
     , params:Optional[dict[str,Any]] = None
 ) -> PolarsFrame:
-
 
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
@@ -605,7 +582,7 @@ def knock_out_mrmr_selector(
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
     complement = [f for f in df.columns if f not in num_cols]
 
-    s = MRMR_STRATEGY(strategy) if isinstance(strategy, str) else strategy
+    s = clean_strategy_str(strategy)
     selected = knock_out_mrmr(input_data, target, top_k, num_cols, s, corr_threshold, params)
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")

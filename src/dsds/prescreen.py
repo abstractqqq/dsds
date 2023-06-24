@@ -1,6 +1,7 @@
-
 from .type_alias import (
     PolarsFrame
+    , POLARS_DATETIME_TYPES
+    , POLARS_NUMERICAL_TYPES
 )
 
 import polars.selectors as cs
@@ -8,12 +9,10 @@ import polars as pl
 import re
 import logging  
 from datetime import datetime 
-from typing import Final, Any, Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
-POLARS_NUMERICAL_TYPES:Final[list[pl.DataType]] = [pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64]  # noqa: E501
-POLARS_DATETIME_TYPES:Final[list[pl.DataType]] = [pl.Datetime, pl.Date, pl.Time]
 
 #----------------------------------------------------------------------------------------------#
 # Generic columns checks | Only works with Polars because Pandas's data types suck!            #
@@ -64,15 +63,6 @@ def dtype_mapping(d: Any) -> str:
 #----------------------------------------------------------------------------------------------#
 # Prescreen Inferral, Removal Methods                                                          #
 #----------------------------------------------------------------------------------------------#
-
-@dataclass
-class DroppedFeatureResult:
-    dropped: list[str]
-    reason: str
-
-    # todo!
-    def __str__(self):
-        pass 
 
 # Add a slim option that returns fewer stats. This is generic describe.
 def describe(df:pl.DataFrame) -> pl.DataFrame:

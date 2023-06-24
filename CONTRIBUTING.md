@@ -6,7 +6,7 @@
 
 2. Provide proof that the algorithm generates exact/very close results to Scikit-learn's implementation.
 
-3. Try not to include other core packages. NumPy, Scipy and Polars should be all. The preferred serialization strategy is dataclasses + Orjson, not pickling. Avoid nested dataclasses.
+3. Try not to include other core packages. NumPy, Scipy and Polars should be all. The preferred serialization strategy to make things compatible with Polars' execution plan on LazyFrames.
 
 4. Fucntion annotaions are required and functions should have one output type only.
 
