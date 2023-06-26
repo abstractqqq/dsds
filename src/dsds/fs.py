@@ -218,7 +218,7 @@ def mutual_info_selector(
     nums = get_numeric_cols(input_data, exclude=[target])
     complement = [f for f in input_data.columns if f not in nums]
 
-    mi_scores = mutual_info(input_data, nums, target, n_neighbors, random_state, n_threads)\
+    mi_scores = mutual_info(input_data, target, nums, n_neighbors, random_state, n_threads)\
                 .top_k(by="estimated_mi", k = top_k)
 
     selected = mi_scores.get_column("feature").to_list()

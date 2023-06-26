@@ -63,7 +63,8 @@ def dtype_mapping(d: Any) -> str:
 # Prescreen Inferral, Removal Methods                                                          #
 #----------------------------------------------------------------------------------------------#
 
-# Add a slim option that returns fewer stats. This is generic describe.
+# Add a slim option that returns fewer stats? This is generic describe.
+# Separate str and numeric?
 def describe(
     df:PolarsFrame
     , sample_pct:float = 0.75
@@ -102,8 +103,10 @@ def describe(
                     .transpose(include_header=True, column_names=["kurtosis"])
                 , on = "column")
 
-    nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
+    # Get a basic string description of the data type.
     dtypes_dict = dict(zip(df_local.columns, map(dtype_mapping, df_local.dtypes)))
+    # Combine all
+    nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
     final = temp.transpose(include_header=True, column_names=desc).with_columns(
         pl.col(c).cast(pl.Float64) for c in nums
     ).with_columns(
@@ -232,16 +235,15 @@ def pattern_inferral(
     , threshold:float = 0.9
     , count_null:bool = True
 ) -> list[str]:
-    '''Matches the pattern in the 
-
-    A column will be considered to satisfy the pattern if for all rounds, the match% is higher than threshold.
+    '''Find all string columns that reasonably match the given pattern. The match logic can be tuned using the all the 
+    parameters.
 
     sample_pct: the pct of the total dataframe to use as basis
     sample_count: from the basis, how many rows to sample for each round 
     sample_rounds: how many rounds of sampling we are doing
     threhold: For each round, what is the match% that is needed to be a counted as a success. For instance, 
-    in round 1, for column x, we have 92% match rate, and threshold = 0.9. We count column x as a column match for 
-    this round.
+    in round 1, for column x, we have 92% match rate, and threshold = 0.9. We count column x as a match for 
+    this round. In the end, the column must match for every round to be considered a real match.
     count_null: for individual matches, do we want to count null as a match or not? If the column has high null pct,
     the non-null values might mostly match the pattern. In this case, using count_null = True will match the column, 
     while count_null = False will most likely exclude the column.
@@ -279,6 +281,7 @@ def email_inferral(
     , threshold:float = 0.9
     , count_null:bool = True
 ) -> list[str]:
+    # Why does this regex not work?
     # r'([A-Za-z0-9]+[.-_])*[A-Za-z0-9]+@[A-Za-z0-9-]+(\.[A-Z|a-z]{2,})+'
     return pattern_inferral(
         df
