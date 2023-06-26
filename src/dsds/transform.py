@@ -4,7 +4,9 @@ from .type_alias import (
     PolarsFrame
     , ImputationStrategy
     , ScalingStrategy
+    , PowerTransformStrategy
     , clean_strategy_str
+    , CPU_COUNT
 )
 from .prescreen import (
     get_bool_cols
@@ -16,7 +18,13 @@ from .prescreen import (
 
 import logging
 import polars as pl
-from typing import Optional
+from typing import Optional, Tuple
+from scipy.stats._morestats import (
+    yeojohnson_normmax
+    , boxcox_normmax
+)
+from concurrent.futures import as_completed, ThreadPoolExecutor
+from tqdm import tqdm
 
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
@@ -498,5 +506,94 @@ def smooth_target_encode(
         
     return df.drop(duplicates)
 
-def power_transform():
-    pass
+
+
+def _lmax_estimate_step(df:PolarsFrame, c:str, s:PowerTransformStrategy) -> Tuple[str, float]:
+    np_col = df.lazy().select(pl.col(c).cast(pl.Float64)).collect().get_column(c).view()
+    if s in ("yeo_johnson", "yeojohnson"):
+        lmax:float = yeojohnson_normmax(np_col)
+    else:
+        lmax:float = boxcox_normmax(np_col, method="mle")
+    
+    return (c, lmax)
+
+def power_transform(
+    df: PolarsFrame
+    , target:str
+    , num_cols: Optional[list[str]] = None
+    , strategy: PowerTransformStrategy = "yeo_johnson"
+    , n_threads:int = CPU_COUNT
+    # , lmbda: Optional[float] = None
+) -> PolarsFrame:
+    '''Performs power transform on the data.
+
+    df: either a lazy or eager Polars dataframe
+    target: target column will be excluded.
+    num_cols: a list of numerical columns to perform the transform. If not provided, will use all numeric columns.
+    strategy: either yeo_johnson or box_cox
+    n_threads: max number of threads you want to use. Default = CPU_COUNT
+
+    returns:
+        the transformed dataframe. If input is lazy, output is lazy. If input is eager, output is eager.
+    
+    '''
+    
+    num_list = []
+    if isinstance(num_cols, list):
+        num_list.extend(num_cols)
+    else:
+        num_list = get_numeric_cols(df, exclude=[target])
+
+    s = clean_strategy_str(strategy)
+    exprs:list[pl.Expr] = []
+
+    # Ensure columns do not have missing values
+    exclude_columns_w_nulls = df.lazy().select(num_list).null_count().collect().transpose(
+        include_header=True, column_names=["null_count"]
+    ).filter(pl.col("null_count") > 0).get_column("column").to_list()
+
+    if len(exclude_columns_w_nulls) > 0:
+        logger.info("The following columns will not be processed by power_transform because they contain missing "
+                    f"values. Please impute them.\n{exclude_columns_w_nulls}")
+        
+    non_null_list = [c for c in num_list if c not in exclude_columns_w_nulls and c != target]
+    pbar = tqdm(non_null_list, desc = "Inferring best paramters")
+    if s in ("yeo_johnson", "yeojohnson"):
+        with ThreadPoolExecutor(max_workers=n_threads) as ex:
+            for future in as_completed(ex.submit(_lmax_estimate_step, df, c, s) for c in non_null_list):
+                c, lmax = future.result()
+                if lmax == 0: # log(x + 1)
+                    x_ge_0_sub_expr = (pl.col(c).add(1)).log()
+                else: # ((x + 1)**lmbda - 1) / lmbda
+                    x_ge_0_sub_expr = ((pl.col(c).add(1)).pow(lmax) - 1) / lmax
+
+                if lmax == 2: # -log(-x + 1)
+                    x_lt_0_sub_expr = pl.lit(-1) * (1 - pl.col(c)).log()
+                else: #  -((-x + 1)**(2 - lmbda) - 1) / (2 - lmbda)
+                    t = 2 - lmax
+                    x_lt_0_sub_expr = pl.lit(-1/t) * ((1 - pl.col(c)).pow(t) - 1)
+
+                exprs.append(
+                    pl.when(pl.col(c).ge(0)).then(x_ge_0_sub_expr).otherwise(x_lt_0_sub_expr).alias(c)
+                )
+                pbar.update(1)
+
+    elif s in ("box_cox", "boxcox"):
+        with ThreadPoolExecutor(max_workers=n_threads) as ex:
+            for future in as_completed(ex.submit(_lmax_estimate_step, df, c, s) for c in non_null_list):
+                c, lmax = future.result()
+                if lmax == 0: # log(x)
+                    exprs.append(pl.col(c).log())
+                else: # (x**lmbda - 1) / lmbda
+                    exprs.append(
+                        (pl.col(c).pow(lmax) - 1) / lmax
+                    )
+                pbar.update(1)
+    else:
+        raise TypeError(f"The input strategy {strategy} is not a valid strategy. Valid strategies are: yeo_johnson "
+                        "or box_cox")
+
+    pbar.close()
+    return df.with_columns(exprs)
+
+    

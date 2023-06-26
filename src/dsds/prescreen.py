@@ -10,7 +10,6 @@ import re
 import logging  
 from datetime import datetime 
 from typing import Any, Optional
-from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -65,58 +64,78 @@ def dtype_mapping(d: Any) -> str:
 #----------------------------------------------------------------------------------------------#
 
 # Add a slim option that returns fewer stats. This is generic describe.
-def describe(df:pl.DataFrame) -> pl.DataFrame:
-    '''
-        The transpose view of df.describe() for easier filtering. Add more statistics in the future (if easily
-        computable.)
+def describe(
+    df:PolarsFrame
+    , sample_pct:float = 0.75
+) -> pl.DataFrame:
+    '''Profile the data. If input is a LazyFrame, a sample of sample_pct will be used, and sample_pct will 
+    only be used in the lazy case. 
 
         Arguments:
             df:
 
         Returns:
-            Transposed view of df.describe() with a few more interesting columns
+            a dataframe containing the necessary information.
     '''
-    
-    temp = df.describe()
-    desc = temp.drop_in_place("describe")
-    unique_counts = get_unique_count(df).with_columns(
-        (pl.col("n_unique") / len(df)).alias("unique_pct"),
-        pl.when(pl.col("n_unique")==2).then(1).otherwise(0).alias("is_binary")
-    )
 
-    skew_and_kt = df.select(pl.col(c).skew() for c in df.columns)\
+    if isinstance(df, pl.LazyFrame):
+        if sample_pct <= 0 or sample_pct >= 1:
+            raise ValueError(f"The argument sample_pct must be >0 and <1. Not {sample_pct}.")
+        
+        df_local = df.with_columns(pl.all().shuffle(seed=42)).with_row_count().filter(
+            pl.col("row_nr") < sample_pct * pl.col("row_nr").max()
+        ).select(df.columns).collect()
+    else:
+        df_local = df
+    
+    temp = df_local.describe()
+    desc = temp.drop_in_place("describe")
+    # Get unique
+    unique_counts = get_unique_count(df_local).with_columns(
+        unique_pct = pl.col("n_unique") / len(df_local)
+    )
+    # Skew and Kurtosis
+    skew_and_kt = df_local.select(pl.col(c).skew() for c in df_local.columns)\
                 .transpose(include_header=True, column_names=["skew"])\
                 .join(
-                    df.select(pl.col(c).kurtosis() for c in df.columns)\
+                    df_local.select(pl.col(c).kurtosis() for c in df.columns)\
                     .transpose(include_header=True, column_names=["kurtosis"])
                 , on = "column")
 
     nums = ("count", "null_count", "mean", "std", "median", "25%", "75%")
-    dtypes_dict = dict(zip(df.columns, map(dtype_mapping, df.dtypes)))
+    dtypes_dict = dict(zip(df_local.columns, map(dtype_mapping, df_local.dtypes)))
     final = temp.transpose(include_header=True, column_names=desc).with_columns(
-        (pl.col(c).cast(pl.Float64) for c in nums)
+        pl.col(c).cast(pl.Float64) for c in nums
     ).with_columns(
-        (pl.col("null_count")/pl.col("count")).alias("null_pct"),
-        pl.col("column").map_dict(dtypes_dict).alias("dtype")
+        null_pct = pl.col("null_count")/pl.col("count")
+        , dtype = pl.col("column").map_dict(dtypes_dict)
     ).join(unique_counts, on="column").join(skew_and_kt, on="column")
     
-    return final.select(('column', 'is_binary','count','null_count','null_pct','n_unique'
+    return final.select('column','count','null_count','null_pct','n_unique'
                         , 'unique_pct','mean','std','min','max','25%'
-                        , 'median','75%', "skew", "kurtosis",'dtype'))
+                        , 'median','75%', "skew", "kurtosis",'dtype')
 
 # Numeric only describe. Be more detailed.
 
 # String only describe. Be more detailed about interesting string stats.
 
-def describe_str(df:PolarsFrame, words_to_count:Optional[list[str]]=None) -> pl.DataFrame:
+def describe_str(df:PolarsFrame
+    , words_to_count:Optional[list[str]]=None
+    , sample_pct:float = 0.75
+) -> pl.DataFrame:
     '''Gives some statistics about the string columns. Optionally you may pass a list
-    of strings to compute the total occurrances of each of the words in the string columns.
+    of strings to compute the total occurrances of each of the words in the string columns. If input is a LazyFrame, 
+    a sample of sample_pct will be used, and sample_pct will only be used in the lazy case. 
 
     '''
     strs = get_string_cols(df)
     df_str = df.select(strs)
     if isinstance(df, pl.LazyFrame):
-        df_str = df_str.collect()
+        if sample_pct <= 0 or sample_pct >= 1:
+            raise ValueError(f"The argument sample_pct must be >0 and <1. Not {sample_pct}.")
+        df_str = df_str.with_columns(pl.all().shuffle(seed=42)).with_row_count().filter(
+            pl.col("row_nr") < sample_pct * pl.col("row_nr").max()
+        ).select(strs).collect()
 
     nc = df_str.null_count()\
         .transpose().to_series().rename("null_count")
@@ -204,26 +223,102 @@ def duplicate_inferral():
     # Then check equality..
     pass
 
-def pattern_inferral():
-    pass
+def pattern_inferral(
+    df: PolarsFrame
+    , pattern:str
+    , sample_pct:float = 0.75
+    , sample_count:int = 100_000
+    , sample_rounds:int = 3
+    , threshold:float = 0.9
+    , count_null:bool = True
+) -> list[str]:
+    '''Matches the pattern in the 
 
-# Check if column is an email column. This is easy. Email regex is easy.
-# But email column might have many nulls. Check only on non-null values.
-def email_inferral():
-    pass 
+    A column will be considered to satisfy the pattern if for all rounds, the match% is higher than threshold.
+
+    sample_pct: the pct of the total dataframe to use as basis
+    sample_count: from the basis, how many rows to sample for each round 
+    sample_rounds: how many rounds of sampling we are doing
+    threhold: For each round, what is the match% that is needed to be a counted as a success. For instance, 
+    in round 1, for column x, we have 92% match rate, and threshold = 0.9. We count column x as a column match for 
+    this round.
+    count_null: for individual matches, do we want to count null as a match or not? If the column has high null pct,
+    the non-null values might mostly match the pattern. In this case, using count_null = True will match the column, 
+    while count_null = False will most likely exclude the column.
+
+    Returns:
+        a list of columns that pass the matching test
+    
+    '''
+    
+    strs = get_string_cols(df)
+    df_local = df.lazy().with_columns(pl.all().shuffle(seed=42)).with_row_count().filter(
+            pl.col("row_nr") < sample_pct * pl.col("row_nr").max()
+        ).select(df.columns).collect()
+    
+    matches:set[str] = set(strs)
+    sample_size = min(sample_count, len(df_local))
+    for _ in range(sample_rounds):
+        df_sample = df_local.sample(n = sample_size)
+        fail = df_sample.select(
+            (pl.when(pl.col(s).is_null()).then(count_null).otherwise(
+                pl.col(s).str.contains(pattern)
+            ).sum()/sample_size).alias(s) for s in strs
+        ).transpose(include_header=True, column_names=["pattern_match_pct"])\
+        .filter(pl.col("pattern_match_pct") < threshold).get_column("column")
+        # If the match failes in this round, remove the column.
+        matches.difference_update(fail)
+
+    return list(matches)
+
+def email_inferral(
+    df: PolarsFrame
+    , sample_pct:float = 0.75
+    , sample_count:int = 100_000
+    , sample_rounds:int = 3
+    , threshold:float = 0.9
+    , count_null:bool = True
+) -> list[str]:
+    # r'([A-Za-z0-9]+[.-_])*[A-Za-z0-9]+@[A-Za-z0-9-]+(\.[A-Z|a-z]{2,})+'
+    return pattern_inferral(
+        df
+        , r'\S+@\S+\.\S+'
+        , sample_pct
+        , sample_count
+        , sample_rounds
+        , threshold 
+        , count_null
+    )
+
+def email_removal(
+    df: PolarsFrame
+    , sample_pct:float = 0.75
+    , sample_count:int = 100_000
+    , sample_rounds:int = 3
+    , threshold:float = 0.9
+    , count_null:bool = True
+) -> PolarsFrame:
+    
+    emails = email_inferral(df, sample_pct, sample_count, sample_rounds, threshold, count_null)
+    logger.info(f"The following columns are dropped because they are emails. {emails}.\n"
+            f"Removed a total of {len(emails)} columns.")
+    
+    return df.drop(emails)
 
 # Check for columns that are US zip codes.
+# Might add options for other countries later.
 def zipcode_inferral():
+    # Match string using pattern inferral
+    # Take a look at integers too, are they always 5 digits? 
     pass
 
-# Check if a column is date
 def date_inferral(df:PolarsFrame) -> list[str]:
     '''Infers date columns in dataframe. This inferral is not perfect.'''
     logger.info("Date Inferral is error prone due to the huge variety of date formats. Please use with caution.")
     
     dates = [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
     strings = get_string_cols(df)
-
+    # MIGHT REWRITE THIS LOGIC
     # Might be memory intensive on big dataframes. 
     sample_df = df.lazy().select(strings)\
         .drop_nulls().collect()\

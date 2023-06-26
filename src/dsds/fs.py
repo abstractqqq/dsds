@@ -39,7 +39,7 @@ def _conditional_entropy(
 
     return (predictive, cond_entropy)
 
-# NEED REVIEW FOR CORRECTNESS
+# !!!NEED REVIEW FOR CORRECTNESS
 def discrete_ig(
     df:pl.DataFrame
     , target:str
@@ -48,16 +48,17 @@ def discrete_ig(
 ) -> pl.DataFrame:
     '''The entropy here is "discrete entropy".
 
-        Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in discrete_cols.
-        For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
+        Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in 
+        discrete_cols. For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
 
-        Information gain defined in this way suffers from high cardinality (high uniqueness), and therefore a weighted information
-        gain is provided, weighted by (1 - unique_pct), where unique_pct represents the percentage of unique values in feature.
+        Information gain defined in this way suffers from high cardinality (high uniqueness), and therefore a weighted 
+        information gain is provided, weighted by (1 - unique_pct), where unique_pct represents the percentage of unique
+         values in feature.
 
-        Currently this only works for discrete columns and no method for continuous column is implemented yet.
+        Currently this only works for discrete columns. For continuous features vs discrete target, use mutual_info.
 
         Arguments:
-            df:
+            df: Eager frame only.
             target:
             discrete_cols: list of discrete columns.
             top_k: must be >= 0. If <= 0, the entire DataFrame will be returned.
@@ -72,7 +73,7 @@ def discrete_ig(
         discretes.extend(discrete_cols)
     else: # If discrete_cols is not passed, infer it
         discretes.extend(discrete_inferral(df, exclude=[target]))
-    
+
     # Compute target entropy. This only needs to be done once.
     target_entropy = df.groupby(target).agg(
                         (pl.count()).alias("prob(target)") / len(df)
@@ -83,13 +84,14 @@ def discrete_ig(
         (pl.col("n_unique") / len(df)).alias("unique_pct")
     ).rename({"column":"feature"})
 
-    with ThreadPoolExecutor(max_workers=n_threads) as ex: # 10% gain actually. Small but ok.
-        futures = (ex.submit(_conditional_entropy, df, target, predictive) for predictive in discretes)
-        with tqdm(total=len(discretes)) as pbar:
-            for res in as_completed(futures):
-                ig = res.result()
-                output.append(ig)
-                pbar.update(1)
+    with ThreadPoolExecutor(max_workers=n_threads) as ex: # 10% speed gain ? Need to retest this..
+        pbar = tqdm(total=len(discretes), desc = "discrete_ig")
+        for future in as_completed(ex.submit(_conditional_entropy, df, target, pred) for pred in discretes):
+            ig = future.result()
+            output.append(ig)
+            pbar.update(1)
+
+        pbar.close()
 
     return pl.from_records(output, schema=["feature", "conditional_entropy"])\
         .with_columns(
@@ -126,11 +128,10 @@ def discrete_ig_selector(
 
     return df.select(selected + complement)
 
-
 def mutual_info(
     df:pl.DataFrame
-    , conti_cols:list[str]
     , target:str
+    , conti_cols:list[str]
     , n_neighbors:int=3
     , random_state:int=42
     , n_threads:int=CPU_COUNT
@@ -143,11 +144,10 @@ def mutual_info(
         1. This uses Scipy library's kdtree, instead of sklearn's kdtree and nearneighbors. 
         2. The use of Scipy enables us to use more cores. 
         3. There are less "checks" and "safeguards", meaning input data quality is expected to be "good".
-        4. Conti_cols are supposed to be "continuous" variables. In sklearn's mutual_info_classif, if you input a dense matrix X,
-            it will always be treated as continuous, and if X is sparse, it will be treated as discrete.
-        5. The method here is sklearn's method in the case of continous variable and discrete target, which is based on the method
-            described in sources.
-   
+        4. Conti_cols are supposed to be "continuous" variables. In sklearn's mutual_info_classif, if you input a dense 
+            matrix X, it will always be treated as continuous, and if X is sparse, it will be treated as discrete.
+        5. This method is based on method described the sources.
+
         Arguments:
             df:
             conti_cols: 
@@ -165,27 +165,29 @@ def mutual_info(
     '''
     n = len(df)
     rng = np.random.default_rng(random_state)
-    target_col = df[target].to_numpy().ravel()
+    target_col = df.get_column(target).to_numpy().ravel()
     unique_targets = np.unique(target_col)
-    # parts = {t:df.filter((pl.col(target) == t)) for t in df[target].unique()}
     all_masks = {}
     for t in unique_targets:
         all_masks[t] = target_col == t
-        if len(df.filter(pl.col(target) == t)) <= n_neighbors:
+        if np.sum(all_masks[t]) <= n_neighbors:
             raise ValueError(f"The target class {t} must have more than {n_neighbors} values in the dataset.")        
 
     estimates = []
     psi_n_and_k = psi(n) + psi(n_neighbors)
     for col in tqdm(conti_cols, desc = "Mutual Info"):
-        c = df[col].to_numpy().reshape(-1,1)
-        c = c + (1e-10 * np.mean(c) * rng.standard_normal(size=c.shape))
+        c = df.get_column(col).cast(pl.Float64).to_numpy().reshape(-1,1)
+        # Add random noise here because if inpute data is too big, then adding
+        # a random matrix of the same size will require a lot of memory upfront.
+        c = c + (1e-10 * np.mean(c) * rng.standard_normal(size=c.shape)) 
         radius = np.empty(n)
         label_counts = np.empty(n)
         for t in unique_targets:
             mask = all_masks[t]
             c_masked = c[mask]
             kd1 = KDTree(data=c_masked, leafsize=40)
-            # dd = distances from the points the the k nearest points. +1 because this starts from 0. It is 1 off from sklearn's kdtree.
+            # dd = distances from the points the the k nearest points. +1 because this starts from 0. It is 1 off from 
+            # sklearn's kdtree.
             dd, _ = kd1.query(c_masked, k = n_neighbors + 1, workers=n_threads)
             radius[mask] = np.nextafter(dd[:, -1], 0)
             label_counts[mask] = np.sum(mask)
@@ -196,8 +198,7 @@ def mutual_info(
             max(0, psi_n_and_k - np.mean(psi(label_counts) + psi(m_all)))
         ) # smallest is 0
 
-    output = pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
-    return output
+    return pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
 
 # Selectors should always return target
 def mutual_info_selector(
@@ -231,9 +232,9 @@ def _f_score(
     , target:str
     , num_list:list[str]
 ) -> np.ndarray:
-    '''Same as f_classification, but returns a numpy array of f scores only.'''
+    '''Same as f_classif, but returns a numpy array of f scores only.'''
     
-    # See comments in f_classification
+    # See comments in f_classif
     step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")]
     step_two_expr:list[pl.Expr] = []
     step_three_expr:list[pl.Expr] = []
@@ -263,7 +264,7 @@ def _f_score(
     return ref.with_columns(step_two_expr).select(step_three_expr)\
             .to_numpy().ravel() * (df_in_class / df_btw_class)
 
-def f_classification(
+def f_classif(
     df:pl.DataFrame
     , target:str
     , num_cols:Optional[list[str]]=None
@@ -355,7 +356,7 @@ def f_score_selector(
 
     return df.select(selected + complement)
 
-
+#---- Below is MRMR
 
 def _mrmr_underlying_score(
     df:pl.DataFrame
@@ -365,7 +366,7 @@ def _mrmr_underlying_score(
     , params:dict[str,Any]
 ) -> np.ndarray:
     
-    print(f"Running {strategy.info()} to determine feature relevance...")
+    print(f"Running {strategy} to determine feature relevance...")
     s = clean_strategy_str(strategy)
     if s in ("fscore", "f", "f_score"):
         scores = _f_score(df, target, num_list)
@@ -446,9 +447,9 @@ def mrmr(
     output_size = min(k, len(num_list))
     print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
     cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
-    pbar = tqdm(total=output_size, desc = f"MRMR, {s}")
     top_idx = np.argmax(scores)
     selected = [num_list[top_idx]]
+    pbar = tqdm(total=output_size, desc = f"MRMR, {s}")
     pbar.update(1)
     for j in range(1, output_size): 
         argmax = -1

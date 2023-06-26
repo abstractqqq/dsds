@@ -1,36 +1,15 @@
 # Welcome to the Dark Side of Data Science (DSDS)
 
-This package is in pre-alpha stage.
+This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package.
 
-This library aims to be a lightweight altenative to Scikit-learn (Sklearn), especially in the data preparation stage, e.g. feature screening/selection, basic transformations (scale, impute, one-hot encode, target encode, etc.) Its goal is to replace sklearn's pipeline. (Everything except the models are rewritten. The current dataset builder does not have model steps yet.). Its focuses are on:
+# Basic Examples
 
-1. Being more dataframe centric in design. Dataframe in, dataframe out, and try not to convert or copy to NumPy unless necessary, or provide low-memory options.
+1.
 
-2. Performance. Most algorithms are rewritten and are 3-5x faster on large datasets, 10x if you have more cores on your computer, than Scikit-learn's implementation.
 
-3. Simplicity and consistency. This library should not be everything. It should stick to the responsibilities outlined above. It shouldn't become a visualization library. It shouldn't overload users with millions of input  output options, most of which won't be used anyway and which really adds little but side effects to the program. It shouldn't be a package with models. (We might add some wrappers to Scipy for other EDA). This package helps you build and manage the pipeline, from feature selection to basic transformations, and provides you with a powerful builder to build your pipe!
+# Overview of Existing Functionalities:
 
-4. Provide more visibility into data pipelines without all the pomp of a web UI. Make data pipelines editable outside Python, which means you can finally copy and paste your pipelines and edit them in a text editor if you want!
-
-5. Be more developer friendly by introducing useful types and data structures in the backend.
-
-To this end, I believe the old "stack", Pandas + Sklearn + some NumPy, is inadequate, mostly because
-
-1. Their lack of parallelism
-2. Pandas's "object" types making things difficult and its slow performance.
-3. Lack of types enforcement, leading to infinitely many quality checks. Lack of types describing outputs.
-
-Dask and PySpark are distributed systems and so are their own universe. But on a single machine, Polars has proven to be more performant and less memory intensive than both of them.
-
-Most algorithms in Sklearn are available in Scipy, and Scipy relies more heavily on C and usually has multicore options. Therefore, when the algorithm is too complex to perfom in Polars, we can rely on Scipy. 
-
-So the proposed new "stack" is Polars + Scipy + some NumPy.
-
-Note, if you want everything to work, you may need to install sklearn because in some algorithms we need random forest's feature importances.
-
-# Existing Functionalities:
-
-## EDA Prescreen
+## prescreen
 
 The point of feature prescreening is to reduce the number of feature to be analyzed by dropping obviously useless features. E.g in a dataset with 500+ features, it is impossible for a person to know what the features are. It will take very long time to run feature selection on all features. In this case we can quickly remove all features that are constant, all id column feautres, or all features that are too unique (which makes them like ids). If you are confident in removing columns with high null percentage, you may do that do.
 
@@ -44,11 +23,13 @@ The point of feature prescreening is to reduce the number of feature to be analy
 
 2. Remove based on the above (less trivial) characteristics.
 
-## EDA Transformation
+## transform
 
 1. Binary transforms, boolean transform, ordinal encoding, auto ordinal encoding, one-hot encoding, target encoding.
 
 2. Imputation and scaling.
+
+3. Power transform.
 
 ### todo()!
 
@@ -56,7 +37,7 @@ The point of feature prescreening is to reduce the number of feature to be analy
 
 2. More slightly advanced encoding techniques.
 
-## EDA Selection
+## Feature Selection (fs)
 
 Feature selection done fast. May need more optimization.
 
@@ -78,17 +59,31 @@ Feature selection done fast. May need more optimization.
 
     Also see mrmr_examples.ipynb in the examples folder.
 
-## EDA Builder
+### todo()!
 
-A builder that helps you with the data preparation part of the ML cycle. Its aim is to create blueprints, reusable formula for recreating the same pipeline and should be editable without code. It is essentially like Sklearn's pipeline, but less object dependent and easier to serialize and edit, and is much cleaner and follows "chain of thought". It is Polars's execution plan under the hood.
+1. More known feature selection algorithms.
 
-1. Build feature selections into builder, thus incorporating feature selection into the pipeline. This will enable "just try it" type of blind testing and screening
+## Compatible with df.pipe()
+
+A lot of work is being done. It is hard to explain everything. But right now this section is not good for eager dataframes.
+
+Most functions in this package are compatible with lazy Polar's pipe operation, making the data preparation part of the ML cycle trivial. In addition, we can create blueprints, reusable formula for recreating the same pipeline. It is like Sklearn's pipeline, but you don't need to initialize any objects! Serialization is builtin in Polars with the write.json() function on lazy frames. The result is a much cleaner pipeline which follows "chain of thought". It is lazy Polars's execution plan under the hood. To get a blueprint out as in the builder example, please start with a lazy df as input.
+
+### todo()!
+
+1. Write more functions compatible with Polar's lazy execution plan. Make this pipeline more general purpose.
 
 2. Enable logging so that it actually writes to a log file??
 
-3. Might need some restructuring.
+3. Maybe create another data structure to better manage the pipe?
 
-## EDA Misc
+4. Debugging and the precision issue.
+
+### IMPORTANT: If you are reusing an execution plan, there is a known precision issue right now. However, the precision error is on the magnitude of 1e-8.
+
+### IMPORTANT: It is possible to add your custom transformations into the pipeline. If the transformation is independent of incoming data, then no worries. If the transformation is dependent on the incoming data, then you have to write to in such a way that it will be "memorized" by the execution plan. Otherwise, the operation will not persist.
+
+## Utils
 
 Miscallenous functions.
 
@@ -96,16 +91,14 @@ Miscallenous functions.
 
 ## Dependencies
 
-Python 3.9, 3.11+ is recommended. We are forward looking.
+Python 3.9, 3.10, 3.11+ is recommended. We are forward looking.
 
 pip install polars scipy numpy
 
 pip install dsds[all]
 
-Note: scikit-learn, and xgboost are needed for full functionalities. 
+Note: scikit-learn, lightgbm, xgboost are needed for full functionalities. 
 
-
-
-## Why the name Darkside of Data Science DSDS?
+# Why DSDS?
 
 I choose DarkSide because data pipelines are like real life pipelines, buried under the ground. It is the most foundational work that is also the most under-appreciated component of any data science project. Feature selection is often considered a dark art, too. So the name DarkSide/dsds really makes sense to me.

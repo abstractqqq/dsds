@@ -11,7 +11,7 @@ MRMRStrategy = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf", "random
                        , "mutual_info_score", "lgbm", "lightgbm"]
 ScalingStrategy = Literal["normal", "standard", "normalize", "min_max", "const", "constant"]
 ImputationStrategy = Literal["mean", "avg", "average", "median", "const", "constant", "mode", "most_frequent"]
-PowerTransformStrategy = Literal[""]
+PowerTransformStrategy = Literal["yeo_johnson", "yeojohnson", "box_cox", "boxcox"]
 
 def clean_strategy_str(s:str):
     '''Strategy strings will only have _, no -, and all lowercase.'''
