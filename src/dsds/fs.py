@@ -35,7 +35,7 @@ def _conditional_entropy(
     ).select(
         (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() 
            * pl.col("prob(target,predictive)")).sum()) # This is the conditional entropy.
-    ).to_numpy()[0,0]
+    ).row(0)[0]
 
     return (predictive, cond_entropy)
 
@@ -328,7 +328,7 @@ def f_classif(
     # Cast to numpy, so that fdtrc can process it properly.
 
     p_values = fdtrc(df_btw_class, df_in_class, f_values) # get p values 
-    return pl.from_records([num_list, f_values, p_values], schema=["feature","f_value","p_value"])
+    return pl.from_records((num_list, f_values, p_values), schema=["feature","f_value","p_value"])
 
 def f_score_selector(
     df:PolarsFrame

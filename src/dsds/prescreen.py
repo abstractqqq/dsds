@@ -96,12 +96,14 @@ def describe(
         unique_pct = pl.col("n_unique") / len(df_local)
     )
     # Skew and Kurtosis
-    skew_and_kt = df_local.select(pl.col(c).skew() for c in df_local.columns)\
-                .transpose(include_header=True, column_names=["skew"])\
-                .join(
-                    df_local.select(pl.col(c).kurtosis() for c in df.columns)\
-                    .transpose(include_header=True, column_names=["kurtosis"])
-                , on = "column")
+    skew_and_kt_data = df_local.lazy().select(
+        pl.all().skew().prefix("skew:")
+        , pl.all().skew().prefix("kurtosis:")
+    ).collect().row(0)
+
+    n_cols = len(df_local.columns)
+    skew_and_kt = pl.from_records((df_local.columns, skew_and_kt_data[:n_cols], skew_and_kt_data[n_cols:])
+                                  , schema=["column", "skew", "kurtosis"])
 
     # Get a basic string description of the data type.
     dtypes_dict = dict(zip(df_local.columns, map(dtype_mapping, df_local.dtypes)))
@@ -322,10 +324,11 @@ def date_inferral(df:PolarsFrame) -> list[str]:
     dates = [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
     strings = get_string_cols(df)
     # MIGHT REWRITE THIS LOGIC
-    # Might be memory intensive on big dataframes. 
+    # Might be memory intensive on big dataframes.
+    sample_size = min(len(df), 100_000)
     sample_df = df.lazy().select(strings)\
         .drop_nulls().collect()\
-        .sample(n = 1000).select(
+        .sample(n = sample_size).select(
             # Cleaning the string first. Only try to catch string dates which are in the first split by space
            pl.col(s).str.strip().str.replace_all("(/|\.)", "-").str.split(by=" ").list.first() 
            for s in strings
@@ -333,7 +336,7 @@ def date_inferral(df:PolarsFrame) -> list[str]:
     for s in strings:
         try:
             c = sample_df[s].str.to_date(strict=False)
-            if 1 - c.null_count()/1000 >= 0.15: # if at least 15% valid (able to be converted)
+            if 1 - c.null_count()/sample_size >= 0.15: # if at least 15% valid (able to be converted)
                 # This last check is to account for single digit months.
                 # 3/3/1995 will not be parsed to a string because standard formats require 03/03/1995
                 # At least 15% of dates naturally have both month and day as 2 digits numbers

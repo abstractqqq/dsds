@@ -83,15 +83,15 @@ def impute(df:PolarsFrame
     s = clean_strategy_str(strategy)
     # Given Strategy, define expressions
     if s == "median":
-        all_medians = df.lazy().select(cols).median().collect().to_numpy().ravel()
+        all_medians = df.lazy().select(cols).median().collect().row(0)
         exprs = (pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols))
     elif s in ("mean", "avg", "average"):
-        all_means = df.lazy().select(cols).mean().collect().to_numpy().ravel()
+        all_means = df.lazy().select(cols).mean().collect().row(0)
         exprs = (pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols))
     elif s in ("const", "constant"):
         exprs = (pl.col(c).fill_null(const) for c in cols)
     elif s in ("mode", "most_frequent"):
-        all_modes = df.lazy().select(pl.col(c).mode() for c in cols).collect().to_numpy().ravel()
+        all_modes = df.lazy().select(pl.col(c).mode() for c in cols).collect().row(0)
         exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols))
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
@@ -118,19 +118,22 @@ def scale(df:PolarsFrame
 
     s = clean_strategy_str(strategy)
     if s in ("normal", "standard", "normalize"):
-        all_means = df.lazy().select(cols).mean().collect().to_numpy().ravel()
-        all_stds = df.lazy().select(cols).std().collect().to_numpy().ravel()
-        exprs = ( (pl.col(c) - all_means[i])/(all_stds[i]) for i,c in enumerate(cols) )
+        mean_std = df.select(cols).lazy().select(
+            pl.all().mean().prefix("mean:")
+            , pl.all().std().prefix("std:")
+        ).collect().row(0)
+        exprs = ( (pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols) )
     elif s == "min_max":
-        all_mins = df.lazy().select(cols).min().collect().to_numpy().ravel()
-        all_maxs = df.lazy().select(cols).max().collect().to_numpy().ravel()
-        exprs = ( (pl.col(c) - all_mins[i])/((all_maxs[i] - all_mins[i])) for i,c in enumerate(cols) )
+        min_max = df.select(cols).lazy().select(
+            pl.all().min().prefix("min:"),
+            pl.all().max().prefix("max:")
+        ).collect().row(0) # All mins come first, then maxs
+        exprs = ( (pl.col(c) - min_max[i])/((min_max[i + len(cols)] - min_max[i])) for i,c in enumerate(cols) )
     elif s in ("const", "constant"):
         exprs = (pl.col(c)/const for c in cols)
     else:
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
-    # transformed = df.with_columns(exprs)
     return df.with_columns(exprs)
 
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
@@ -153,7 +156,7 @@ def one_hot_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None
     , separator:str="_"
-    , drop_one:bool=False
+    , drop_first:bool=False
 ) -> PolarsFrame:
     '''One hot encoding. The separator must be a single character.'''
     
@@ -172,11 +175,17 @@ def one_hot_encode(
     exprs:list[pl.Expr] = []
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0] # t is a Series which contains one subseries
-        if drop_one:
+        if len(uniques) == 1:
+            logger.info(f"During one-hot-encoding, the column {t.name} is found to only have 1 unique value. Dropped.")
+            continue
+
+        if drop_first:
             uniques = uniques.slice(offset=1)
-        u: str
-        for u in uniques: # u is a string
-            exprs.append( pl.when(pl.col(t.name) == u).then(1).otherwise(0).alias(t.name + separator + u) )
+
+        exprs.extend(
+            pl.when(pl.col(t.name) == u).then(1).otherwise(0).alias(t.name + separator + u) for u in uniques
+        )
+
 
     return df.with_columns(exprs).drop(str_cols)
 
@@ -320,8 +329,7 @@ def binary_encode(df:PolarsFrame
     ).select(binary_list) # Null will be first in the sort.
     exprs:list[pl.Expr] = []
     for t in temp.collect().get_columns():
-        s:pl.Series = t[0] # t is a len 1 series that contains another series. So s = t[0] will get the series out. 
-        # s has 2 elements.
+        s:pl.Series = t[0]
         if len(s) == 2: # s is a pl.Series, s is already sorted, and null will come first
             exprs.append(pl.when(pl.col(t.name) == s[0]).then(0).otherwise(1).cast(pl.UInt8).alias(t.name))
         else:
