@@ -65,7 +65,7 @@ Feature selection done fast. May need more optimization.
 
 ## Compatible with df.pipe()
 
-A lot of work is being done. It is hard to explain everything. But right now this section is not good for eager dataframes.
+A lot of work is being done. It is hard to explain everything. But right now this section is not good for eager dataframes. Examples: see builder.ipynb.
 
 Most functions in this package are compatible with lazy Polar's pipe operation, making the data preparation part of the ML cycle trivial. In addition, we can create blueprints, reusable formula for recreating the same pipeline. It is like Sklearn's pipeline, but you don't need to initialize any objects! Serialization is builtin in Polars with the write.json() function on lazy frames. The result is a much cleaner pipeline which follows "chain of thought". It is lazy Polars's execution plan under the hood. To get a blueprint out as in the builder example, please start with a lazy df as input.
 
