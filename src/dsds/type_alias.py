@@ -7,6 +7,7 @@ POLARS_NUMERICAL_TYPES:Final[Tuple[pl.DataType]] = (pl.UInt8, pl.UInt16, pl.UInt
 POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date, pl.Time)
 
 PolarsFrame:TypeAlias = pl.DataFrame | pl.LazyFrame
+StepName = Literal["with_column", "map_dict", "drop", "select"]
 MRMRStrategy = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf", "random_forest", "mis"
                        , "mutual_info_score", "lgbm", "lightgbm"]
 ScalingStrategy = Literal["normal", "standard", "normalize", "min_max", "const", "constant"]

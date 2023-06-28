@@ -10,6 +10,9 @@ from .type_alias import (
     , CPU_COUNT
     , clean_strategy_str
 )
+from .blueprint import( # Need this for Polars extension to work
+    Blueprint
+)
 
 import polars as pl
 import numpy as np
@@ -18,8 +21,6 @@ from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
-
-# Everything named as a selector must return a list of str. Must work with LazyFrames.
 
 def _conditional_entropy(
     df:pl.DataFrame
@@ -112,8 +113,9 @@ def discrete_ig_selector(
     , n_threads:int = CPU_COUNT
 ) -> PolarsFrame:
     discrete_cols = discrete_inferral(df, exclude=[target])
-    # They are not examined by this feature selection method. So keep them.
-    if isinstance(df, pl.LazyFrame):
+
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if is_lazy:
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
@@ -126,6 +128,8 @@ def discrete_ig_selector(
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
 
+    if is_lazy:
+        return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
 
 def mutual_info(
@@ -210,7 +214,8 @@ def mutual_info_selector(
     , top_k:int = 50
 ) -> PolarsFrame:
     
-    if isinstance(df, pl.LazyFrame):
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if is_lazy:
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
@@ -225,6 +230,8 @@ def mutual_info_selector(
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
     
+    if is_lazy:
+        return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
 
 def _f_score(
@@ -336,7 +343,8 @@ def f_score_selector(
     , top_k:int
 ) -> PolarsFrame:
     
-    if isinstance(df, pl.LazyFrame):
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if is_lazy:
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
@@ -354,6 +362,8 @@ def f_score_selector(
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
     "cannot process. They are also returned.")
 
+    if is_lazy:
+        return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
 
 #---- Below is MRMR
@@ -492,7 +502,8 @@ def mrmr_selector(
     , low_memory:bool=False
 ) -> PolarsFrame:
 
-    if isinstance(df, pl.LazyFrame):
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if is_lazy:
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
@@ -506,6 +517,9 @@ def mrmr_selector(
 
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")
+    
+    if is_lazy:
+        return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
 
 def knock_out_mrmr(
@@ -574,6 +588,7 @@ def knock_out_mrmr_selector(
     , params:Optional[dict[str,Any]] = None
 ) -> PolarsFrame:
 
+    is_lazy = isinstance(df, pl.LazyFrame)
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
@@ -587,6 +602,9 @@ def knock_out_mrmr_selector(
     selected = knock_out_mrmr(input_data, target, top_k, num_cols, s, corr_threshold, params)
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
+    
+    if is_lazy:
+        return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
                     
 

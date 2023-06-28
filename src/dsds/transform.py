@@ -15,7 +15,9 @@ from .prescreen import (
     , get_unique_count
     , dtype_mapping
 )
-
+from .blueprint import( # Need this for Polars extension to work
+    Blueprint
+)
 import logging
 import polars as pl
 from typing import Optional, Tuple
@@ -32,42 +34,23 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-
 def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
     '''Returns the unique types of given columns in a single string. If multiple types are present
     they are joined by a |. If cols is not given, automatically uses all df's columns.'''
-    types = set()
     if cols is None:
         check_cols:list[str] = df.columns
     else:
         check_cols:list[str] = cols 
 
-    temp = df.select(check_cols)
-    for t in temp.dtypes:
-        types.add(dtype_mapping(t))
-    
-    return "|".join(types) if len(types) > 0 else "unknown"
+    try:
+        types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
+        return "|".join(types) if len(types) > 0 else "unknown"
+    except Exception as e:
+        logger.error(e)
+        return "unknown"
 
-# def create_map_expr(
-#         col_name:str
-#         , gen:Generator[Tuple[str, Any], None, None]
-#         , default:Any = None
-# ) -> pl.Expr:
-
-#     '''
-#         Suppose you have a dictionary like d = {"a":1, "b":2}. Instead of doing pl.col("column").map_dict(d), you can 
-#         do pl.when(pl.col("column") == "a").then(1).otherwise(pl.when(pl.col("column") == "b").then(2).otherwise(default))
-#         instead. This function generators this expression for you from a generator that yields a key value pair.
-    
-#     '''
-
-#     next_pair = next(gen, None)
-#     if next_pair:
-#         k, v = next_pair
-#         return pl.when(pl.col(col_name) == k).then(v).otherwise(create_map_expr(col_name, gen))
-#     return pl.lit(default)
-
-def impute(df:PolarsFrame
+def impute(
+    df:PolarsFrame
     , cols:list[str]
     , strategy:ImputationStrategy = 'median'
     , const:float = 1.
@@ -96,9 +79,14 @@ def impute(df:PolarsFrame
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
 
+    # Need to cast to list so that pickle can work with it
+    # This is unfortunate because we will be looping over this list twice... Whatever...
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(list(exprs)) 
     return df.with_columns(exprs)
 
-def scale(df:PolarsFrame
+def scale(
+    df:PolarsFrame
     , cols:list[str]
     , strategy:ScalingStrategy="normal"
     , const:float = 1.0
@@ -134,6 +122,8 @@ def scale(df:PolarsFrame
     else:
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
 
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
@@ -150,6 +140,8 @@ def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
     else: # Cast. Then fill null to 0s.
         exprs = (pl.col(c).cast(pl.UInt8).fill_null(0) for c in bool_cols)
 
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
 
 def one_hot_encode(
@@ -160,34 +152,32 @@ def one_hot_encode(
 ) -> PolarsFrame:
     '''One hot encoding. The separator must be a single character.'''
     
-    str_cols = []
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
         if types != "string":
             raise ValueError(f"One-hot encoding can only be used on string columns, not {types} types.")
-        str_cols.extend(cols)
+        str_cols = cols
     else:
         str_cols = get_string_cols(df)
 
-    temp = df.lazy().groupby(1).agg(
-        pl.col(s).unique().sort() for s in str_cols
-    ).select(str_cols)
-    exprs:list[pl.Expr] = []
-    for t in temp.collect().get_columns():
-        uniques:pl.Series = t[0] # t is a Series which contains one subseries
-        if len(uniques) == 1:
-            logger.info(f"During one-hot-encoding, the column {t.name} is found to only have 1 unique value. Dropped.")
-            continue
-
-        if drop_first:
-            uniques = uniques.slice(offset=1)
-
-        exprs.extend(
-            pl.when(pl.col(t.name) == u).then(1).otherwise(0).alias(t.name + separator + u) for u in uniques
-        )
-
-
-    return df.with_columns(exprs).drop(str_cols)
+    if isinstance(df, pl.LazyFrame):
+        temp = df.lazy().groupby(1).agg(
+            pl.col(s).unique().sort() for s in str_cols
+        ).select(str_cols)
+        exprs:list[pl.Expr] = []
+        for t in temp.collect().get_columns():
+            u:pl.List = t[0] # t is a Series which contains a single series/list, so u is a series/list
+            if len(u) > 1:
+                exprs.extend(
+                    pl.when(pl.col(t.name) == u[i]).then(1).otherwise(0).alias(t.name + separator + u[i])
+                    for i in range(int(drop_first), len(u)) 
+                )
+            else:
+                logger.info(f"During one-hot-encoding, the column {t.name} is found to have 1 unique value. Dropped.")
+        
+        return df.blueprint.with_columns(exprs).blueprint.drop(str_cols)
+    else:
+        return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
 
 # def fixed_sized_encode(df:pl.DataFrame, num_cols:list[str], bin_size:int=50) -> TransformationResult:
 #     '''Given a continuous variable, take the smallest `bin_size` of them, and call them bin 1, take the next
@@ -196,8 +186,6 @@ def one_hot_encode(
 #     '''
 #     pass
 
-def percentile_encode2():
-    pass 
 
 # REWRITE THIS
 # def percentile_encode(df:pl.DataFrame
@@ -281,25 +269,13 @@ def percentile_encode2():
 #     encoder_rec = EncoderRecord(features=num_list, strategy=EncodingStrategy.PERCENTILE, mappings=all_mappings)
 #     return FitTransform(transformed=res, mapping=encoder_rec)
 
-def binary_encode(df:PolarsFrame
+def binary_encode(
+    df:PolarsFrame
     , cols:Optional[list[str]]=None
     , exclude:Optional[list[str]]=None
 ) -> PolarsFrame:
-    
-    '''Encode the given columns as binary values. Only hands string binaries at this moment.
-
-        The goal of this function is to map binary string values into [0, 1], therefore reducing the amount of encoding
-        you will have to do later. The values will be mapped to [0, 1] by the following rule:
-            if value_1 < value_2, value_1 --> 0, value_2 --> 1. E.g. 'N' < 'Y' ==> 'N' --> 0 and 'Y' --> 1
-        
-        In case the two distinct values are [None, value_1], and you decide to treat this variable as a binary category
-        , then None --> 0 and value_1 --> 1. 
-        
-        Using one-hot-encoding will map binary categorical values to 2 columns (except when you specify drop_first=True 
-        in pd.get_dummies), therefore introducing unnecessary dimension. So it is better to prevent it.
-
-        If case the distinct values are [null, value_1, value_2], then this is not currently considered as a 
-        binary column.
+    '''Encode the given columns as binary values. Only hands string binaries at this moment. Just a short-hand for 
+        one-hot-encoding for binary string columns.
 
         Arguments:
             df:
@@ -310,32 +286,18 @@ def binary_encode(df:PolarsFrame
             (the transformed dataframe, mapping table between old values to [0,1])
     '''
 
-    binary_list = []
-    if isinstance(cols, list):
-        binary_list.extend(cols)
-    else:
+    if cols is None:
         str_cols = get_string_cols(df)
         exclude = [] if exclude is None else exclude
-        binary_columns = get_unique_count(df)\
+        binary_list = get_unique_count(df)\
             .filter( # Binary + Not Exclude + Only String
                 (pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude)) & (pl.col("column").is_in(str_cols))
-            ).get_column("column")
+            ).get_column("column").to_list()
 
-        # Binary numericals are kept the way they are.
-        binary_list.extend(binary_columns)     
+    else: # No need to do all that type checking steps because we are gonna do that in one-hot anyways
+        binary_list = cols
     
-    temp = df.lazy().groupby(1).agg(
-        pl.col(b).unique().sort() for b in binary_list
-    ).select(binary_list) # Null will be first in the sort.
-    exprs:list[pl.Expr] = []
-    for t in temp.collect().get_columns():
-        s:pl.Series = t[0]
-        if len(s) == 2: # s is a pl.Series, s is already sorted, and null will come first
-            exprs.append(pl.when(pl.col(t.name) == s[0]).then(0).otherwise(1).cast(pl.UInt8).alias(t.name))
-        else:
-            logger.warning(f"Found {s.name} column has {len(s)} unique values instead of 2. Ignored.")
-
-    return df.with_columns(exprs)
+    return one_hot_encode(df, cols=binary_list, drop_first=True)
 
 def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
     '''
@@ -368,7 +330,7 @@ def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
 
 def ordinal_auto_encode(
     df:PolarsFrame
-    , cols:list[str]=None
+    , cols:Optional[list[str]]=None
     , exclude:Optional[list[str]]=None
 ) -> PolarsFrame:
     '''
@@ -382,40 +344,38 @@ def ordinal_auto_encode(
             df:
             default:
             ordinal_cols:
-            exclude: the columns you wish to exclude in this transformation. (Only applies if you are letting the system auto-detecting columns.)
+            exclude: the columns you wish to exclude in this transformation.
         
         Returns:
             (encoded df, mapping table)
     '''
-    ordinal_list:list[str] = []
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
         if types != "string":
             raise ValueError(f"Ordinal encoding can only be used on string columns, not {types} types.")
-        ordinal_list.extend(cols)
+        ordinal_list = cols
     else:
-        ordinal_list.extend(get_string_cols(df, exclude=exclude))
+        ordinal_list = get_string_cols(df, exclude=exclude)
 
-    is_input_lazy = isinstance(df, pl.LazyFrame)
     temp = df.lazy().groupby(1).agg(
         pl.col(c).unique().sort() for c in ordinal_list
     ).select(ordinal_list)
-    duplicates = []
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]
-        ordinal_col_name = t.name + "_ordinal"
-        duplicates.append(ordinal_col_name)
-        temp_table = pl.LazyFrame((uniques, pl.Series(range(len(uniques)))), schema=[t.name, ordinal_col_name])
-        if not is_input_lazy:
-            temp_table = temp_table.collect()
-        # Use join instead of map_dict because LazyFrame's write_json does not work with map_dict.
-        df = df.join(temp_table, on = t.name, how="left").with_columns(
-                pl.col(ordinal_col_name).alias(t.name)
-            )
+        if isinstance(df, pl.LazyFrame):
+            # Use a list here because Python cannot pickle a generator
+            mapping = {t.name: uniques, "to": list(range(len(uniques)))} 
+            df = df.blueprint.map_dict(t.name, mapping, "to", None)
+        else:
+            mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[t.name, "to"])
+            df = df.join(mapping, on = t.name).with_columns(
+                pl.col("to").alias(t.name)
+            ).drop("to")
 
-    return df.drop(duplicates)
+    return df
 
-def ordinal_encode(df:PolarsFrame
+def ordinal_encode(
+    df:PolarsFrame
     , ordinal_mapping:dict[str, dict[str,int]]
     , default:int|None=None
 ) -> PolarsFrame:
@@ -434,25 +394,23 @@ def ordinal_encode(df:PolarsFrame
         Returns:
             encoded df
     '''
-    
-    is_lazy_input = isinstance(df, pl.LazyFrame)
-    duplicates = []
+
     for c in ordinal_mapping:
         if c in df.columns:
             mapping = ordinal_mapping[c]
-            new_col_name = c + "_to"
-            duplicates.append(new_col_name)
-            temp_df = pl.LazyFrame((mapping.keys(), mapping.values()), schema=[c, new_col_name])
-            if not is_lazy_input:
-                temp_df = temp_df.collect()
-
-            df = df.join(temp_df, on = c, how="left").with_columns(
-                pl.col(new_col_name).fill_null(default).alias(c)
-            )
+            if isinstance(df, pl.LazyFrame):
+                # This relies on the fact that dicts in Python is ordered
+                mapping = {c: mapping.keys(), "to": mapping.values()}
+                df = df.blueprint.map_dict(c, mapping, "to", default)
+            else:
+                mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[c, "to"])
+                df = df.join(mapping, on = c, how="left").with_columns(
+                    pl.col("to").fill_null(default).alias(c)
+                ).drop("to")
         else:
             logger.warning(f"Found that column {c} is not in df. Skipped.")
 
-    return df.drop(duplicates)
+    return df
 
 def smooth_target_encode(
     df:PolarsFrame
@@ -473,14 +431,12 @@ def smooth_target_encode(
             min_samples_leaf:
             smoothing:
             check_binary:
-    
     '''
-    str_cols:list[str] = []
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
         if types != "string":
             raise ValueError(f"Target encoding can only be used on string columns, not {types} types.")
-        str_cols.extend(cols)
+        str_cols = cols
     else:
         str_cols = get_string_cols(df)
     
@@ -491,30 +447,26 @@ def smooth_target_encode(
         if len(target_uniques) != 2 or (not (0 in target_uniques and 1 in target_uniques)):
             raise ValueError(f"The target column {target} must be a binary target with 0s and 1s.")
 
-    p = df.lazy().select(pl.col(target).mean()).collect().to_numpy()[0,0] # probability of target = 1
+    p = df.lazy().select(pl.col(target).mean()).collect().row(0)[0] # probability of target = 1
     # If c has null, null will become a group when we group by.
-    duplicates = []
     for c in str_cols:
-        new_name = c + "_encoded_as"
-        duplicates.append(new_name)
         ref = df.groupby(c).agg(
             pl.count().alias("cnt"),
             pl.col(target).mean().alias("cond_p")
         ).with_columns(
             (1./(1. + ((-(pl.col("cnt").cast(pl.Float64) - min_samples_leaf))/smoothing).exp())).alias("alpha")
         ).select(
-            pl.col(c),
-            (pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)).alias(new_name)
+            pl.col(c).alias(c),
+            (pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)).alias("encoded_as")
         ) # If df is lazy, ref is lazy. If df is eager, ref is eager
+        if isinstance(df, pl.LazyFrame):
+            df = df.blueprint.map_dict(c, ref.collect().to_dict(), "encoded_as", None)
+        else: # It is ok to do inner join because all values of c are present in ref.
+            df = df.join(ref, on = c).with_columns(
+                pl.col("encoded_as").alias(c)
+            ).drop("encoded_as")
 
-        # It is ok to do inner join because all values of c are present in ref.
-        df = df.join(ref, on = c).with_columns(
-            pl.col(new_name).alias(c)
-        )
-        
-    return df.drop(duplicates)
-
-
+    return df
 
 def _lmax_estimate_step(df:PolarsFrame, c:str, s:PowerTransformStrategy) -> Tuple[str, float]:
     np_col = df.lazy().select(pl.col(c).cast(pl.Float64)).collect().get_column(c).view()
@@ -546,15 +498,16 @@ def power_transform(
     
     '''
     
-    num_list = []
     if isinstance(num_cols, list):
-        num_list.extend(num_cols)
+        types = check_columns_types(df, num_cols)
+        if types != "numeric":
+            raise ValueError(f"Power Transform can only be used on numeric columns, not {types} types.")
+        num_list = num_cols
     else:
         num_list = get_numeric_cols(df, exclude=[target])
 
     s = clean_strategy_str(strategy)
     exprs:list[pl.Expr] = []
-
     # Ensure columns do not have missing values
     exclude_columns_w_nulls = df.lazy().select(num_list).null_count().collect().transpose(
         include_header=True, column_names=["null_count"]
@@ -600,8 +553,9 @@ def power_transform(
     else:
         raise TypeError(f"The input strategy {strategy} is not a valid strategy. Valid strategies are: yeo_johnson "
                         "or box_cox")
-
     pbar.close()
-    return df.with_columns(exprs)
+    if isinstance(df, pl.LazyFrame): # Lazy
+        return df.lazy().blueprint.with_columns(exprs)
+    return df.with_columns(exprs) # Eager
 
     
