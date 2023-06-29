@@ -1,5 +1,8 @@
 from .type_alias import (
     PolarsFrame
+    , KSAlternatives
+    , CommonContinuousDist
+    , CPU_COUNT
     , POLARS_DATETIME_TYPES
     , POLARS_NUMERICAL_TYPES
 )
@@ -12,7 +15,15 @@ import polars as pl
 import re
 import logging  
 from datetime import datetime 
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
+from itertools import combinations
+from scipy.stats import (
+    ks_2samp
+    , kstest
+)
+from concurrent.futures import as_completed, ThreadPoolExecutor
+from tqdm import tqdm
+from math import comb
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +72,17 @@ def dtype_mapping(d: Any) -> str:
         return "datetime"
     else:
         return "other/unknown"
+    
+#----------------------------------------------------------------------------------------------#
+# Lazy Sampling
+#----------------------------------------------------------------------------------------------#
+def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame:
+    if sample_frac <= 0 or sample_frac > 1:
+        raise ValueError("Sample fraction must be >= 0 and < 1.")
+
+    return df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
+        .filter(pl.col("row_nr") < pl.col("row_nr").max() * sample_frac)\
+        .select(df.columns)
     
 #----------------------------------------------------------------------------------------------#
 # Prescreen Inferral, Removal Methods                                                          #
@@ -129,7 +151,7 @@ def describe(
 
 def describe_str(df:PolarsFrame
     , words_to_count:Optional[list[str]]=None
-    , sample_pct:float = 0.75
+    , sample_frac:float = 0.75
 ) -> pl.DataFrame:
     '''Gives some statistics about the string columns. Optionally you may pass a list
     of strings to compute the total occurrances of each of the words in the string columns. If input is a LazyFrame, 
@@ -139,64 +161,37 @@ def describe_str(df:PolarsFrame
     strs = get_string_cols(df)
     df_str = df.select(strs)
     if isinstance(df, pl.LazyFrame):
-        if sample_pct <= 0 or sample_pct >= 1:
-            raise ValueError(f"The argument sample_pct must be >0 and <1. Not {sample_pct}.")
-        df_str = df_str.with_columns(pl.all().shuffle(seed=42)).with_row_count().filter(
-            pl.col("row_nr") < sample_pct * pl.col("row_nr").max()
-        ).select(strs).collect()
+        df_str = lazy_sample(df_str, sample_frac=sample_frac).collect()
 
-    # Refactor this part.. Use pl.all()
-    nc = df_str.null_count()\
-        .transpose().to_series().rename("null_count")
-    smax = df_str.select(
-        pl.col(c).max() for c in strs
-    ).transpose().to_series().rename("max")
-    smin = df_str.select(
-        pl.col(c).min() for c in strs
-    ).transpose().to_series().rename("min")
-    mode = df_str.select(
-        pl.col(c).mode().take(0) for c in strs
-    ).transpose().to_series().rename("mode")
-    mins = df_str.select(
-        pl.col(c).str.lengths().min() for c in strs
-    ).transpose().to_series().rename("min_byte_len")
-    maxs = df_str.select(
-        pl.col(c).str.lengths().max() for c in strs
-    ).transpose().to_series().rename("max_byte_len")
-    avgs = df_str.select(
-        pl.col(c).str.lengths().mean() for c in strs
-    ).transpose().to_series().rename("avg_byte_len")
-    medians = df_str.select(
-        pl.col(c).str.lengths().median() for c in strs
-    ).transpose().to_series().rename("median_byte_len")
-    space_counts = df_str.select(
-        pl.col(c).str.count_match(r"\s").mean() for c in strs
-    ).transpose().to_series().rename("avg_space_cnt")
-    nums_counts = df_str.select(
-        pl.col(c).str.count_match(r"[0-9]").mean() for c in strs
-    ).transpose().to_series().rename("avg_digit_cnt")
-    cap_counts = df_str.select(
-        pl.col(c).str.count_match(r"[A-Z]").mean() for c in strs
-    ).transpose().to_series().rename("avg_cap_cnt")
-    lower_counts = df_str.select(
-        pl.col(c).str.count_match(r"[a-z]").mean() for c in strs
-    ).transpose().to_series().rename("avg_lower_cnt")
-
+    nstrs = len(strs)
+    stats = df.select(get_string_cols(df)).select(
+        pl.all().null_count().prefix("nc:"),
+        pl.all().max().prefix("max:"),
+        pl.all().min().prefix("min:"),
+        pl.all().mode().first().prefix("mode:"),
+        pl.all().str.lengths().min().prefix("min_byte_len"),
+        pl.all().str.lengths().max().prefix("max_byte_len"),
+        pl.all().str.lengths().mean().prefix("avg_byte_len"),
+        pl.all().str.lengths().median().prefix("median_byte_len"),
+        pl.all().str.count_match(r"\s").mean().prefix("avg_space_cnt"),
+        pl.all().str.count_match(r"[0-9]").mean().prefix("avg_digit_cnt"),
+        pl.all().str.count_match(r"[A-Z]").mean().prefix("avg_cap_cnt"),
+        pl.all().str.count_match(r"[a-z]").mean().prefix("avg_lower_cnt")
+    ).row(0)
     output = {
         "features":strs,
-        nc.name: nc,
-        "null_pct": nc/len(df),
-        smin.name: smin,
-        smax.name: smax,
-        mode.name: mode,
-        mins.name: mins,
-        maxs.name: maxs,
-        avgs.name: avgs,
-        medians.name: medians,
-        space_counts.name: space_counts,
-        nums_counts.name: nums_counts,
-        cap_counts.name: cap_counts,
-        lower_counts.name: lower_counts
+        "null_count": stats[:nstrs],
+        "min": stats[nstrs: 2*nstrs],
+        "max": stats[2*nstrs: 3*nstrs],
+        "mode": stats[3*nstrs: 4*nstrs],
+        "min_byte_len": stats[4*nstrs: 5*nstrs],
+        "max_byte_len": stats[5*nstrs: 6*nstrs],
+        "avg_byte_len": stats[6*nstrs: 7*nstrs],
+        "median_byte_len": stats[7*nstrs: 8*nstrs],
+        "avg_space_cnt": stats[8*nstrs: 9*nstrs],
+        "avg_digit_cnt": stats[9*nstrs: 10*nstrs],
+        "avg_cap_cnt": stats[10*nstrs: 11*nstrs],
+        "avg_lower_cnt": stats[11*nstrs: ],
     }
 
     if isinstance(words_to_count, list):
@@ -207,7 +202,7 @@ def describe_str(df:PolarsFrame
                 ).transpose().to_series().rename("total_"+ w + "_count")
                 output[t.name] = t
 
-    return pl.from_dict(output) 
+    return pl.from_dict(output)
 
 # -----------------------------------------------------------------------------------------------
 def drop(df:PolarsFrame, to_drop:list[str]) -> PolarsFrame:
@@ -226,10 +221,6 @@ def non_numeric_removal(df:PolarsFrame, include_bools:bool=True) -> PolarsFrame:
                 f"Removed a total of {len(non_nums)} columns.")
     
     return drop(df, non_nums)
-
-# Check if column follows the normal distribution. Hmm...
-def normal_inferral():
-    pass
 
 # Check if columns are duplicates. Might take time.
 def duplicate_inferral():
@@ -474,6 +465,17 @@ def discrete_inferral(df:PolarsFrame
         & (~pl.col("column").is_in(exclude_list)) # is not in
     ).get_column("column").to_list()
 
+def conti_inferral(
+    df:PolarsFrame
+    , discrete_threshold:float = 0.1
+    , discrete_max_n_unique:int = 100
+    , exclude:Optional[list[str]]=None
+) -> list[str]:
+    exclude_list = [] if exclude is None else exclude
+    return [f for f in get_numeric_cols(df) 
+            if not (f in discrete_inferral(df, discrete_threshold, discrete_max_n_unique)
+            or f not in exclude_list)]
+
 def constant_inferral(df:PolarsFrame, include_null:bool=True) -> list[str]:
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)
     remove_cols = temp.filter(pl.col("n_unique") == 1).get_column("column").to_list() 
@@ -506,3 +508,139 @@ def remove_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
     remove_cols = list(set(cols).intersection(set(df.columns)))
     logger.info(f"The following columns are dropped. {remove_cols}.\nRemoved a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
+
+#----------------------------------------------------------------------------------------------#
+# More advanced Methods
+#----------------------------------------------------------------------------------------------#
+
+def _ks_compare(
+    df:pl.DataFrame
+    , pair:Tuple[str, str]
+    , alt:KSAlternatives="two-sided"
+) -> Tuple[Tuple[str, str], float, float]:
+    
+    res = ks_2samp(df.get_column(pair[0]), df.get_column(pair[1]), alt)
+    return (pair, res.statistic, res.pvalue)
+
+def ks_compare(
+    df:PolarsFrame
+    , target:Optional[str] = None
+    , smaple_frac:float = 0.75
+    , test_cols:Optional[list[str]] = None
+    , alt: KSAlternatives = "two-sided"
+    , skip:int = 0
+    , max_comp:int = 1000
+) -> pl.DataFrame:
+    '''Run ks-stats on all non-discrete columns in the dataframe. If test_cols is None, it will infer non-discrete 
+    continuous columns. See docstring of discrete_inferral to see what is considered discrete. Provide the target 
+    so that it will not be included in the comparisons. Since ks 2 sample comparison is relatively expensive, we will
+    always sample 75% of the dataset, unless the user specifies a different sample_frac.
+
+    Note: this will only run on combinations of index between skip and skip + max_comp, in the set of all 2 
+    combinations of the sorted list of numerical columns because this operation takes a lot of time.
+
+    Note: The null hypothesis is that the two columns come from the same distribution. Therefore a small p-value means
+    that they do not come from the same distribution. Having p-value > threshold does not mean they have the same 
+    distribution automatically, and it requires more examination to reach the conclusion.
+    '''
+    if test_cols is None:
+        nums = [f for f in get_numeric_cols(df) if f not in discrete_inferral(df)]
+    else:
+        nums = test_cols
+
+    if target in nums:
+        nums.remove(target)
+    sorted(nums)
+    if isinstance(df, pl.LazyFrame):
+        df_test = lazy_sample(df.select(nums).lazy(), sample_frac=smaple_frac).collect()
+    else:
+        df_test = df.select(nums).sample(fraction=smaple_frac)
+
+    n_c2 = comb(len(nums), 2)
+    last_index = min(skip + max_comp, n_c2)
+    results = []
+    to_test = enumerate(combinations(nums, 2), start=skip)
+    pbar = tqdm(total=min(max_comp, n_c2 - skip), desc="Comparisons")
+    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
+        for f in as_completed(ex.submit(_ks_compare, df_test, p, alt) for i, p in to_test if i < last_index):
+            results.append(f.result())
+            pbar.update(1)
+
+    pbar.close()
+    return pl.from_records(results, schema=["combination", "ks-stats", "p-value"])
+
+def _dist_inferral(df:pl.DataFrame, c:str, dist:CommonContinuousDist) -> Tuple[str, float, float]:
+    res = kstest(df[c], dist)
+    return (c, res.statistic, res.pvalue)
+
+def dist_test(
+    df: PolarsFrame
+    , which_dist:CommonContinuousDist
+    , smaple_frac:float = 0.75
+    , target: Optional[str] = None
+) -> pl.DataFrame:
+    '''Tests if the numeric columns follow the given distribution by using the KS test. If
+    target is provided it will be excluded. The null hypothesis is that the columns follow the given distribution. 
+    We sample 75% of data because ks test is relatively expensive.
+    '''
+    
+    nums = get_numeric_cols(df, exclude=[target])
+    if isinstance(df, pl.LazyFrame):
+        df_test = lazy_sample(df.select(nums).lazy(), sample_frac=smaple_frac).collect()
+    else:
+        df_test = df.select(nums).sample(fraction=smaple_frac)
+
+    results = []
+    pbar = tqdm(total=len(nums), desc="Comparisons")
+    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
+        for f in as_completed(ex.submit(_dist_inferral, df_test, c, which_dist) for c in nums):
+            results.append(f.result())
+            pbar.update(1)
+
+    pbar.close()
+    return pl.from_records(results, schema=["feature", "ks-stats", "p-value"])
+
+def suggest_normal(
+    df:PolarsFrame
+    , target: Optional[str] = None
+    , threshold:float = 0.05
+) -> list[str]:
+    '''Suggests which columns are normally distributed. This takes the columns for which the null hypothesis
+    cannot be rejected in the dist_test (KS test).
+    '''
+    return dist_test(df, "norm", target=target).filter(pl.col("p-value") > threshold)\
+        .get_column("feature").to_list()
+
+def suggest_uniform(
+    df:PolarsFrame
+    , target: Optional[str] = None
+    , threshold:float = 0.05
+) -> list[str]:
+    '''Suggests which columns are uniformly distributed. This takes the columns for which the null hypothesis
+    cannot be rejected in the dist_test (KS test).
+    '''
+    return dist_test(df, "uniform", target=target).filter(pl.col("p-value") > threshold)\
+        .get_column("feature").to_list()
+
+def suggest_lognormal(
+    df:PolarsFrame
+    , target: Optional[str] = None
+    , threshold:float = 0.05
+) -> list[str]:
+    '''Suggests which columns are log-normally distributed. This takes the columns for which the null hypothesis
+    cannot be rejected in the dist_test (KS test).
+    '''
+    return dist_test(df, "lognorm", target=target).filter(pl.col("p-value") > threshold)\
+        .get_column("feature").to_list()
+
+def suggest_dist(
+    df:PolarsFrame
+    , target: Optional[str] = None
+    , threshold:float = 0.05
+    , dist: CommonContinuousDist = "norm"
+) -> list[str]:
+    '''Suggests which columns follow the given dist. This takes the columns for which the null hypothesis
+    cannot be rejected in the dist_test (KS test).
+    '''
+    return dist_test(df, dist, target=target).filter(pl.col("p-value") > threshold)\
+        .get_column("feature").to_list()

@@ -13,7 +13,11 @@ MRMRStrategy = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf", "random
 ScalingStrategy = Literal["normal", "standard", "normalize", "min_max", "const", "constant"]
 ImputationStrategy = Literal["mean", "avg", "average", "median", "const", "constant", "mode", "most_frequent"]
 PowerTransformStrategy = Literal["yeo_johnson", "yeojohnson", "box_cox", "boxcox"]
+KSAlternatives = Literal["two-sided", "greater", "less"]
 
+# This is just a subset of Scipy.stats's distributions which can be named by strings. All scipy.stats's string-name-able
+# distributions should work when the arguments asks for a CommonContinuousDist.
+CommonContinuousDist = Literal["norm", "lognorm", "truncnorm", "uniform", "t", "beta", "cauchy", "expon", "gamma"]
 def clean_strategy_str(s:str):
     '''Strategy strings will only have _, no -, and all lowercase.'''
     return s.strip().replace("-", "_").lower()

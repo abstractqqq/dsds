@@ -42,12 +42,9 @@ def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
     else:
         check_cols:list[str] = cols 
 
-    try:
-        types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
-        return "|".join(types) if len(types) > 0 else "unknown"
-    except Exception as e:
-        logger.error(e)
-        return "unknown"
+    types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
+    return "|".join(types) if len(types) > 0 else "unknown"
+
 
 def impute(
     df:PolarsFrame
@@ -74,7 +71,7 @@ def impute(
     elif s in ("const", "constant"):
         exprs = (pl.col(c).fill_null(const) for c in cols)
     elif s in ("mode", "most_frequent"):
-        all_modes = df.lazy().select(pl.col(c).mode() for c in cols).collect().row(0)
+        all_modes = df.lazy().select(pl.col(c).mode().first() for c in cols).collect().row(0)
         exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols))
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
