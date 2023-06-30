@@ -92,25 +92,21 @@ def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame
 # Separate str and numeric?
 def describe(
     df:PolarsFrame
-    , sample_pct:float = 0.75
+    , sample_frac:float = 0.75
 ) -> pl.DataFrame:
-    '''Profile the data. If input is a LazyFrame, a sample of sample_pct will be used, and sample_pct will 
-    only be used in the lazy case. 
+    '''Profile the data.
 
         Arguments:
-            df:
+            df: Either an eager dataframe or a lazy dataframe
+            sample_frac: If input is a LazyFrame, a sample of sample_frac will be used. If input is eager,
+            no sampling will be done.
 
         Returns:
             a dataframe containing the necessary information.
     '''
 
     if isinstance(df, pl.LazyFrame):
-        if sample_pct <= 0 or sample_pct >= 1:
-            raise ValueError(f"The argument sample_pct must be >0 and <1. Not {sample_pct}.")
-        
-        df_local = df.with_columns(pl.all().shuffle(seed=42)).with_row_count().filter(
-            pl.col("row_nr") < sample_pct * pl.col("row_nr").max()
-        ).select(df.columns).collect()
+        df_local = lazy_sample(df, sample_frac=sample_frac)
     else:
         df_local = df
     
@@ -196,11 +192,10 @@ def describe_str(df:PolarsFrame
 
     if isinstance(words_to_count, list):
         for w in words_to_count:
-            if isinstance(w, str):
-                t = df_str.select(
-                    pl.col(c).str.count_match(w).sum() for c in strs
-                ).transpose().to_series().rename("total_"+ w + "_count")
-                output[t.name] = t
+            t = df_str.select(
+                pl.all().str.count_match(w).sum() for c in strs
+            ).row(0)
+            output["total_"+ w + "_count"] = t
 
     return pl.from_dict(output)
 
@@ -233,7 +228,7 @@ def duplicate_inferral():
 def pattern_inferral(
     df: PolarsFrame
     , pattern:str
-    , sample_pct:float = 0.75
+    , sample_frac:float = 0.75
     , sample_count:int = 100_000
     , sample_rounds:int = 3
     , threshold:float = 0.9
@@ -242,15 +237,16 @@ def pattern_inferral(
     '''Find all string columns that reasonably match the given pattern. The match logic can be tuned using the all the 
     parameters.
 
-    sample_pct: the pct of the total dataframe to use as basis
-    sample_count: from the basis, how many rows to sample for each round 
-    sample_rounds: how many rounds of sampling we are doing
-    threhold: For each round, what is the match% that is needed to be a counted as a success. For instance, 
-    in round 1, for column x, we have 92% match rate, and threshold = 0.9. We count column x as a match for 
-    this round. In the end, the column must match for every round to be considered a real match.
-    count_null: for individual matches, do we want to count null as a match or not? If the column has high null pct,
-    the non-null values might mostly match the pattern. In this case, using count_null = True will match the column, 
-    while count_null = False will most likely exclude the column.
+    Arguments:
+        sample_frac: the pct of the total dataframe to use as basis
+        sample_count: from the basis, how many rows to sample for each round 
+        sample_rounds: how many rounds of sampling we are doing
+        threhold: For each round, what is the match% that is needed to be a counted as a success. For instance, 
+        in round 1, for column x, we have 92% match rate, and threshold = 0.9. We count column x as a match for 
+        this round. In the end, the column must match for every round to be considered a real match.
+        count_null: for individual matches, do we want to count null as a match or not? If the column has high null pct,
+        the non-null values might mostly match the pattern. In this case, using count_null = True will match the column, 
+        while count_null = False will most likely exclude the column.
 
     Returns:
         a list of columns that pass the matching test
@@ -258,10 +254,7 @@ def pattern_inferral(
     '''
     
     strs = get_string_cols(df)
-    df_local = df.lazy().with_columns(pl.all().shuffle(seed=42)).with_row_count().filter(
-            pl.col("row_nr") < sample_pct * pl.col("row_nr").max()
-        ).select(df.columns).collect()
-    
+    df_local = lazy_sample(df.lazy(), sample_frac=sample_frac).collect()    
     matches:set[str] = set(strs)
     sample_size = min(sample_count, len(df_local))
     for _ in range(sample_rounds):
@@ -490,6 +483,7 @@ def constant_inferral(df:PolarsFrame, include_null:bool=True) -> list[str]:
 
 def constant_removal(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     '''Removes all constant columns from dataframe.
+    
         Arguments:
             df:
             include_null: if true, then columns with two distinct values like [value_1, null] will be considered a 

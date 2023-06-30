@@ -54,10 +54,11 @@ def impute(
 ) -> PolarsFrame:
     '''
         Arguments:
-            df:
-            cols:
-            strategy:
-            const: only uses this value if strategy = ImputationStartegy.CONST
+            df: Either a eager/lazy Polars dataframe
+            cols: cols to impute
+            strategy: one of 'mean', 'avg', 'average', 'median', 'const', 'constant', 'mode', 'most_frequent'. Some are 
+            just alternative names for the same strategy.
+            const: only uses this value if strategy = const
     
     '''
     s = clean_strategy_str(strategy)
@@ -162,11 +163,13 @@ def one_hot_encode(
             pl.col(s).unique().sort() for s in str_cols
         ).select(str_cols)
         exprs:list[pl.Expr] = []
+        one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
+        zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
         for t in temp.collect().get_columns():
             u:pl.List = t[0] # t is a Series which contains a single series/list, so u is a series/list
             if len(u) > 1:
                 exprs.extend(
-                    pl.when(pl.col(t.name) == u[i]).then(1).otherwise(0).alias(t.name + separator + u[i])
+                    pl.when(pl.col(t.name) == u[i]).then(one).otherwise(zero).alias(t.name + separator + u[i])
                     for i in range(int(drop_first), len(u)) 
                 )
             else:
@@ -296,6 +299,41 @@ def binary_encode(
     
     return one_hot_encode(df, cols=binary_list, drop_first=True)
 
+def force_binary(
+    df:PolarsFrame
+    , cols:Optional[list[str]]=None
+):
+    '''
+    Force every binary column, no matter what data type, to be turned into 0s and 1s by the order of the elements. If a 
+    column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
+    '''
+    if cols is None:
+        binary_list = get_unique_count(df)\
+            .filter(pl.col("n_unique") == 2)\
+            .get_column("column").to_list()
+    else:
+        binary_list = cols
+
+    temp = df.lazy().groupby(1).agg(
+            pl.col(s).unique().sort() for s in binary_list
+        ).select(binary_list)
+    
+    exprs:list[pl.Expr] = []
+    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
+    zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
+    for t in temp.collect().get_columns():
+        u:pl.List = t[0] # t is a Series which contains a single list which contains the 2 unique values 
+        if len(u) == 2:
+            exprs.append(
+                pl.when(pl.col(t.name) == u[0]).then(zero).otherwise(one).alias(t.name)
+            )
+        else:
+            logger.info(f"During force_binary, the column {t.name} is found to have != 2 unique values. Ignored.")
+    
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)    
+
 def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
     '''
         Helper function to get a table from an ordinal_mapping dict.
@@ -315,7 +353,6 @@ def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
             A table with feature name, value, and mapped_to
     
     '''
-
     mapping_tables:list[pl.DataFrame] = []
     for feature, mapping in ordinal_mapping.items():
         table = pl.from_records(list(mapping.items()), schema=["value", "mapped_to"]).with_columns(
@@ -476,8 +513,7 @@ def _lmax_estimate_step(df:PolarsFrame, c:str, s:PowerTransformStrategy) -> Tupl
 
 def power_transform(
     df: PolarsFrame
-    , target:str
-    , num_cols: Optional[list[str]] = None
+    , cols: list[str]
     , strategy: PowerTransformStrategy = "yeo_johnson"
     , n_threads:int = CPU_COUNT
     # , lmbda: Optional[float] = None
@@ -485,8 +521,7 @@ def power_transform(
     '''Performs power transform on the data.
 
     df: either a lazy or eager Polars dataframe
-    target: target column will be excluded.
-    num_cols: a list of numerical columns to perform the transform. If not provided, will use all numeric columns.
+    cols: a list of numerical columns to perform the transform.
     strategy: either yeo_johnson or box_cox
     n_threads: max number of threads you want to use. Default = CPU_COUNT
 
@@ -495,18 +530,15 @@ def power_transform(
     
     '''
     
-    if isinstance(num_cols, list):
-        types = check_columns_types(df, num_cols)
-        if types != "numeric":
-            raise ValueError(f"Power Transform can only be used on numeric columns, not {types} types.")
-        num_list = num_cols
-    else:
-        num_list = get_numeric_cols(df, exclude=[target])
+
+    types = check_columns_types(df, cols)
+    if types != "numeric":
+        raise ValueError(f"Power Transform can only be used on numeric columns, not {types} types.")
 
     s = clean_strategy_str(strategy)
     exprs:list[pl.Expr] = []
     # Ensure columns do not have missing values
-    exclude_columns_w_nulls = df.lazy().select(num_list).null_count().collect().transpose(
+    exclude_columns_w_nulls = df.lazy().select(cols).null_count().collect().transpose(
         include_header=True, column_names=["null_count"]
     ).filter(pl.col("null_count") > 0).get_column("column").to_list()
 
@@ -514,7 +546,7 @@ def power_transform(
         logger.info("The following columns will not be processed by power_transform because they contain missing "
                     f"values. Please impute them.\n{exclude_columns_w_nulls}")
         
-    non_null_list = [c for c in num_list if c not in exclude_columns_w_nulls and c != target]
+    non_null_list = [c for c in cols if c not in exclude_columns_w_nulls]
     pbar = tqdm(non_null_list, desc = "Inferring best paramters")
     if s in ("yeo_johnson", "yeojohnson"):
         with ThreadPoolExecutor(max_workers=n_threads) as ex:
