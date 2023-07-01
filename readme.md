@@ -2,92 +2,60 @@
 
 This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package.
 
-# Basic Examples
+Welcome to DSDS, a data science package that aims to be an improvement over a subset of sklearn's functionality, primarily in the following areas:
 
-1.
+1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, etc.)
+2. Fast and furious feature selection (significantly faster F-score, MRMR, mutual_info_score, etc.)
+3. Cleaner pipeline construction and management (See examples below.)
+4. Compatible with Polars LazyFrames (Yes! Pipelines can enjoy the benefits of query optimization too!)
+5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. No nonsenses.
+
+DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
+
+## Usage
+
+Practical Feature Prescreen
+```python
+from dsds.prescreen import (
+    remove_if_exists
+    , regex_removal
+    , pattern_removal
+    , var_removal
+    , null_removal
+    , unique_removal
+    , constant_removal
+    , date_removal
+    , non_numeric_removal
+    , get_unique_count
+    , get_string_cols
+    , suggest_normal
+    , discrete_inferral
+)
 
 
-# Overview of Existing Functionalities:
+```
 
-## prescreen
+Functional Pipeline Interface which supports both Eager and LazyFrames! And it can be pickled and load back and reapplied! See more in the examples on github.
 
-The point of feature prescreening is to reduce the number of feature to be analyzed by dropping obviously useless features. E.g in a dataset with 500+ features, it is impossible for a person to know what the features are. It will take very long time to run feature selection on all features. In this case we can quickly remove all features that are constant, all id column feautres, or all features that are too unique (which makes them like ids). If you are confident in removing columns with high null percentage, you may do that do.
+```python
+from dsds.prescreen import *
+from dsds.transform import *
 
-1. Data profiling for an overview of the statistics of the data.
+input_df = df.lazy()
+output = input_df.pipe(var_removal, threshold = 0.5, target = "Clicked on Ad")\
+    .pipe(binary_encode)\
+    .pipe(ordinal_auto_encode, cols = ["City", "Country"])\
+    .pipe(impute, cols=["Daily Internet Usage", "Daily Internet Usage Band", "Area Income Band"], strategy="median")\
+    .pipe(impute, cols=["Area Income"], strategy = "mean")\
+    .pipe(scale, cols=["Area Income", "Daily Internet Usage"])\
+    .pipe(one_hot_encode, cols= ["One_Hot_Test"])\
+    .pipe(remove_if_exists, cols = ["Ad Topic Line", "Timestamp"])\
+    .pipe(mutual_info_selector, target = "Clicked on Ad", top_k = 12)
+```
 
-2. Infer/remove columns based on column data type, null pct, unique pct, variance, constant, or name of column.
+Performance without sacrificing user experience. See ./examples/dsds_comparisons.ipynb
 
-### todo()!
-
-1. Infer duplicate columns, string columns hiding as dates, distribution of data in column.
-
-2. Remove based on the above (less trivial) characteristics.
-
-## transform
-
-1. Binary transforms, boolean transform, ordinal encoding, auto ordinal encoding, one-hot encoding, target encoding.
-
-2. Imputation and scaling.
-
-3. Power transform.
-
-### todo()!
-
-1. More imputation and scaling startegies.
-
-2. More slightly advanced encoding techniques.
-
-## Feature Selection (fs)
-
-Feature selection done fast. May need more optimization.
-
-0. Methods based on entropy: mutual_info, naive_sample_ig
-    
-    Let X denote the test column/feature, and Y the target. We compute the conditional entropy H(Y|X), which represents the remaining randomness in the random variable Y, given the random variable X. For more details, see [here](https://en.wikipedia.org/wiki/Entropy_(information_theory)).
-
-    The mutual_info function is a speed-up version of sklearn's mutual_info_classif, but with some small precision issues right now. (Not sure if this is a bug or not. Most likely this is just a precision issue. Need some help.)
-
-    More details can be found in the docstring of the functions.
-
-1. Classic Anova One Way F-test.
-    
-    See [here](https://saylordotorg.github.io/text_introductory-statistics/s15-04-f-tests-in-one-way-anova.html).
-
-2. Basic MRMR Algorithm with many variations: mrmr, knock-out-mrmr.
-
-    See [here](https://towardsdatascience.com/mrmr-explained-exactly-how-you-wished-someone-explained-to-you-9cf4ed27458b)
-
-    Also see mrmr_examples.ipynb in the examples folder.
-
-### todo()!
-
-1. More known feature selection algorithms.
-
-## Compatible with df.pipe()
-
-A lot of work is being done. It is hard to explain everything. But right now this section is not good for eager dataframes. Examples: see builder.ipynb.
-
-Most functions in this package are compatible with lazy Polar's pipe operation, making the data preparation part of the ML cycle trivial. In addition, we can create blueprints, reusable formula for recreating the same pipeline. It is like Sklearn's pipeline, but you don't need to initialize any objects! Serialization is builtin in Polars with the write.json() function on lazy frames. The result is a much cleaner pipeline which follows "chain of thought". It is lazy Polars's execution plan under the hood. To get a blueprint out as in the builder example, please start with a lazy df as input.
-
-### todo()!
-
-1. Write more functions compatible with Polar's lazy execution plan. Make this pipeline more general purpose.
-
-2. Enable logging so that it actually writes to a log file??
-
-3. Maybe create another data structure to better manage the pipe?
-
-4. Debugging and the precision issue.
-
-### IMPORTANT: If you are reusing an execution plan, there is a known precision issue right now. However, the precision error is on the magnitude of 1e-8.
-
-### IMPORTANT: It is possible to add your custom transformations into the pipeline. If the transformation is independent of incoming data, then no worries. If the transformation is dependent on the incoming data, then you have to write to in such a way that it will be "memorized" by the execution plan. Otherwise, the operation will not persist.
-
-## Utils
-
-Miscallenous functions.
-
-## EDA Text (Halted.)
+![Screenshot](./pics/impute.PNG)
 
 ## Dependencies
 

@@ -31,7 +31,9 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     
     # This currently has difference of magnitude 1e-10 from the sklearn implementation, 
     # which is likely caused by sklearn adding zeros to the front? Not 100% sure
-
+    # This is about 50% faster than sklearn's implementation. I know, not that this matters
+    # that much...
+    
     y_a = y_actual.ravel()
     y_p = y_predicted.ravel()
     if len(y_a) != len(y_p):

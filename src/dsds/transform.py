@@ -396,13 +396,13 @@ def ordinal_auto_encode(
     ).select(ordinal_list)
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]
+        mapping = {t.name: uniques, "to": list(range(len(uniques)))} 
         if isinstance(df, pl.LazyFrame):
             # Use a list here because Python cannot pickle a generator
-            mapping = {t.name: uniques, "to": list(range(len(uniques)))} 
             df = df.blueprint.map_dict(t.name, mapping, "to", None)
         else:
-            mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[t.name, "to"])
-            df = df.join(mapping, on = t.name).with_columns(
+            map_tb = pl.DataFrame(mapping)
+            df = df.join(map_tb, on = t.name).with_columns(
                 pl.col("to").alias(t.name)
             ).drop("to")
 

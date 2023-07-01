@@ -10,7 +10,9 @@
 
 4. Fucntion annotaions are required and functions should have one output type only.
 
-5. Obscure algorithms that do not have a lot of usages should not be included in the package. The package is designed in such a way that it can be customized (A lot more work to be done here.)
+5. What you write should work for lazy and eager dataframes. If you want it to work with pipeline, there are some specific things you need to do. Contact me for details.
+
+6. Obscure algorithms that do not have a lot of usages should not be included in the package. The package is designed in such a way that it can be customized (A lot more work to be done here.)
 
 Contact me on Discord: t.q
 
@@ -36,6 +38,28 @@ To this end, I believe the old "stack", Pandas + Sklearn + some NumPy, is inadeq
 
 Dask and PySpark are distributed systems and so are their own universe. But on a single machine, Polars has proven to be more performant and less memory intensive than both of them.
 
-Most algorithms in Sklearn are available in Scipy, and Scipy relies more heavily on C and usually has multicore options. Therefore, when the algorithm is too complex to perfom in Polars, we can rely on Scipy. 
+Most algorithms in Sklearn are available in Scipy, and Scipy relies more heavily on C. Therefore, when the algorithm is too complex to perfom in Polars, we can rely on Scipy. 
 
 So the proposed new "stack" is Polars + Scipy + some NumPy.
+
+# So, what am I working on what am I planning?
+
+You are welcomed to work on any of the areas mentioned below.
+
+The major focus is in:
+
+1. Prescreen, aka what kind of data am I dealing with?
+2. Feature selection. Obviously we need more.
+3. Pipeline and making pipelines more useful. (Feature selection pipeline, auto model evaluation pipeline, etc.)
+4. Performance improvement without sacrifing user experience.
+
+There are some new areas that my learning leads me to:
+1. Sampling strategies
+2. Splitting strategies.
+3. Writing useful model evaluation metrics from scratch.
+
+There are some abandoned effort due to scope and limited time:
+1. EDA with regard to text data.
+
+There are some interesting ideas:
+1. Add a trading/time series module. Polars make technical indicators easy and fast to compute!!!

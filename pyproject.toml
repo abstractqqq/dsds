@@ -3,17 +3,17 @@ requires = ["setuptools"]
 
 [project]
 name = "dsds"
-version = "0.0.1"
+version = "0.0.15"
 requires-python = ">=3.9"
 readme = "README.md"
-description = "A feature screening, selection, EDA, pipeline building and management tool centered around Polars dataframes."
+description = "A feature screening, selection, EDA, pipeline building and management tool centered around Polars dataframe."
 authors = [
     {name = "Tianren Qin", email = "tq9695@gmail.com"}
 ]
 license = {file = "LICENSE"}
 dependencies = [
-    "polars >= 0.18.3",
-    "scipy >= 1.10.1",
+    "polars >= 0.18.4",
+    "scipy >= 1.11.1",
     "pandas",
     "numpy",
     "typing_extensions >= 4.0.1"

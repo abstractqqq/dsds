@@ -160,19 +160,19 @@ def describe_str(df:PolarsFrame
         df_str = lazy_sample(df_str, sample_frac=sample_frac).collect()
 
     nstrs = len(strs)
-    stats = df.select(get_string_cols(df)).select(
+    stats = df.select(strs).select(
         pl.all().null_count().prefix("nc:"),
         pl.all().max().prefix("max:"),
         pl.all().min().prefix("min:"),
         pl.all().mode().first().prefix("mode:"),
-        pl.all().str.lengths().min().prefix("min_byte_len"),
-        pl.all().str.lengths().max().prefix("max_byte_len"),
-        pl.all().str.lengths().mean().prefix("avg_byte_len"),
-        pl.all().str.lengths().median().prefix("median_byte_len"),
-        pl.all().str.count_match(r"\s").mean().prefix("avg_space_cnt"),
-        pl.all().str.count_match(r"[0-9]").mean().prefix("avg_digit_cnt"),
-        pl.all().str.count_match(r"[A-Z]").mean().prefix("avg_cap_cnt"),
-        pl.all().str.count_match(r"[a-z]").mean().prefix("avg_lower_cnt")
+        pl.all().str.lengths().min().prefix("min_byte_len:"),
+        pl.all().str.lengths().max().prefix("max_byte_len:"),
+        pl.all().str.lengths().mean().prefix("avg_byte_len:"),
+        pl.all().str.lengths().median().prefix("median_byte_len:"),
+        pl.all().str.count_match(r"\s").mean().prefix("avg_space_cnt:"),
+        pl.all().str.count_match(r"[0-9]").mean().prefix("avg_digit_cnt:"),
+        pl.all().str.count_match(r"[A-Z]").mean().prefix("avg_cap_cnt:"),
+        pl.all().str.count_match(r"[a-z]").mean().prefix("avg_lower_cnt:")
     ).row(0)
     output = {
         "features":strs,
@@ -192,9 +192,7 @@ def describe_str(df:PolarsFrame
 
     if isinstance(words_to_count, list):
         for w in words_to_count:
-            t = df_str.select(
-                pl.all().str.count_match(w).sum() for c in strs
-            ).row(0)
+            t = df_str.select(pl.all().str.count_match(w).sum().prefix("wc:")).row(0)
             output["total_"+ w + "_count"] = t
 
     return pl.from_dict(output)
