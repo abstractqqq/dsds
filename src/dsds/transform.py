@@ -45,7 +45,6 @@ def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
     types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
     return "|".join(types) if len(types) > 0 else "unknown"
 
-
 def impute(
     df:PolarsFrame
     , cols:list[str]
@@ -72,7 +71,7 @@ def impute(
     elif s in ("const", "constant"):
         exprs = (pl.col(c).fill_null(const) for c in cols)
     elif s in ("mode", "most_frequent"):
-        all_modes = df.lazy().select(pl.col(c).mode().first() for c in cols).collect().row(0)
+        all_modes = df.lazy().select(cols).select(pl.all().mode().first()).collect().row(0)
         exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols))
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
@@ -100,7 +99,7 @@ def scale(
     '''
     types = check_columns_types(df, cols)
     if types != "numeric":
-        raise ValueError(f"Scaling can only be used on numeric columns, not {types} types.")
+        raise TypeError(f"Scaling can only be used on numeric columns, not {types} types.")
 
     s = clean_strategy_str(strategy)
     if s in ("normal", "standard", "normalize"):
@@ -153,14 +152,14 @@ def one_hot_encode(
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
         if types != "string":
-            raise ValueError(f"One-hot encoding can only be used on string columns, not {types} types.")
+            raise TypeError(f"One-hot encoding can only be used on string columns, not {types} types.")
         str_cols = cols
     else:
         str_cols = get_string_cols(df)
 
     if isinstance(df, pl.LazyFrame):
-        temp = df.lazy().groupby(1).agg(
-            pl.col(s).unique().sort() for s in str_cols
+        temp = df.lazy().select(str_cols).groupby(1).agg(
+            pl.all().unique().sort()
         ).select(str_cols)
         exprs:list[pl.Expr] = []
         one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
@@ -314,10 +313,9 @@ def force_binary(
     else:
         binary_list = cols
 
-    temp = df.lazy().groupby(1).agg(
-            pl.col(s).unique().sort() for s in binary_list
-        ).select(binary_list)
-    
+    temp = df.lazy().select(binary_list).groupby(1).agg(
+            pl.all().unique().sort()
+        ).select(binary_list) # Need this to get rid of the literal 1 column
     exprs:list[pl.Expr] = []
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
@@ -386,7 +384,7 @@ def ordinal_auto_encode(
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
         if types != "string":
-            raise ValueError(f"Ordinal encoding can only be used on string columns, not {types} types.")
+            raise TypeError(f"Ordinal encoding can only be used on string columns, not {types} types.")
         ordinal_list = cols
     else:
         ordinal_list = get_string_cols(df, exclude=exclude)
@@ -529,12 +527,11 @@ def power_transform(
         the transformed dataframe. If input is lazy, output is lazy. If input is eager, output is eager.
     
     '''
-    
 
     types = check_columns_types(df, cols)
     if types != "numeric":
         raise ValueError(f"Power Transform can only be used on numeric columns, not {types} types.")
-
+    
     s = clean_strategy_str(strategy)
     exprs:list[pl.Expr] = []
     # Ensure columns do not have missing values

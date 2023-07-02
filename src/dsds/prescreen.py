@@ -6,11 +6,14 @@ from .type_alias import (
     , POLARS_DATETIME_TYPES
     , POLARS_NUMERICAL_TYPES
 )
+from .sample import (
+    lazy_sample
+)
 from .blueprint import(
     Blueprint
 )
 
-import polars.selectors as cs
+# import polars.selectors as cs
 import polars as pl 
 import re
 import logging  
@@ -72,18 +75,7 @@ def dtype_mapping(d: Any) -> str:
         return "datetime"
     else:
         return "other/unknown"
-    
-#----------------------------------------------------------------------------------------------#
-# Lazy Sampling
-#----------------------------------------------------------------------------------------------#
-def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame:
-    if sample_frac <= 0 or sample_frac > 1:
-        raise ValueError("Sample fraction must be >= 0 and < 1.")
 
-    return df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
-        .filter(pl.col("row_nr") < pl.col("row_nr").max() * sample_frac)\
-        .select(df.columns)
-    
 #----------------------------------------------------------------------------------------------#
 # Prescreen Inferral, Removal Methods                                                          #
 #----------------------------------------------------------------------------------------------#
@@ -232,8 +224,8 @@ def pattern_inferral(
     , threshold:float = 0.9
     , count_null:bool = True
 ) -> list[str]:
-    '''Find all string columns that reasonably match the given pattern. The match logic can be tuned using the all the 
-    parameters.
+    '''Find all string columns whose elements reasonably match the given pattern. The match logic can 
+    be tuned using the all the parameters.
 
     Arguments:
         sample_frac: the pct of the total dataframe to use as basis
@@ -619,7 +611,7 @@ def suggest_lognormal(
     , target: Optional[str] = None
     , threshold:float = 0.05
 ) -> list[str]:
-    '''Suggests which columns are log-normally distributed. This takes the columns for which the null hypothesis
+    '''Suggests which columns are log-normally distributed. This takes the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
     return dist_test(df, "lognorm", target=target).filter(pl.col("p-value") > threshold)\
@@ -631,7 +623,7 @@ def suggest_dist(
     , threshold:float = 0.05
     , dist: CommonContinuousDist = "norm"
 ) -> list[str]:
-    '''Suggests which columns follow the given dist. This takes the columns for which the null hypothesis
+    '''Suggests which columns follow the given distribution. This takes the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
     return dist_test(df, dist, target=target).filter(pl.col("p-value") > threshold)\

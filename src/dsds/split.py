@@ -34,6 +34,8 @@ def train_test_split(
                     .with_row_count().groupby(
                         pl.col("row_nr") >= len(df) * train_fraction
                     )
+        
+        # I am not sure if False group is always returned first...
         # p1 is a 2-tuple of (True/False, the corresponding group)
         if p2[0]: # if p2[0] == True, then p1[1] is train, p2[1] is test
             return p1[1].select(keep), p2[1].select(keep) # Make sure train comes first
