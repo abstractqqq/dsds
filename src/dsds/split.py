@@ -4,6 +4,8 @@ from .type_alias import (
     PolarsFrame
 )
 
+# Move this module into Sample?
+
 # Split? Or create an indicator column?
 # def recent_split(df:pl.DataFrame, sort_col:str, keep:int, keep_pct:float=-1.) -> pl.DataFrame:
 #     pass
@@ -24,8 +26,6 @@ def train_test_split(
     Returns:
         Tuple[PolarsFrame, PolarsFrame]: in the train then test order.
 
-    Source:
-        https://stackoverflow.com/questions/76499865/splitting-a-lazyframe-into-two-frames-by-fraction-of-rows-to-make-a-train-test-s
     """
     keep = df.columns # with_row_count will add a row_nr column. Don't need it.
     if isinstance(df, pl.DataFrame):

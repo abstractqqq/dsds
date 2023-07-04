@@ -69,11 +69,10 @@ def discrete_ig(
             a poalrs dataframe with information gain computed for each categorical column. 
     '''
     output = []
-    discretes = []
     if isinstance(discrete_cols, list):
-        discretes.extend(discrete_cols)
+        discretes = discrete_cols
     else: # If discrete_cols is not passed, infer it
-        discretes.extend(discrete_inferral(df, exclude=[target]))
+        discretes = discrete_inferral(df, exclude=[target])
 
     # Compute target entropy. This only needs to be done once.
     target_entropy = df.groupby(target).agg(
@@ -91,17 +90,16 @@ def discrete_ig(
             ig = future.result()
             output.append(ig)
             pbar.update(1)
-
         pbar.close()
 
     return pl.from_records(output, schema=["feature", "conditional_entropy"])\
         .with_columns(
-            pl.lit(target_entropy).alias("target_entropy"),
-            (pl.lit(target_entropy) - pl.col("conditional_entropy")).alias("information_gain")
+            target_entropy = pl.lit(target_entropy),
+            information_gain = pl.lit(target_entropy) - pl.col("conditional_entropy")
         ).join(unique_count, on="feature")\
         .select("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain")\
         .with_columns(
-            ((1 - pl.col("unique_pct")) * pl.col("information_gain")).alias("weighted_information_gain")
+            weighted_information_gain = (1 - pl.col("unique_pct")) * pl.col("information_gain")
         )
 
 discrete_mi = discrete_ig
@@ -202,7 +200,7 @@ def mutual_info(
             max(0, psi_n_and_k - np.mean(psi(label_counts) + psi(m_all)))
         ) # smallest is 0
 
-    return pl.from_records([conti_cols, estimates], schema=["feature", "estimated_mi"])
+    return pl.from_records((conti_cols, estimates), schema=["feature", "estimated_mi"])
 
 # Selectors should always return target
 def mutual_info_selector(
@@ -290,11 +288,10 @@ def f_classif(
             a polars dataframe with f score and p value.
     
     '''
-    num_list = []
     if isinstance(num_cols, list):
-        num_list.extend(num_cols)
+        num_list = num_cols
     else:
-        num_list.extend(get_numeric_cols(df, exclude=[target]))
+        num_list = get_numeric_cols(df, exclude=[target])
 
     # Get average within group and sample variance within group.
     ## Could potentially replace this with generators instead of lists. Not sure how impactful that would be... Probably no diff.
@@ -433,19 +430,18 @@ def mrmr(
     
     '''
 
-    num_list = []
     if isinstance(num_cols, list):
-        num_list.extend(num_cols)
+        num_list = num_cols
     else:
-        num_list.extend(get_numeric_cols(df, exclude=[target]))
+        num_list = get_numeric_cols(df, exclude=[target])
 
     s = clean_strategy_str(strategy)
     scores = _mrmr_underlying_score(df
-                                    , target = target
-                                    , num_list = num_list
-                                    , strategy = s
-                                    , params = {} if params is None else params
-                                    )
+        , target = target
+        , num_list = num_list
+        , strategy = s
+        , params = {} if params is None else params
+    )
 
     if low_memory:
         df_local = df.select(num_list)
@@ -538,19 +534,18 @@ def knock_out_mrmr(
         Inspired by the package Featurewiz and its creator.
     
     '''
-    
-    num_list = []
     if isinstance(num_cols, list):
-        num_list.extend(num_cols)
+        num_list = num_cols
     else:
-        num_list.extend(get_numeric_cols(df, exclude=[target]))
+        num_list = get_numeric_cols(df, exclude=[target])
 
     s = clean_strategy_str(strategy)
     scores = _mrmr_underlying_score(df
-                                    , target = target
-                                    , num_list = num_list
-                                    , strategy = s
-                                    , params = {} if params is None else params)
+        , target = target
+        , num_list = num_list
+        , strategy = s
+        , params = {} if params is None else params
+    )
 
     # Set up
     low_corr = np.abs(df[num_list].corr().to_numpy()) < corr_threshold

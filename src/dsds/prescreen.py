@@ -13,9 +13,8 @@ from .blueprint import(
     Blueprint
 )
 
-# import polars.selectors as cs
-import polars as pl 
-import re
+import polars.selectors as cs
+import polars as pl
 import logging  
 from datetime import datetime 
 from typing import Any, Optional, Tuple
@@ -35,33 +34,25 @@ logger = logging.getLogger(__name__)
 #----------------------------------------------------------------------------------------------#
 
 def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
-    output = []
     exclude_list = [] if exclude is None else exclude
-    for c,t in zip(df.columns, df.dtypes):
-        if t in POLARS_NUMERICAL_TYPES and c not in exclude_list:
-            output.append(c)
-    return output
+    return df.select(cs.numeric() & ~cs.by_name(exclude_list))
 
 def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
-    output = []
     exclude_list = [] if exclude is None else exclude
-    for c,t in zip(df.columns, df.dtypes):
-        if t == pl.Utf8 and c not in exclude_list:
-            output.append(c)
-    return output
+    return df.select(cs.string() & ~cs.by_name(exclude_list)).columns
 
 def get_datetime_cols(df:PolarsFrame) -> list[str]:
     '''Only gets datetime columns, will not infer from strings.'''
-    return [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
+    return df.select(cs.datetime()).columns
 
 def get_bool_cols(df:PolarsFrame) -> list[str]:
-    return [c for c,t in zip(df.columns, df.dtypes) if t == pl.Boolean]
+    return df.select(cs.by_dtype(pl.Boolean)).columns
 
-def get_cols_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> list[str]:
-    reg = re.compile(pattern)
-    if lowercase:
-        return [f for f in df.columns if reg.search(f)]
-    return [f for f in df.columns if reg.search(f.lower())]
+def get_cols_regex(df:PolarsFrame, pattern:str) -> list[str]:
+    return df.select(cs.matches(pattern=pattern)).columns
+
+def lowercase_columns(df:PolarsFrame) -> PolarsFrame:
+    return df.rename({c: c.lower() for c in df.columns})
 
 # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
 def dtype_mapping(d: Any) -> str:
@@ -455,9 +446,8 @@ def conti_inferral(
     , exclude:Optional[list[str]]=None
 ) -> list[str]:
     exclude_list = [] if exclude is None else exclude
-    return [f for f in get_numeric_cols(df) 
-            if not (f in discrete_inferral(df, discrete_threshold, discrete_max_n_unique)
-            or f not in exclude_list)]
+    discrete = discrete_inferral(df, discrete_threshold, discrete_max_n_unique)
+    return df.select(cs.numeric() & ~cs.by_name(exclude_list) & ~cs.by_name(discrete)).columns
 
 def constant_inferral(df:PolarsFrame, include_null:bool=True) -> list[str]:
     temp = get_unique_count(df).filter(pl.col("n_unique") <= 2)

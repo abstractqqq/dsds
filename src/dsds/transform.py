@@ -10,7 +10,6 @@ from .type_alias import (
 )
 from .prescreen import (
     get_bool_cols
-    , get_numeric_cols
     , get_string_cols
     , get_unique_count
     , dtype_mapping
@@ -51,14 +50,17 @@ def impute(
     , strategy:ImputationStrategy = 'median'
     , const:float = 1.
 ) -> PolarsFrame:
-    '''
+    '''Imputes the given columns using the given strategy.
+
         Arguments:
-            df: Either a eager/lazy Polars dataframe
+            df: either a eager/lazy Polars dataframe
             cols: cols to impute
             strategy: one of 'mean', 'avg', 'average', 'median', 'const', 'constant', 'mode', 'most_frequent'. Some are 
             just alternative names for the same strategy.
             const: only uses this value if strategy = const
-    
+
+        Returns:
+            the imputed lazy / eager dataframe.
     '''
     s = clean_strategy_str(strategy)
     # Given Strategy, define expressions
@@ -88,13 +90,16 @@ def scale(
     , strategy:ScalingStrategy="normal"
     , const:float = 1.0
 ) -> PolarsFrame:
-    
-    '''
+    '''Scale given columns using the given strategy.
         Arguments:
-            df:
-            cols:
-            strategy:
-            const: only uses this value if strategy = ImputationStartegy.CONST
+            df: either a lazy or eager dataframe
+            cols: list of columns to scale
+            strategy: one of 'normal', 'standard', 'normalize', 'min_max', 'const', 'constant',
+            where normal = standard = normalize.
+            const: only uses this value if strategy = const
+
+        Returns:
+            the scaled lazy / eager dataframe.
     
     '''
     types = check_columns_types(df, cols)
@@ -124,12 +129,14 @@ def scale(
     return df.with_columns(exprs)
 
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
-    '''
-        Converts all boolean columns into binary columns.
+    '''Converts all boolean columns into binary columns.
+
         Arguments:
-            df:
+            df: either a lazy or eager Polars DataFrame
             keep_null: if true, null will be kept. If false, null will be mapped to 0.
 
+        Returns:
+            a dataframe with booleans mapped to 0s and 1s.
     '''
     bool_cols = get_bool_cols(df)
     if keep_null: # Directly cast. If null, then cast will also return null
@@ -162,6 +169,7 @@ def one_hot_encode(
             pl.all().unique().sort()
         ).select(str_cols)
         exprs:list[pl.Expr] = []
+        start_index = int(drop_first)
         one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
         zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
         for t in temp.collect().get_columns():
@@ -169,7 +177,7 @@ def one_hot_encode(
             if len(u) > 1:
                 exprs.extend(
                     pl.when(pl.col(t.name) == u[i]).then(one).otherwise(zero).alias(t.name + separator + u[i])
-                    for i in range(int(drop_first), len(u)) 
+                    for i in range(start_index, len(u)) 
                 )
             else:
                 logger.info(f"During one-hot-encoding, the column {t.name} is found to have 1 unique value. Dropped.")
@@ -580,8 +588,8 @@ def power_transform(
         raise TypeError(f"The input strategy {strategy} is not a valid strategy. Valid strategies are: yeo_johnson "
                         "or box_cox")
     pbar.close()
-    if isinstance(df, pl.LazyFrame): # Lazy
+    if isinstance(df, pl.LazyFrame):
         return df.lazy().blueprint.with_columns(exprs)
-    return df.with_columns(exprs) # Eager
+    return df.with_columns(exprs)
 
     
