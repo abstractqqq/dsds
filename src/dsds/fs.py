@@ -1,7 +1,10 @@
 from .prescreen import (
     discrete_inferral
+    , check_binary_target
+    , check_columns_types
     , get_numeric_cols
     , get_unique_count
+    , get_string_cols
 )
 
 from .type_alias import (
@@ -61,7 +64,7 @@ def discrete_ig(
         Arguments:
             df: Eager frame only.
             target:
-            discrete_cols: list of discrete columns.
+            discrete_cols: list of discrete columns. If not provided, they will be inferred.
             top_k: must be >= 0. If <= 0, the entire DataFrame will be returned.
             n_threads: 4, 8 ,16 will not make any real difference. But there is a difference between 0 and 4 threads. 
             
@@ -601,8 +604,54 @@ def knock_out_mrmr_selector(
     if is_lazy:
         return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
-                    
 
+# Create a numeric + string version of woe_iv in the future
+def woe_iv_cat(
+    df:PolarsFrame
+    , target:str
+    , cols:Optional[list[str]]=None
+    , min_count:float = 1.
+    , check_binary:bool = True
+) -> pl.DataFrame:
+    '''
+        Arguments:
+            df: ..
+            target: ..
+            cols: a list of string or highly discrete numeric columns. Currently woe_iv for continuous values
+            is not implemenented. If not provided, it will use only string columns.
+            min_count: a regularization term that prevents ln(0). This is the same as 
+            category_encoders package's regularization parameter.
+            check_binary: whether to check if target is binary or not
+    '''
+    if isinstance(cols, list):
+        input_cols = cols
+    else:
+        input_cols = get_string_cols(df)
+
+    if check_binary:
+        if not check_binary_target(df, target):
+            raise ValueError("Target is not binary or not properly encoded.")
+
+    # No tqdm then..
+    results = (
+        df.lazy().groupby(s).agg(
+            ev = pl.col(target).sum()
+            , nonev = (pl.lit(1) - pl.col(target)).sum()
+        ).with_columns(
+            ev_rate = (pl.col("ev") + min_count)/(pl.col("ev").sum() + 2.0*min_count)
+            , nonev_rate = (pl.col("nonev") + min_count)/(pl.col("nonev").sum() + 2.0*min_count)
+        ).with_columns(
+            woe = (pl.col("ev_rate")/pl.col("nonev_rate")).log()
+        ).select(
+            pl.lit(s).alias("feature")
+            , pl.col(s).alias("value")
+            , pl.col("woe")
+            , information_value = ((pl.col("ev_rate")-pl.col("nonev_rate")) * pl.col("woe")).sum()
+        )
+        for s in input_cols
+    )
+
+    return pl.concat(results).collect()
 
 
     

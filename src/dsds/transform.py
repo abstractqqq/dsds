@@ -12,7 +12,8 @@ from .prescreen import (
     get_bool_cols
     , get_string_cols
     , get_unique_count
-    , dtype_mapping
+    , check_binary_target
+    , check_columns_types
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint
@@ -33,16 +34,6 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
-    '''Returns the unique types of given columns in a single string. If multiple types are present
-    they are joined by a |. If cols is not given, automatically uses all df's columns.'''
-    if cols is None:
-        check_cols:list[str] = df.columns
-    else:
-        check_cols:list[str] = cols 
-
-    types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
-    return "|".join(types) if len(types) > 0 else "unknown"
 
 def impute(
     df:PolarsFrame
@@ -480,14 +471,15 @@ def smooth_target_encode(
     else:
         str_cols = get_string_cols(df)
     
-    # Only works for binary target for now 
-    # Check if it is binary or not.
+    # Only works for binary target for now. There is a non-binary ver of target encode, but I
+    # am just delaying the implementation...
     if check_binary:
-        target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)
-        if len(target_uniques) != 2 or (not (0 in target_uniques and 1 in target_uniques)):
-            raise ValueError(f"The target column {target} must be a binary target with 0s and 1s.")
+        if not check_binary_target(df, target):
+            raise ValueError("Target is not binary or not properly encoded.")
 
-    p = df.lazy().select(pl.col(target).mean()).collect().row(0)[0] # probability of target = 1
+    # probability of target = 1
+    p = df.lazy().select(pl.col(target).mean()).collect().row(0)[0]
+    is_lazy = isinstance(df, pl.LazyFrame)
     # If c has null, null will become a group when we group by.
     for c in str_cols:
         ref = df.groupby(c).agg(
@@ -497,14 +489,71 @@ def smooth_target_encode(
             (1./(1. + ((-(pl.col("cnt").cast(pl.Float64) - min_samples_leaf))/smoothing).exp())).alias("alpha")
         ).select(
             pl.col(c).alias(c),
-            (pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)).alias("encoded_as")
+            to = pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)
         ) # If df is lazy, ref is lazy. If df is eager, ref is eager
-        if isinstance(df, pl.LazyFrame):
-            df = df.blueprint.map_dict(c, ref.collect().to_dict(), "encoded_as", None)
+        if is_lazy:
+            df = df.blueprint.map_dict(c, ref.collect().to_dict(), "to", None)
         else: # It is ok to do inner join because all values of c are present in ref.
             df = df.join(ref, on = c).with_columns(
-                pl.col("encoded_as").alias(c)
-            ).drop("encoded_as")
+                pl.col("to").alias(c)
+            ).drop("to")
+    return df
+
+def woe_cat_encode(
+    df:PolarsFrame
+    , target:str
+    , cols:Optional[list[str]]=None
+    , min_count:float = 1.
+    , default: float = -10.
+    , check_binary:bool = True
+) -> PolarsFrame:
+    '''Performs WOE encoding for categorical features. Currently woe encoding is only available
+    for categorical (string) features. Numerical WOE encoding requires binning and the binning
+    transform is being considered (Need it to be comptible with blueprints and all that).
+
+        Arguments:
+            df: either a lazy or eager dataframe
+            target: target column
+            cols: string columns to be encoded. If none, it will use all from the df.
+            min_count: a regularization term that prevents ln(0).
+            default: default value for nulls resulted in the left-join.
+            check_binary: whether to check if target is binary or not
+
+        Returns:
+            an woe encoded lazy or eager Polars dataframe
+    '''
+    if isinstance(cols, list):
+        types = check_columns_types(df, cols)
+        if types != "string":
+            raise ValueError(f"woe_cat_encode encoding can only be used on string columns, not {types} types.")
+        str_cols = cols
+    else:
+        str_cols = get_string_cols(df)
+
+    if check_binary:
+        if not check_binary_target(df, target):
+            raise ValueError("Target is not binary or not properly encoded.")
+
+    is_lazy = isinstance(df, pl.LazyFrame)
+    for s in str_cols:
+        ref = df.lazy().groupby(s).agg(
+            ev = pl.col(target).sum()
+            , nonev = (pl.lit(1) - pl.col(target)).sum()
+        ).with_columns(
+            ev_rate = (pl.col("ev") + min_count)/(pl.col("ev").sum() + 2.0*min_count)
+            , nonev_rate = (pl.col("nonev") + min_count)/(pl.col("nonev").sum() + 2.0*min_count)
+        ).with_columns(
+            woe = (pl.col("ev_rate")/pl.col("nonev_rate")).log()
+        ).select(
+            pl.col(s)
+            , pl.col("woe")
+        ).collect()
+        if is_lazy:
+            df = df.blueprint.map_dict(s, ref.to_dict(), "woe", default)
+        else:
+            df = df.join(ref, on = s, how="left").with_columns(
+                pl.col("woe").fill_null(default).alias(s)
+            ).drop("woe")
 
     return df
 
@@ -524,16 +573,16 @@ def power_transform(
     , n_threads:int = CPU_COUNT
     # , lmbda: Optional[float] = None
 ) -> PolarsFrame:
-    '''Performs power transform on the data.
+    '''Performs power transform on the numerical columns.
 
-    df: either a lazy or eager Polars dataframe
-    cols: a list of numerical columns to perform the transform.
-    strategy: either yeo_johnson or box_cox
-    n_threads: max number of threads you want to use. Default = CPU_COUNT
+        Arguments:
+            df: either a lazy or eager Polars dataframe
+            cols: a list of numerical columns to perform the transform.
+            strategy: either yeo_johnson or box_cox
+            n_threads: max number of threads you want to use. Default = CPU_COUNT
 
-    returns:
-        the transformed dataframe. If input is lazy, output is lazy. If input is eager, output is eager.
-    
+        Returns:
+            the transformed lazy or eager dataframe
     '''
 
     types = check_columns_types(df, cols)

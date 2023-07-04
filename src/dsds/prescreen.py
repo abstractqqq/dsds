@@ -34,12 +34,18 @@ logger = logging.getLogger(__name__)
 #----------------------------------------------------------------------------------------------#
 
 def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
-    exclude_list = [] if exclude is None else exclude
-    return df.select(cs.numeric() & ~cs.by_name(exclude_list))
+    if exclude is None:
+        selector = cs.numeric()
+    else:
+        selector = cs.numeric() & ~cs.by_name(exclude)
+    return df.select(selector).columns
 
 def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
-    exclude_list = [] if exclude is None else exclude
-    return df.select(cs.string() & ~cs.by_name(exclude_list)).columns
+    if exclude is None:
+        selector = cs.string()
+    else:
+        selector = cs.string() & ~cs.by_name(exclude)
+    return df.select(selector).columns
 
 def get_datetime_cols(df:PolarsFrame) -> list[str]:
     '''Only gets datetime columns, will not infer from strings.'''
@@ -54,6 +60,30 @@ def get_cols_regex(df:PolarsFrame, pattern:str) -> list[str]:
 def lowercase_columns(df:PolarsFrame) -> PolarsFrame:
     return df.rename({c: c.lower() for c in df.columns})
 
+def check_binary_target(df:PolarsFrame, target:str) -> bool:
+    target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)
+    if len(target_uniques) != 2:
+        logger.error("Target is not binary.")
+        return False
+    elif not (0 in target_uniques and 1 in target_uniques):
+        logger.error("The binary target is not encoded as 0s and 1s.")
+        return False
+    return True
+    
+def check_target_cardinality(df:PolarsFrame, target:str) -> pl.DataFrame:
+    return df.lazy().groupby(target).count().sort(target).collect()
+
+def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
+    '''Returns the unique types of given columns in a single string. If multiple types are present
+    they are joined by a |. If cols is not given, automatically uses all df's columns.'''
+    if cols is None:
+        check_cols:list[str] = df.columns
+    else:
+        check_cols:list[str] = cols 
+
+    types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
+    return "|".join(types) if len(types) > 0 else "unknown"
+    
 # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
 def dtype_mapping(d: Any) -> str:
     if isinstance(d, str) or d == pl.Utf8:
@@ -189,10 +219,12 @@ def drop(df:PolarsFrame, to_drop:list[str]) -> PolarsFrame:
 def non_numeric_removal(df:PolarsFrame, include_bools:bool=True) -> PolarsFrame:
     '''Removes all non-numeric columns. If include_bools = True, then keep boolean columns.'''
     
-    nums = get_numeric_cols(df)
     if include_bools:
-        nums += get_bool_cols(df)
-    non_nums = [c for c in df.columns if c not in nums]
+        selector = ~(cs.numeric()|cs.by_dtype(pl.Boolean))
+    else:
+        selector = ~cs.numeric()
+
+    non_nums = df.select(selector).columns
     logger.info(f"The following columns are dropped because they are not numeric: {non_nums}.\n"
                 f"Removed a total of {len(non_nums)} columns.")
     
@@ -422,7 +454,6 @@ def unique_removal(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
-# Discrete = string or column that has < max_n_unique count of unique values or having unique_pct < threshold.
 # Is this a good definition?
 def discrete_inferral(df:PolarsFrame
     , threshold:float=0.1
