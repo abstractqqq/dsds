@@ -611,6 +611,8 @@ def knock_out_mrmr_selector(
         return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
 
+# Selectors for the methods below are not yet implemented
+
 # Create a numeric + string version of woe_iv in the future
 def woe_iv_cat(
     df:PolarsFrame

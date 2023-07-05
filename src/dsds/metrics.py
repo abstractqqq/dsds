@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 # So funnily enough, we can convert things to dataframes and get a performance boost.
 # Ideally, all of these should be re-written in Rust using some kind of parallel stuff in Rust.
 
-
-
 def _flatten_input(y_actual: np.ndarray, y_predicted:np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     y_a = y_actual.ravel()
     if y_predicted.ndim == 2:
@@ -24,8 +22,23 @@ def _flatten_input(y_actual: np.ndarray, y_predicted:np.ndarray) -> Tuple[np.nda
 
     return y_a, y_p
 
-def get_tp_fp(y_actual:np.ndarray, y_predicted:np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    '''Get true positive and false positive counts at thresholds.'''
+def get_tp_fp(
+    y_actual:np.ndarray
+    , y_predicted:np.ndarray
+    , ratio:bool = True
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    '''
+        Get true positive and false positive counts at various thresholds.
+
+        Arguments:
+            y_actual: actual binary labels
+            y_predicted: predicted labels
+            ratio: if true, return true positive rate and false positive rate at the threholds; 
+            if false return the count.
+
+        Returns:
+            True positive count/rate, False positive count/rate, the thresholds
+    '''
    
     df = pl.from_records((y_predicted, y_actual), schema=["predicted", "actual"])
     all_positives = pl.lit(np.sum(y_actual))
@@ -45,8 +58,11 @@ def get_tp_fp(y_actual:np.ndarray, y_predicted:np.ndarray) -> Tuple[np.ndarray, 
     # We are relatively sure that y_actual and y_predicted won't have null values.
     # So we can do temp["tp"].view() to get some more performance. 
     # But that might confuse users.
-
-    return temp["tp"].to_numpy(), temp["fp"].to_numpy(), temp["predicted"].to_numpy()
+    tp = temp["tp"].to_numpy()
+    fp = temp["fp"].to_numpy()
+    if ratio:
+        return tp/tp[0], fp/fp[0], temp["predicted"].to_numpy()
+    return tp, fp, temp["predicted"].to_numpy()
 
 def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True) -> float:
     '''Return the Area Under the Curve metric for the model's predictions.
@@ -73,8 +89,8 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True)
         if not (0 in uniques and 1 in uniques):
             raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
-    tp, fp, _ = get_tp_fp(y_a.astype(np.int8), y_p)
-    return float(-np.trapz(tp/tp[0], fp/fp[0]))
+    tpr, fpr, _ = get_tp_fp(y_a.astype(np.int8), y_p, ratio=True)
+    return float(-np.trapz(tpr, fpr))
 
 def logloss(
     y_actual:np.ndarray
@@ -172,9 +188,8 @@ def adjusted_r2(
 
         p: number of predictive variables
     '''
-    r_squared = r2(y_actual, y_predicted)
     df_tot = len(y_actual) - 1
-    return 1 - (1-r_squared) * df_tot / (df_tot - p)
+    return 1 - (1 - r2(y_actual, y_predicted)) * df_tot / (df_tot - p)
 
 def huber_loss(
     y_actual:np.ndarray
