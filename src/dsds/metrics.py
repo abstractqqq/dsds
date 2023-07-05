@@ -26,13 +26,15 @@ def _flatten_input(y_actual: np.ndarray, y_predicted:np.ndarray) -> Tuple[np.nda
 
 def get_tp_fp(y_actual:np.ndarray, y_predicted:np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     '''Get true positive and false positive counts at thresholds.'''
-
+   
     df = pl.from_records((y_predicted, y_actual), schema=["predicted", "actual"])
     all_positives = pl.lit(np.sum(y_actual))
+    n = len(df)
     temp = df.lazy().groupby("predicted").agg(
-        pl.col("actual").sum().alias("true_positive")
+        pl.count().alias("cnt")
+        , pl.col("actual").sum().alias("true_positive")
     ).sort("predicted").with_columns(
-        predicted_positive = pl.arange(start=len(y_actual), end=1, step=-1)
+        predicted_positive = n - pl.col("cnt").cumsum() + pl.col("cnt")
         , tp = (all_positives - pl.col("true_positive").cumsum()).shift_and_fill(fill_value=all_positives, periods=1)
     ).select(
         pl.col("predicted")
@@ -41,12 +43,12 @@ def get_tp_fp(y_actual:np.ndarray, y_predicted:np.ndarray) -> Tuple[np.ndarray, 
     ).collect()
 
     # We are relatively sure that y_actual and y_predicted won't have null values.
-    # So we can do temp["tp"].view() to get some more performance (3-8%). 
+    # So we can do temp["tp"].view() to get some more performance. 
     # But that might confuse users.
 
     return temp["tp"].to_numpy(), temp["fp"].to_numpy(), temp["predicted"].to_numpy()
 
-def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
+def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True) -> float:
     '''Return the Area Under the Curve metric for the model's predictions.
 
         Arguments:
@@ -64,11 +66,12 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     
     y_a, y_p = _flatten_input(y_actual, y_predicted)
     # No need to check if length matches because Polars will complain for us
-    uniques = np.unique(y_a)
-    if uniques.size != 2:
-        raise ValueError("Currently this only supports binary classification.")
-    if not (0 in uniques and 1 in uniques):
-        raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
+    if check_binary:
+        uniques = np.unique(y_a)
+        if uniques.size != 2:
+            raise ValueError("Currently this only supports binary classification.")
+        if not (0 in uniques and 1 in uniques):
+            raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
     tp, fp, _ = get_tp_fp(y_a.astype(np.int8), y_p)
     return float(-np.trapz(tp/tp[0], fp/fp[0]))
@@ -78,6 +81,7 @@ def logloss(
     , y_predicted:np.ndarray
     , sample_weights:Optional[np.ndarray]=None
     , min_prob:float = 1e-12
+    , check_binary:bool = True
 ) -> float:
     '''Return the logloss of the prediction.
 
@@ -95,11 +99,12 @@ def logloss(
     # Takes about 1/3 time of sklearn's log_loss because we parallelized some computations
 
     y_a, y_p = _flatten_input(y_actual, y_predicted)
-    uniques = np.unique(y_a)
-    if uniques.size != 2:
-        raise ValueError("Currently this only supports binary classification.")
-    if not (0 in uniques and 1 in uniques):
-        raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
+    if check_binary:
+        uniques = np.unique(y_a)
+        if uniques.size != 2:
+            raise ValueError("Currently this only supports binary classification.")
+        if not (0 in uniques and 1 in uniques):
+            raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
     if sample_weights is None:
         return pl.from_records((y_a, y_p), schema=["y", "p"]).with_columns(

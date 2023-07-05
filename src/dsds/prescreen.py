@@ -541,8 +541,8 @@ def ks_compare(
     so that it will not be included in the comparisons. Since ks 2 sample comparison is relatively expensive, we will
     always sample 75% of the dataset, unless the user specifies a different sample_frac.
 
-    Note: this will only run on combinations of index between skip and skip + max_comp, in the set of all 2 
-    combinations of the sorted list of numerical columns because this operation takes a lot of time.
+    Note: this will only run on all 2 combinations of columns, starting from skip and end at 
+    skip + max_comp.
 
     Note: The null hypothesis is that the two columns come from the same distribution. Therefore a small p-value means
     that they do not come from the same distribution. Having p-value > threshold does not mean they have the same 

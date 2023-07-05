@@ -1,4 +1,5 @@
 import polars as pl
+from typing import Tuple
 from .type_alias import PolarsFrame
 
 def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame:
@@ -52,3 +53,37 @@ def stratified_downsample(
     return df.filter(
         pl.arange(0, pl.count(), dtype=pl.UInt64).shuffle().over(groupby) < rhs
     )
+
+def train_test_split(
+    df: PolarsFrame
+    , train_frac: float = 0.75
+    , seed:int = 42
+) -> Tuple[PolarsFrame, PolarsFrame]:
+    """Split polars dataframe into train and test set. If input is eager, output will be eager. If input is lazy, out
+    output will be lazy.
+
+    Arguments:
+        df: Dataframe to split
+        train_frac: Fraction that goes to train. Defaults to 0.75.
+        seed: the random seed.
+    Returns:
+        the lazy or eager train and test dataframes
+    """
+    keep = df.columns # with_row_count will add a row_nr column. Don't need it.
+    if isinstance(df, pl.DataFrame):
+        # Eager group by is iterable
+        p1, p2 = df.with_columns(pl.all().shuffle(seed=seed))\
+                    .with_row_count().groupby(
+                        pl.col("row_nr") >= len(df) * train_frac
+                    )
+        
+        # I am not sure if False group is always returned first...
+        # p1 is a 2-tuple of (True/False, the corresponding group)
+        if p2[0]: # if p2[0] == True, then p1[1] is train, p2[1] is test
+            return p1[1].select(keep), p2[1].select(keep) # Make sure train comes first
+        return p2[1].select(keep), p1[1].select(keep)
+    else: # Lazy case.
+        df = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count()
+        df_train = df.filter(pl.col("row_nr") < pl.col("row_nr").max() * train_frac)
+        df_test = df.filter(pl.col("row_nr") >= pl.col("row_nr").max() * train_frac)
+        return df_train.select(keep), df_test.select(keep)

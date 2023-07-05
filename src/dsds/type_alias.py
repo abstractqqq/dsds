@@ -15,6 +15,7 @@ ImputationStrategy = Literal["mean", "avg", "average", "median", "const", "const
 PowerTransformStrategy = Literal["yeo_johnson", "yeojohnson", "box_cox", "boxcox"]
 KSAlternatives = Literal["two-sided", "greater", "less"]
 
+BinaryModels = Literal["logistic", "lr", "lightgbm", "lgbm", "xgboost", "xgb", "random_forest", "rf"]
 # This is just a subset of Scipy.stats's distributions which can be named by strings. All scipy.stats's string-name-able
 # distributions should work when the arguments asks for a CommonContinuousDist.
 CommonContinuousDist = Literal["norm", "lognorm", "truncnorm", "uniform", "t", "beta", "cauchy", "expon", "gamma"]

@@ -1,7 +1,6 @@
 from .prescreen import (
     discrete_inferral
     , check_binary_target
-    , check_columns_types
     , get_numeric_cols
     , get_unique_count
     , get_string_cols
@@ -10,13 +9,20 @@ from .prescreen import (
 from .type_alias import (
     PolarsFrame
     , MRMRStrategy
+    , BinaryModels
     , CPU_COUNT
     , clean_strategy_str
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint
 )
-
+from .sample import (
+    train_test_split
+)
+from .metrics import (
+    logloss
+    , roc_auc
+)
 import polars as pl
 import numpy as np
 from typing import Any, Optional, Tuple
@@ -24,6 +30,8 @@ from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+import math
+from itertools import combinations
 
 def _conditional_entropy(
     df:pl.DataFrame
@@ -47,7 +55,7 @@ def _conditional_entropy(
 def discrete_ig(
     df:pl.DataFrame
     , target:str
-    , discrete_cols:Optional[list[str]] = None
+    , cols:Optional[list[str]] = None
     , n_threads:int = CPU_COUNT
 ) -> pl.DataFrame:
     '''The entropy here is "discrete entropy".
@@ -64,7 +72,7 @@ def discrete_ig(
         Arguments:
             df: Eager frame only.
             target:
-            discrete_cols: list of discrete columns. If not provided, they will be inferred.
+            cols: list of discrete columns. If not provided, they will be inferred.
             top_k: must be >= 0. If <= 0, the entire DataFrame will be returned.
             n_threads: 4, 8 ,16 will not make any real difference. But there is a difference between 0 and 4 threads. 
             
@@ -72,8 +80,8 @@ def discrete_ig(
             a poalrs dataframe with information gain computed for each categorical column. 
     '''
     output = []
-    if isinstance(discrete_cols, list):
-        discretes = discrete_cols
+    if isinstance(cols, list):
+        discretes = cols
     else: # If discrete_cols is not passed, infer it
         discretes = discrete_inferral(df, exclude=[target])
 
@@ -89,9 +97,8 @@ def discrete_ig(
 
     with ThreadPoolExecutor(max_workers=n_threads) as ex: # 10% speed gain ? Need to retest this..
         pbar = tqdm(total=len(discretes), desc = "discrete_ig")
-        for future in as_completed(ex.submit(_conditional_entropy, df, target, pred) for pred in discretes):
-            ig = future.result()
-            output.append(ig)
+        for f in as_completed(ex.submit(_conditional_entropy, df, target, pred) for pred in discretes):
+            output.append(f.result())
             pbar.update(1)
         pbar.close()
 
@@ -113,8 +120,8 @@ def discrete_ig_selector(
     , top_k:int
     , n_threads:int = CPU_COUNT
 ) -> PolarsFrame:
+    
     discrete_cols = discrete_inferral(df, exclude=[target])
-
     is_lazy = isinstance(df, pl.LazyFrame)
     if is_lazy:
         input_data:pl.DataFrame = df.collect()
@@ -138,7 +145,7 @@ def mutual_info(
     , target:str
     , conti_cols:list[str]
     , n_neighbors:int=3
-    , random_state:int=42
+    , seed:int=42
     , n_threads:int=CPU_COUNT
 ) -> pl.DataFrame:
     '''Approximates mutual information (information gain) between the continuous variables and the target.
@@ -169,7 +176,7 @@ def mutual_info(
             
     '''
     n = len(df)
-    rng = np.random.default_rng(random_state)
+    rng = np.random.default_rng(seed)
     target_col = df.get_column(target).to_numpy().ravel()
     unique_targets = np.unique(target_col)
     all_masks = {}
@@ -210,7 +217,7 @@ def mutual_info_selector(
     df:PolarsFrame
     , target:str
     , n_neighbors:int=3
-    , random_state:int=42
+    , seed:int=42
     , n_threads:int=CPU_COUNT
     , top_k:int = 50
 ) -> PolarsFrame:
@@ -224,7 +231,7 @@ def mutual_info_selector(
     nums = get_numeric_cols(input_data, exclude=[target])
     complement = [f for f in input_data.columns if f not in nums]
 
-    mi_scores = mutual_info(input_data, target, nums, n_neighbors, random_state, n_threads)\
+    mi_scores = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
                 .top_k(by="estimated_mi", k = top_k)
 
     selected = mi_scores.get_column("feature").to_list()
@@ -275,7 +282,7 @@ def _f_score(
 def f_classif(
     df:pl.DataFrame
     , target:str
-    , num_cols:Optional[list[str]]=None
+    , cols:Optional[list[str]]=None
 ) -> pl.DataFrame:
     '''Computes ANOVA one way test, the f value/score and the p value. 
         Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
@@ -284,17 +291,17 @@ def f_classif(
         Arguments:
             df: input Polars dataframe.
             target: the target column.
-            num_cols: if provided, will run the ANOVA one way test for each column in num_cols. If none,
+            cols: if provided, will run the ANOVA one way test for each column in num_cols. If none,
                 will try to infer from df according to data types. Note that num_cols should be numeric!
 
         Returns:
             a polars dataframe with f score and p value.
     
     '''
-    if isinstance(num_cols, list):
-        num_list = num_cols
+    if isinstance(cols, list):
+        nums = cols
     else:
-        num_list = get_numeric_cols(df, exclude=[target])
+        nums = get_numeric_cols(df, exclude=[target])
 
     # Get average within group and sample variance within group.
     ## Could potentially replace this with generators instead of lists. Not sure how impactful that would be... Probably no diff.
@@ -302,7 +309,7 @@ def f_classif(
     step_two_expr:list[pl.Expr] = [] # Get average for each column
     step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
     # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
-    for n in num_list:
+    for n in nums:
         n_avg:str = n + "_avg" # avg within class
         n_tavg:str = n + "_tavg" # true avg / overall average
         n_var:str = n + "_var" # var within class
@@ -335,7 +342,7 @@ def f_classif(
     # Cast to numpy, so that fdtrc can process it properly.
 
     p_values = fdtrc(df_btw_class, df_in_class, f_values) # get p values 
-    return pl.from_records((num_list, f_values, p_values), schema=["feature","f_value","p_value"])
+    return pl.from_records((nums, f_values, p_values), schema=["feature","f_value","p_value"])
 
 def f_score_selector(
     df:PolarsFrame
@@ -409,7 +416,7 @@ def mrmr(
     df:pl.DataFrame
     , target:str
     , k:int
-    , num_cols:Optional[list[str]] = None
+    , cols:Optional[list[str]] = None
     , strategy: MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
@@ -423,7 +430,7 @@ def mrmr(
             df:
             target:
             k:
-            num_cols:
+            cols: numerical columns
             strategy: by default, f-score will be used.
             params: if a RF/XGB strategy is selected, params is a dict of parameters for the model.
             low_memory: 
@@ -432,32 +439,31 @@ def mrmr(
             pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
     
     '''
-
-    if isinstance(num_cols, list):
-        num_list = num_cols
+    if isinstance(cols, list):
+        nums = cols
     else:
-        num_list = get_numeric_cols(df, exclude=[target])
+        nums = get_numeric_cols(df, exclude=[target])
 
     s = clean_strategy_str(strategy)
     scores = _mrmr_underlying_score(df
         , target = target
-        , num_list = num_list
+        , num_list = nums
         , strategy = s
         , params = {} if params is None else params
     )
 
     if low_memory:
-        df_local = df.select(num_list)
+        df_local = df.select(nums)
     else: # this could potentially double memory usage. so I provided a low_memory flag.
-        df_local = df.select(num_list).with_columns(
-            (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in num_list
+        df_local = df.select(nums).with_columns(
+            (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in nums
         ) # Note that if we get a const column, the entire column will be NaN
 
-    output_size = min(k, len(num_list))
-    print(f"Found {len(num_list)} total features to select from. Proceeding to select top {output_size} features.")
-    cumulating_abs_corr = np.zeros(len(num_list)) # For each feature at index i, we keep a cumulating sum
+    output_size = min(k, len(nums))
+    print(f"Found {len(nums)} total features to select from. Proceeding to select top {output_size} features.")
+    cumulating_abs_corr = np.zeros(len(nums)) # For each feature at index i, we keep a cumulating sum
     top_idx = np.argmax(scores)
-    selected = [num_list[top_idx]]
+    selected = [nums[top_idx]]
     pbar = tqdm(total=output_size, desc = f"MRMR, {s}")
     pbar.update(1)
     for j in range(1, output_size): 
@@ -466,7 +472,7 @@ def mrmr(
         last_selected_col = df_local.drop_in_place(selected[-1])
         if low_memory: # normalize if in low memory mode.
             last_selected_col = (last_selected_col - last_selected_col.mean())/last_selected_col.std()
-        for i,f in enumerate(num_list):
+        for i,f in enumerate(nums):
             if f not in selected:
                 # Left = cumulating sum of abs corr
                 # Right = abs correlation btw last_selected and f
@@ -485,7 +491,7 @@ def mrmr(
                     current_max = new_score
                     argmax = i
 
-        selected.append(num_list[argmax])
+        selected.append(nums[argmax])
         pbar.update(1)
 
     pbar.close()
@@ -650,8 +656,143 @@ def woe_iv_cat(
         )
         for s in input_cols
     )
-
     return pl.concat(results).collect()
+
+def _binary_model_init(
+    model:BinaryModels
+    , params: dict[str, Any]
+):
+    if "n_jobs" not in params:
+        params["n_jobs"] = -1
+
+    if model in ("logistic", "lr"):
+        from sklearn.linear_model import LogisticRegression
+        model = LogisticRegression(**params)
+    elif model in ("rf", "random_forest"):
+        from sklearn.ensemble import RandomForestClassifier
+        model = RandomForestClassifier(**params)
+    elif model in ("xgb", "xgboost"):
+        from xgboost import XGBClassifier
+        model = XGBClassifier(**params)
+    elif model in ("lgbm", "lightgbm"):
+        from lightgbm import LGBMClassifier
+        model = LGBMClassifier(**params)
+    else:
+        raise ValueError(f"The model {model} is not available.")
+    
+    return model
+
+def _ebfs(
+    model:str
+    , params:dict[str, Any]
+    , target:str
+    , comb: Tuple
+    , train: pl.DataFrame
+    , test:pl.DataFrame
+)-> Tuple[Tuple[Tuple, float, float, float], np.ndarray]:
+    estimator = _binary_model_init(model, params)
+    _ = estimator.fit(train.select(comb), train[target])
+    y_pred = estimator.predict_proba(test.select(comb))[:,1]
+    y_test = test[target].to_numpy()
+    rec = (
+        comb,
+        logloss(y_test, y_pred, check_binary=False),
+        roc_auc(y_test, y_pred, check_binary=False)
+    )
+    if model in ("lr", "logistic"):
+        importances = np.abs(estimator.coef_).ravel()
+    else:
+        importances = estimator.feature_importances_
+
+    return rec, importances
+
+# ebfs: stands for Exhaustive Binary Feature Selection
+def ebfs(
+    df:pl.DataFrame
+    , target:str
+    , model:BinaryModels
+    , params:dict[str, Any]
+    , n_comb: int = 3
+    , train_frac:float = 0.75
+) -> Tuple[pl.DataFrame, pl.DataFrame]:
+    '''Suppose we have n features and n_comb = 2. This method will select all (n choose 2) 
+    combinations of features, split dataset into a train and a test, train a model on train, 
+    and compute feature importance and roc_auc and logloss, and then finally put 
+    everything into two separate dataframes, the first of which will contain the feature
+    combinations and model performances, and the second will contain the min, avg, max and var of 
+    feature importance of each feature in all its occurences in the training rounds.
+
+    This method will be extremely slow if (n choose n_comb) is a big number. All numerical columns 
+    will be taken as potential features. Please encode the string columns if you want to use them
+    as features here.
+
+    Future Improvement? Record progress and skip through results.
+
+    If n_jobs is not provided in params, it will be defaulted to -1.
+
+        Arguments:
+            df: an eager Polars DataFrame
+            target: target column
+            model: one of 'logistic', 'lr', 'lightgbm', 'lgbm', 'xgboost', 'xgb', 'random_forest', 'rf'
+            params: parameters for the model.
+            n_comb: n choose n_comb
+
+        Returns:
+            a feature combination summary, a feature importance summary
+    '''
+    
+    features = get_numeric_cols(df, exclude=[target])
+    train, test = train_test_split(df.select(features + [target]), train_frac)
+    fi = {f:[] for f in features}
+    records = []
+    pbar = tqdm(total=math.comb(len(features), n_comb), desc="Total Combinations")
+    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
+        futures = (
+            ex.submit(
+                _ebfs
+                , model
+                , params
+                , target
+                , comb
+                , train
+                , test
+            )
+            for comb in combinations(features, r=n_comb)
+        )
+        for f in as_completed(futures):
+            fc_rec, fi_rec = f.result()
+            records.append(fc_rec)
+            for f, i in zip(fc_rec[0], fi_rec):
+                fi[f].append(i)
+            pbar.update(1)
+
+    fc_summary = pl.from_records(records, schema=["combination", "logloss", "roc_auc"])
+    stats = [
+        (f, len(fi[f]), np.min(fi[f]), np.mean(fi[f]), np.max(fi[f]), np.std(fi[f])) for f in fi
+    ]
+    fi_summary = pl.from_records(stats, schema=["feature", "occurrences", "min", "mean", "max", "std"])
+    pbar.close()
+    return fc_summary, fi_summary
+
+def ebfs_fc_filter(
+    fc: pl.DataFrame
+    , logloss_threshold:float
+    , roc_auc_threshold:float
+) -> list[str]:
+    '''A filter method based on the feature combination result of ebfs. First, 
+
+        Arguments:
+            fc: the feature combination result from ebfs
+            logloss_threshold: the maximum logloss for the combination to be kept
+            roc_auc_threshold: the minumum roc_auc for the combination to be kept
+
+        Returns:
+            a list of string representing all features in the combinations after filtering
+    '''
+    return fc.filter(
+        pl.col("logloss") <= logloss_threshold
+        & pl.col("roc_auc") >= roc_auc_threshold
+    ).get_column("combination").explode().unique().to_list()
 
 
     
