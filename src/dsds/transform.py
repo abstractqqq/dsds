@@ -30,10 +30,8 @@ from tqdm import tqdm
 
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
-# Well, it does say in project description that we need Python 3.10.
 
 logger = logging.getLogger(__name__)
-
 
 def impute(
     df:PolarsFrame
@@ -72,7 +70,7 @@ def impute(
     # Need to cast to list so that pickle can work with it
     # This is unfortunate because we will be looping over this list twice... Whatever...
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs)) 
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def scale(
@@ -118,7 +116,7 @@ def scale(
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
@@ -138,7 +136,7 @@ def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
         exprs = (pl.col(c).cast(pl.UInt8).fill_null(0) for c in bool_cols)
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def one_hot_encode(
@@ -178,6 +176,10 @@ def one_hot_encode(
         return df.blueprint.with_columns(exprs).blueprint.drop(str_cols)
     else:
         return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
+    
+# def bin(df:PolarsFrame):
+    
+#     df.get_column("c").cut()
 
 # def fixed_sized_encode(df:pl.DataFrame, num_cols:list[str], bin_size:int=50) -> TransformationResult:
 #     '''Given a continuous variable, take the smallest `bin_size` of them, and call them bin 1, take the next
