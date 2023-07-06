@@ -229,6 +229,7 @@ def mutual_info_selector(
         input_data:pl.DataFrame = df
 
     nums = get_numeric_cols(input_data, exclude=[target])
+    print(nums)
     complement = [f for f in input_data.columns if f not in nums]
 
     mi_scores = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
@@ -237,7 +238,7 @@ def mutual_info_selector(
     selected = mi_scores.get_column("feature").to_list()
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
-    
+
     if is_lazy:
         return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
@@ -490,7 +491,6 @@ def mrmr(
                 if new_score > current_max:
                     current_max = new_score
                     argmax = i
-
         selected.append(nums[argmax])
         pbar.update(1)
 
@@ -513,12 +513,11 @@ def mrmr_selector(
     else:
         input_data:pl.DataFrame = df
 
-    num_cols = get_numeric_cols(input_data, exclude=[target])
+    nums = get_numeric_cols(input_data, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in input_data.columns if f not in num_cols]
-
+    complement = [f for f in input_data.columns if f not in nums]
     s = clean_strategy_str(strategy)
-    selected = mrmr(input_data, target, top_k, num_cols, s, params, low_memory)
+    selected = mrmr(input_data, target, top_k, nums, s, params, low_memory)
 
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")

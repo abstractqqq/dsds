@@ -81,7 +81,9 @@ def scale(
     , strategy:ScalingStrategy="normal"
     , const:float = 1.0
 ) -> PolarsFrame:
-    '''Scale given columns using the given strategy.
+    '''
+    Scale given columns using the given strategy. Will skip null values.
+
         Arguments:
             df: either a lazy or eager dataframe
             cols: list of columns to scale
@@ -272,8 +274,9 @@ def binary_encode(
     , cols:Optional[list[str]]=None
     , exclude:Optional[list[str]]=None
 ) -> PolarsFrame:
-    '''Encode the given columns as binary values. Only hands string binaries at this moment. Just a short-hand for 
-        one-hot-encoding for binary string columns.
+    '''
+    Encode the given columns as binary values. Only handles string binary at this moment. This is equivalent
+    to using one-hot-encoding on binary columns using drop_first=True.
 
         Arguments:
             df:

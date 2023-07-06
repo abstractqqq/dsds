@@ -65,7 +65,7 @@ def simple_upsample(
     , seed: int = 42
 ) -> PolarsFrame:
     '''
-    For records in the subgroup, we (1) sample with replacement for `count` many records 
+    For records in the subgroup, we (1) sample with replacement for `count` many records
     and (2) add a small random number uniformly distributed in (-epsilon, epsilon) to all 
     the float-valued columns except those in exclude.
 
@@ -120,16 +120,24 @@ def simple_upsample(
     │ B            ┆ 231   │
     └──────────────┴───────┘
     '''
-    filter_expr = pl.lit(True)
-    for c, vals in subgroup.items():
-        if isinstance(vals, list):
-            filter_expr = filter_expr & pl.col(c).is_in(vals)
+    if include is None:
+        if exclude is None:
+            to_add_noise = df.select(cs.by_dtype(pl.Float32, pl.Float64)).columns
         else:
-            logger.warn(f"The value for key {c} is not a list. Skipped.")
+            to_add_noise = df.select(cs.by_dtype(pl.Float32, pl.Float64)& ~cs.by_name(exclude)).columns
+    else:
+        if exclude is None:
+            to_add_noise = include
+        else:
+            to_add_noise = (f for f in include if f not in exclude)
 
     # Should be small, because this is the whole point of upsampling
     if isinstance(subgroup, pl.Expr):
-        subset = df.lazy().filter(subgroup).collect()
+        sub = (
+            df.lazy().filter(subgroup)
+            .collect()
+            .sample(n=count, with_replacement=True)
+        )
     elif isinstance(subgroup, dict):
         filter_expr = pl.lit(True)
         for c, vals in subgroup.items():
@@ -137,26 +145,20 @@ def simple_upsample(
                 filter_expr = filter_expr & pl.col(c).is_in(vals)
             else:
                 logger.warn(f"The value for key `{c}` is not a list. Skipped.")
-        subset = df.lazy().filter(filter_expr).collect()
+        sub = (
+            df.lazy().filter(filter_expr)
+            .collect()
+            .sample(n=count, with_replacement=True)
+        )
     else:
         raise TypeError("The `subgroup` argument must be either a Polars Expr or a dict[str, list]")
 
-    sub = subset.sample(n = count, with_replacement = True)
-    if include is None:
-        if exclude is None:
-            to_add_noise = sub.select(cs.by_dtype(pl.Float32, pl.Float64)).columns
-        else:
-            to_add_noise = sub.select(cs.by_dtype(pl.Float32, pl.Float64)& ~cs.by_name(exclude)).columns
-    else:
-        if exclude is None:
-            to_add_noise = include
-        else:
-            to_add_noise = (f for f in include if f not in exclude)
-
     rng = np.random.default_rng(seed)
     for c in to_add_noise:
-        new_c = sub[c].to_numpy() + (rng.random(size=len(sub)) * 2 * epsilon - epsilon)
-        sub = sub.replace_at_idx(sub.find_idx_by_name(c), pl.Series(c, new_c))
+        new_c = pl.Series(
+            c, sub[c].to_numpy() + (rng.random(size=(len(sub),)) * 2 * epsilon - epsilon)
+        ).fill_nan(None) # NaN occurs when we add null with a number. Leave it null.
+        sub = sub.replace_at_idx(sub.find_idx_by_name(c), new_c)
 
     if isinstance(df, pl.LazyFrame):
         return pl.concat([df, sub.lazy()])
