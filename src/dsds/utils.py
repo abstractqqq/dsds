@@ -1,5 +1,8 @@
 import polars as pl
-import numpy as np 
+import numpy as np
+from pathlib import Path
+from .type_alias import PolarsFrame
+from .blueprint import Blueprint  # noqa: F401
 from dataclasses import dataclass
 
 # --------------------- Other, miscellaneous helper functions ----------------------------------------------
@@ -18,12 +21,16 @@ class NumPyDataCube:
         t = pl.Series(self.target, self.y)
         return df.insert_at_idx(0, t)
 
-def get_numpy(df:pl.DataFrame, target:str, flatten:bool=True, low_memory:bool=True) -> NumPyDataCube:
+def get_numpy(
+    df:PolarsFrame
+    , target:str
+    , flatten:bool=True
+    , low_memory:bool=True
+) -> NumPyDataCube:
     '''
         Create NumPy feature matrix X and target y from dataframe and target. 
         
-        Note that this implementation will "consume df" column by column, thus saving memory used in the process.
-        If memory is not a problem, you can do directly df.select(feature).to_numpy(). 
+        Note that this implementation will "consume df" at the end.
 
         Arguments:
             df:
@@ -36,7 +43,8 @@ def get_numpy(df:pl.DataFrame, target:str, flatten:bool=True, low_memory:bool=Tr
     '''
     features:list[str] = df.columns 
     features.remove(target)
-    y = df.drop_in_place(target).to_numpy()
+    df_local = df.lazy().collect()
+    y = df_local.drop_in_place(target).to_numpy()
     if flatten:
         y = y.ravel()
     
@@ -44,15 +52,20 @@ def get_numpy(df:pl.DataFrame, target:str, flatten:bool=True, low_memory:bool=Tr
         columns = []
         for c in features:
             columns.append(
-                df.drop_in_place(c).to_numpy().reshape((-1,1))
+                df_local.drop_in_place(c).to_numpy().reshape((-1,1))
             )
         X = np.concatenate(columns, axis=1)
     else:
-        X = df[features].to_numpy()
+        X = df_local[features].to_numpy()
 
-    df = pl.DataFrame() # Reset to empty.
+    df = df.clear() # Reset to empty.
     return NumPyDataCube(X, y, features, target)
 
+def dump_blueprint(df:pl.LazyFrame, path:str|Path) -> pl.LazyFrame:
+    if isinstance(df, pl.LazyFrame):
+        df.blueprint.preserve(path)
+        return df
+    raise TypeError("Blueprints only work with LazyFrame.")
 
 # Turns zip9 into standard 5 digit zipcodes.
 def clean_zip_codes():
