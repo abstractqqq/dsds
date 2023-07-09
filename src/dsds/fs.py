@@ -237,7 +237,7 @@ def mutual_info_selector(
     selected = mi_scores.get_column("feature").to_list()
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
-    
+
     if is_lazy:
         return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
@@ -373,8 +373,6 @@ def f_score_selector(
         return df.blueprint.select(selected + complement)
     return df.select(selected + complement)
 
-#---- Below is MRMR
-
 def _mrmr_underlying_score(
     df:pl.DataFrame
     , target:str
@@ -421,22 +419,34 @@ def mrmr(
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
 ) -> list[str]:
-    '''Implements MRMR. Will add a few more strategies in the future. Likely only strategies for numerators
-        , aka relevance. Right now xgb, lgbm and rf strategies only work for classification problems.
+    '''
+    Implements MRMR. Will add a few more strategies in the future. Likely only strategies for numerators
+    , aka relevance. Right now xgb, lgbm and rf strategies only work for classification problems.
 
-        Currently this only supports classification.
+    Currently this only supports classification.
 
-        Arguments:
-            df:
-            target:
-            k:
-            cols: numerical columns
-            strategy: by default, f-score will be used.
-            params: if a RF/XGB strategy is selected, params is a dict of parameters for the model.
-            low_memory: 
+    Parameters
+    ----------
+    df
+        An eager Polars Dataframe
+    target
+        Target column
+    k
+        Top k features to keep
+    cols
+        Optional. A list of numerical columns. If not provided, all numerical columns will be used.
+    strategy
+        MRMR strategy. By default, `fscore` will be used.
+    params
+        Optional. If a model strategy is selected (`rf`, `xgb`, `lgbm`), params is a dict of 
+        parameters for the model.
+    low_memory
+        Whether to do some computation all at once, which uses more memory at once, or do some 
+        computation when needed, which uses less memory at any given time.
 
-        Returns:
-            pl.DataFrame of features and the corresponding ranks according to the mrmr_algo
+    Returns
+    -------
+        A list of top k features
     
     '''
     if isinstance(cols, list):
@@ -490,12 +500,11 @@ def mrmr(
                 if new_score > current_max:
                     current_max = new_score
                     argmax = i
-
         selected.append(nums[argmax])
         pbar.update(1)
 
     pbar.close()
-    print("Output is sorted in order of selection (relevance).")
+    print("Output is sorted in order of selection (max relevance min redundancy).")
     return selected
 
 def mrmr_selector(
@@ -513,12 +522,11 @@ def mrmr_selector(
     else:
         input_data:pl.DataFrame = df
 
-    num_cols = get_numeric_cols(input_data, exclude=[target])
+    nums = get_numeric_cols(input_data, exclude=[target])
     # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in input_data.columns if f not in num_cols]
-
+    complement = [f for f in input_data.columns if f not in nums]
     s = clean_strategy_str(strategy)
-    selected = mrmr(input_data, target, top_k, num_cols, s, params, low_memory)
+    selected = mrmr(input_data, target, top_k, nums, s, params, low_memory)
 
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")
@@ -537,10 +545,15 @@ def knock_out_mrmr(
     , params:Optional[dict[str,Any]] = None
 ) -> list[str]:
     '''
-        Essentially the same as vanilla MRMR. Instead of using sum(abs(corr)) to "weigh down" correlated 
-        variables, here we use a simpler knock out rule based on absolute correlation.
+    Essentially the same as vanilla MRMR. Instead of using sum(abs(corr)) to "weigh down" correlated 
+    variables, here we use a simpler knock out rule based on absolute correlation. We go down the list
+    according to importance, take top one, knock out all other features that are highly correlated with
+    it, take the next top feature that has not been knocked out, continue, until we pick enough features
+    or there is no feature left.
 
-        Inspired by the package Featurewiz and its creator.
+    Inspired by the package Featurewiz and its creator.
+
+
     
     '''
     if isinstance(num_cols, list):
@@ -559,8 +572,7 @@ def knock_out_mrmr(
     # Set up
     low_corr = np.abs(df[num_list].corr().to_numpy()) < corr_threshold
     surviving_indices = np.full(shape=len(num_list), fill_value=True) # an array of booleans
-    scores = list(enumerate(scores))
-    scores.sort(key=lambda x:x[1], reverse=True)
+    scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
     count = 0
     output_size = min(k, len(num_list))
@@ -580,7 +592,7 @@ def knock_out_mrmr(
         print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out "
               "rule eliminates most of them.")
 
-    print("Output is sorted in order of selection (relevance).")
+    print("Output is sorted in order of selection (max relevance min redundancy).")
     return selected
 
 def knock_out_mrmr_selector(

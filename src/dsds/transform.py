@@ -19,6 +19,7 @@ from .blueprint import( # Need this for Polars extension to work
     Blueprint
 )
 import logging
+import numpy as np
 import polars as pl
 from typing import Optional, Tuple
 from scipy.stats._morestats import (
@@ -28,12 +29,12 @@ from scipy.stats._morestats import (
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 
+# Rewrite all docstrings using Polars' format.
+
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
-# Well, it does say in project description that we need Python 3.10.
 
 logger = logging.getLogger(__name__)
-
 
 def impute(
     df:PolarsFrame
@@ -72,7 +73,7 @@ def impute(
     # Need to cast to list so that pickle can work with it
     # This is unfortunate because we will be looping over this list twice... Whatever...
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs)) 
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def scale(
@@ -81,7 +82,9 @@ def scale(
     , strategy:ScalingStrategy="normal"
     , const:float = 1.0
 ) -> PolarsFrame:
-    '''Scale given columns using the given strategy.
+    '''
+    Scale given columns using the given strategy. Will skip null values.
+
         Arguments:
             df: either a lazy or eager dataframe
             cols: list of columns to scale
@@ -116,7 +119,7 @@ def scale(
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
@@ -136,7 +139,7 @@ def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
         exprs = (pl.col(c).cast(pl.UInt8).fill_null(0) for c in bool_cols)
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def one_hot_encode(
@@ -176,6 +179,10 @@ def one_hot_encode(
         return df.blueprint.with_columns(exprs).blueprint.drop(str_cols)
     else:
         return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
+    
+# def bin(df:PolarsFrame):
+    
+#     df.get_column("c").cut()
 
 # def fixed_sized_encode(df:pl.DataFrame, num_cols:list[str], bin_size:int=50) -> TransformationResult:
 #     '''Given a continuous variable, take the smallest `bin_size` of them, and call them bin 1, take the next
@@ -272,8 +279,9 @@ def binary_encode(
     , cols:Optional[list[str]]=None
     , exclude:Optional[list[str]]=None
 ) -> PolarsFrame:
-    '''Encode the given columns as binary values. Only hands string binaries at this moment. Just a short-hand for 
-        one-hot-encoding for binary string columns.
+    '''
+    Encode the given columns as binary values. Only handles string binary at this moment. This is equivalent
+    to using one-hot-encoding on binary columns using drop_first=True.
 
         Arguments:
             df:
@@ -362,6 +370,7 @@ def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
 def ordinal_auto_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None
+    , descending:bool = False
     , exclude:Optional[list[str]]=None
 ) -> PolarsFrame:
     '''
@@ -374,7 +383,7 @@ def ordinal_auto_encode(
         Arguments:
             df:
             default:
-            ordinal_cols:
+            cols:
             exclude: the columns you wish to exclude in this transformation.
         
         Returns:
@@ -389,7 +398,7 @@ def ordinal_auto_encode(
         ordinal_list = get_string_cols(df, exclude=exclude)
 
     temp = df.lazy().groupby(1).agg(
-        pl.col(c).unique().sort() for c in ordinal_list
+        pl.col(c).unique().sort(descending=descending) for c in ordinal_list
     ).select(ordinal_list)
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]
@@ -498,6 +507,101 @@ def smooth_target_encode(
                 pl.col("to").alias(c)
             ).drop("to")
     return df
+
+def custom_binning(
+    df:PolarsFrame
+    , cols:list[str]
+    , cuts:list[float]
+) -> PolarsFrame:
+    '''
+    Bins according to the cuts provided.
+    '''
+
+    if isinstance(df, pl.LazyFrame):
+        exprs = [
+            pl.col(c).cut(cuts).cast(pl.Utf8) for c in cols
+        ]
+        return df.blueprint.with_columns(exprs)
+    else:
+        return df.with_columns(
+            pl.col(c).cut(cuts).cast(pl.Utf8) for c in cols
+        )
+
+def quantile_binning(
+    df:PolarsFrame
+    , cols:list[str]
+    , n_bins:int
+) -> PolarsFrame:
+    '''
+    Bin a continuous variable into categories, based on quantile. Null values will be its own category.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        A list of numeric columns. This has to be supplied by the user because it is not recommended
+        to bin all numerical variables
+    n_bins
+        The number of desired bins. If n_bins = 4, the quantile cuts will be [0.25,0.5,0.74], and 4 
+        categories will be created, which represent values ranging from (-inf, 0.25 quantile value],
+        (0.25 quantile value, 0.5 quantile value],...(0.75 quantile value, inf]
+    
+    Returns
+    -------
+        A lazy or eager frame with the columns binned.
+
+    Example
+    -------
+    >>> df = pl.DataFrame({
+    ...     "a":range(5)
+    ... })
+    >>> df
+    shape: (5, 1)
+    ┌─────┐
+    │ a   │
+    │ --- │
+    │ i64 │
+    ╞═════╡
+    │ 0   │
+    │ 1   │
+    │ 2   │
+    │ 3   │
+    │ 4   │
+    └─────┘
+    >>> quantile_binning(df, cols=["a"], n_bins=4)
+    shape: (5, 1)
+    ┌───────────┐
+    │ a         │
+    │ ---       │
+    │ str       │
+    ╞═══════════╡
+    │ (-inf, 1] │
+    │ (-inf, 1] │
+    │ (1, 2]    │
+    │ (2, 3]    │
+    │ (3, inf]  │
+    └───────────┘
+    '''
+    types = check_columns_types(df, cols)
+    if types != "numeric":
+        raise ValueError(f"Quantile binning can only be used on numeric columns, not {types} types.")
+    
+    qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
+    if isinstance(df, pl.LazyFrame):
+        cuts = df.select(cols).select(
+            pl.all().qcut(qcuts).unique().cast(pl.Utf8).str.extract(r"\((.*?),")
+            .cast(pl.Float64).sort().tail(len(qcuts))
+        ).collect()
+        # For some reasons a generator here doesn't work. Use list instead
+        exprs = [
+            pl.col(c).cut(cuts.drop_in_place(c).to_list()).cast(pl.Utf8) for c in cols
+        ]
+        return df.blueprint.with_columns(exprs)
+    else: # Eager frame
+        return df.with_columns(
+            pl.col(c).qcut(qcuts).cast(pl.Utf8) for c in cols 
+        )
 
 def woe_cat_encode(
     df:PolarsFrame
