@@ -62,6 +62,7 @@ def simple_upsample(
     , epsilon: float = 1e-2
     , include: Optional[list[str]] = None
     , exclude: Optional[list[str]] = None
+    , positive: bool = False
     , seed: int = 42
 ) -> PolarsFrame:
     '''
@@ -85,6 +86,8 @@ def simple_upsample(
         Columns to which we may add some small random noise. If provided, a random noise will be 
         added to only the columns. If not provided, all float-valued columns will be used. 
         If no float-valued columns exist, then no noise will be added.
+    positive
+        If true, then the interval for the random noise will be (0, epsilon)
     exclude
         Columns to which random noises should not be added
     seed
@@ -155,9 +158,12 @@ def simple_upsample(
 
     rng = np.random.default_rng(seed)
     for c in to_add_noise:
-        new_c = pl.Series(
-            c, sub[c].to_numpy() + (rng.random(size=(len(sub),)) * 2 * epsilon - epsilon)
-        ).fill_nan(None) # NaN occurs when we add null with a number. Leave it null.
+        if positive:
+            noise = rng.random(size=(len(sub),)) * epsilon
+        else:
+            noise = rng.random(size=(len(sub),)) * 2 * epsilon - epsilon
+        # NaN occurs when we add null with a number. Leave it null.
+        new_c = pl.Series(c, sub[c].to_numpy() + noise).fill_nan(None) 
         sub = sub.replace_at_idx(sub.find_idx_by_name(c), new_c)
 
     if isinstance(df, pl.LazyFrame):

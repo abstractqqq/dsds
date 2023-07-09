@@ -21,7 +21,7 @@ from .blueprint import( # Need this for Polars extension to work
 import logging
 import numpy as np
 import polars as pl
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from scipy.stats._morestats import (
     yeojohnson_normmax
     , boxcox_normmax
@@ -180,100 +180,6 @@ def one_hot_encode(
     else:
         return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
     
-# def bin(df:PolarsFrame):
-    
-#     df.get_column("c").cut()
-
-# def fixed_sized_encode(df:pl.DataFrame, num_cols:list[str], bin_size:int=50) -> TransformationResult:
-#     '''Given a continuous variable, take the smallest `bin_size` of them, and call them bin 1, take the next
-#     smallest `bin_size` of them and call them bin 2, etc...
-    
-#     '''
-#     pass
-
-
-# REWRITE THIS
-# def percentile_encode(df:pl.DataFrame
-#     , cols:list[str]=None
-#     , exclude:list[str]=None
-# ) -> FitTransform:
-#     '''Bin your continuous variable X into X_percentiles. This will create at most 100 + 1 bins, 
-#         where each percentile could potentially be a bin and null will be mapped to bin = 0. 
-#         Bin 1 means percentile 0 to 1. Generally, bin X groups the population from bin X-1 to 
-#         bin X into one bucket.
-
-#         I see some potential optimization opportunities here.
-
-#         Arguments:
-#             df:
-#             num_cols: 
-#             exclude:
-
-#         Returns:
-#             (A transformed dataframe, a mapping table (value to percentile))
-    
-#     '''
-
-#     # Percentile Binning
-
-#     num_list:list[str] = []
-#     exclude_list:list[str] = [] if exclude is None else exclude
-#     if isinstance(cols, list):
-#         types = check_columns_types(df, cols)
-#         if types != "numeric":
-#             raise ValueError(f"Percentile encoding can only be used on numeric columns, not {types} types.")
-#         num_list.extend(cols)
-#     else:
-#         num_list.extend(get_numeric_cols(df, exclude=exclude_list))
-
-#     exprs:list[pl.Expr] = []
-#     all_mappings = []
-#     for c in num_list:
-#         percentile = df.groupby(c).agg(pl.count().alias("cnt"))\
-#             .sort(c)\
-#             .with_columns(
-#                 ((pl.col("cnt").cumsum()*100)/len(df)).ceil().alias("percentile")
-#             ).groupby("percentile")\
-#             .agg(
-#                 pl.col(c).min().alias("min"),
-#                 pl.col(c).max().alias("max"),
-#                 pl.col("cnt").sum().alias("cnt"),
-#             ).sort("percentile").select(
-#                 pl.lit(c).alias("feature"),
-#                 pl.col("percentile").cast(pl.UInt8),
-#                 "min",
-#                 "max",
-#                 "cnt",
-#             )
-        
-#         first_row = percentile.select("percentile","min", "max").to_numpy()[0, :] # First row
-#         # Need to handle an extreme case when percentile looks like 
-#         # percentile   min   max
-#         #  p1         null  null
-#         #  p2          ...   ...
-#         # This happens when there are so many nulls in the column.
-#         if np.isnan(first_row[2]):
-#             # Discard the first row if this is the case. 
-#             percentile = percentile.slice(1, length = None)
-
-#         # Only work on non null values. Null will be mapped to default value anyway.
-#         temp_df = df.lazy().filter(pl.col(c).is_not_null()).sort(c).set_sorted(c)\
-#             .join_asof(other=percentile.lazy().set_sorted("max"), left_on=c, right_on="max", strategy="forward")\
-#             .select(c, "percentile")\
-#             .unique().collect()
-        
-#         real_mapping = dict(zip(temp_df[c], temp_df["percentile"]))
-#         # a representation of the mapping, needed for recreating this.
-#         repr_mapping = dict(zip(percentile["max"], percentile["percentile"]))
-#         all_mappings.append(repr_mapping)
-#         exprs.append(
-#             pl.col(c).map_dict(real_mapping, default=0).cast(pl.UInt8)
-#         )
-
-#     res = df.with_columns(exprs)
-#     encoder_rec = EncoderRecord(features=num_list, strategy=EncodingStrategy.PERCENTILE, mappings=all_mappings)
-#     return FitTransform(transformed=res, mapping=encoder_rec)
-
 def binary_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None
@@ -508,13 +414,111 @@ def smooth_target_encode(
             ).drop("to")
     return df
 
+def _when_then_replace(c:str, repl_map:dict):
+    expr = pl.col(c)
+    for code, repl in repl_map.items():
+        expr = pl.when(pl.col(c).eq(code)).then(repl).otherwise(expr)
+    
+    return expr.alias(c)
+
+def feature_mapping(
+    df:PolarsFrame
+    , mapping: dict[str, dict[Any, Any]] | list[pl.Expr] | pl.Expr
+) -> PolarsFrame:
+    '''
+    Maps specific values of a feature into values provided. This is a common task when the feature columns come with 
+    error codes.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    mapping
+        Either a dict like {"a": {999: None, 998: None, 997: None}, ...}, meaning that 999, 998 and 997 in column "a" 
+        should be replaced by null, or a list/a single Polars (when-then) expression(s) like the following,  
+        pl.when(pl.col("a") >= 997).then(None).otherwise(pl.col("a")).alias("a"), which will perform the same mapping 
+        as the dict example. Note that using Polars expression can tackle more complex replacement.
+
+    Returns
+    -------
+        Either a lazy or eager Polars dataframe with specific values of features replaced
+
+    Example
+    -------
+    >>> df = pl.DataFrame({
+    ...     "a": [1,2,3,998,999],
+    ...     "b": [999, 1,2,3,4]
+    ... })
+    >>> print(df)
+    shape: (5, 2)
+    ┌─────┬─────┐
+    │ a   ┆ b   │
+    │ --- ┆ --- │
+    │ i64 ┆ i64 │
+    ╞═════╪═════╡
+    │ 1   ┆ 999 │
+    │ 2   ┆ 1   │
+    │ 3   ┆ 2   │
+    │ 998 ┆ 3   │
+    │ 999 ┆ 4   │
+    └─────┴─────┘
+    >>> feature_mapping(df, mapping = {"a":{998:None,999:None}, "b":{999:None}})
+    shape: (5, 2)
+    ┌──────┬──────┐
+    │ a    ┆ b    │
+    │ ---  ┆ ---  │
+    │ i64  ┆ i64  │
+    ╞══════╪══════╡
+    │ 1    ┆ null │
+    │ 2    ┆ 1    │
+    │ 3    ┆ 2    │
+    │ null ┆ 3    │
+    │ null ┆ 4    │
+    └──────┴──────┘
+    >>> mapping = [pl.when(pl.col("a")>=998).then(None).otherwise(pl.col("a")).alias("a")
+    ...          , pl.when(pl.col("b")==999).then(None).otherwise(pl.col("b")).alias("b")]
+    >>> feature_mapping(df, mapping)
+    shape: (5, 2)
+    ┌──────┬──────┐
+    │ a    ┆ b    │
+    │ ---  ┆ ---  │
+    │ i64  ┆ i64  │
+    ╞══════╪══════╡
+    │ 1    ┆ null │
+    │ 2    ┆ 1    │
+    │ 3    ┆ 2    │
+    │ null ┆ 3    │
+    │ null ┆ 4    │
+    └──────┴──────┘
+    '''
+    if isinstance(mapping, dict):
+        exprs = []
+        for c, repl_map in mapping.items():
+            exprs.append(_when_then_replace(c, repl_map))
+    elif isinstance(mapping, list):
+        exprs = []
+        for f in mapping:
+            if isinstance(f, pl.Expr):
+                exprs.append(f)
+            else:
+                logger.warn(f"Found {f} is not a Polars expression. Ignored.")
+    elif isinstance(mapping, pl.Expr):
+        exprs = [mapping]
+    else:
+        raise TypeError("The argument `mapping` must be one of the following types: "
+                        "dict[str, dict[Any, Any]] | list[pl.Expr] | pl.Expr")
+    
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
 def custom_binning(
     df:PolarsFrame
     , cols:list[str]
     , cuts:list[float]
 ) -> PolarsFrame:
     '''
-    Bins according to the cuts provided.
+    Bins according to the cuts provided. The same cuts will be applied to all columns in cols.
     '''
 
     if isinstance(df, pl.LazyFrame):
@@ -533,7 +537,9 @@ def quantile_binning(
     , n_bins:int
 ) -> PolarsFrame:
     '''
-    Bin a continuous variable into categories, based on quantile. Null values will be its own category.
+    Bin a continuous variable into categories, based on quantile. Null values will be its own category. The same binning
+    rule will be applied to all columns in cols. If you want different n_bins for different columns, chain another 
+    quantile_binning with different cols and n_bins.
 
     Parameters
     ----------
