@@ -171,7 +171,7 @@ def one_hot_encode(
             if len(u) > 1:
                 exprs.extend(
                     pl.when(pl.col(t.name) == u[i]).then(one).otherwise(zero).alias(t.name + separator + u[i])
-                    for i in range(start_index, len(u)) 
+                    for i in range(start_index, len(u))
                 )
             else:
                 logger.info(f"During one-hot-encoding, the column {t.name} is found to have 1 unique value. Dropped.")
@@ -210,6 +210,66 @@ def binary_encode(
         binary_list = cols
     
     return one_hot_encode(df, cols=binary_list, drop_first=True)
+
+def multicat_one_hot_encode(
+    df:PolarsFrame
+    , cols: list[str]
+    , delimiter: str
+    , drop_first: bool = False
+):
+    '''
+    Example
+    -------
+    >>> df = pl.DataFrame({
+    ... "text1":["abc|ggg", "abc|sss", "ccc|abc"],
+    ... "text2":["aaa|bbb", "ccc|aaa", "bbb|ccc"]
+    ... })
+    >>> df
+    shape: (3, 2)
+    ┌─────────┬─────────┐
+    │ text1   ┆ text2   │
+    │ ---     ┆ ---     │
+    │ str     ┆ str     │
+    ╞═════════╪═════════╡
+    │ abc|ggg ┆ aaa|bbb │
+    │ abc|sss ┆ ccc|aaa │
+    │ ccc|abc ┆ bbb|ccc │
+    └─────────┴─────────┘
+    >>> multicat_one_hot_encode(df, cols=["text1", "text2"], delimiter="|")
+    shape: (3, 7)
+    ┌───────────┬───────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
+    │ text1|abc ┆ text1|ccc ┆ text1|ggg ┆ text1|sss ┆ text2|aaa ┆ text2|bbb ┆ text2|ccc │
+    │ ---       ┆ ---       ┆ ---       ┆ ---       ┆ ---       ┆ ---       ┆ ---       │
+    │ u8        ┆ u8        ┆ u8        ┆ u8        ┆ u8        ┆ u8        ┆ u8        │
+    ╞═══════════╪═══════════╪═══════════╪═══════════╪═══════════╪═══════════╪═══════════╡
+    │ 1         ┆ 0         ┆ 1         ┆ 0         ┆ 1         ┆ 1         ┆ 0         │
+    │ 1         ┆ 0         ┆ 0         ┆ 1         ┆ 1         ┆ 0         ┆ 1         │
+    │ 1         ┆ 1         ┆ 0         ┆ 0         ┆ 0         ┆ 1         ┆ 1         │
+    └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
+
+
+    '''
+    
+    temp = df.lazy().select(cols).groupby(1).agg(
+        pl.all().str.split(delimiter).explode().unique().sort()
+    ).select(cols) 
+    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
+    zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
+    exprs = []
+    start_index = int(drop_first)
+    for c in temp.collect().get_columns():
+        u = c[0]
+        if len(u) > 1:
+            exprs.extend(
+                pl.when(pl.col(c.name).str.contains(u[i])).then(one).otherwise(zero).alias(c.name + delimiter + u[i])
+                for i in range(start_index, len(u))
+            )
+        else:
+            logger.info(f"The multicategorical column {c.name} seems to have only 1 unique value. Dropped.")
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs).blueprint.drop(cols)
+    return df.with_columns(exprs).drop(cols)
 
 def force_binary(
     df:PolarsFrame
