@@ -46,7 +46,7 @@ def impute(
 
         Arguments:
             df: either a eager/lazy Polars dataframe
-            cols: cols to impute
+            cols: cols to impute. If none, use all columns.
             strategy: one of 'mean', 'avg', 'average', 'median', 'const', 'constant', 'mode', 'most_frequent'. Some are 
             just alternative names for the same strategy.
             const: only uses this value if strategy = const
@@ -55,6 +55,7 @@ def impute(
             the imputed lazy / eager dataframe.
     '''
     s = clean_strategy_str(strategy)
+
     # Given Strategy, define expressions
     if s == "median":
         all_medians = df.lazy().select(cols).median().collect().row(0)
@@ -73,7 +74,7 @@ def impute(
     # Need to cast to list so that pickle can work with it
     # This is unfortunate because we will be looping over this list twice... Whatever...
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
+        return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
 
 def scale(
@@ -119,7 +120,7 @@ def scale(
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
+        return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
 
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:

@@ -35,25 +35,31 @@ def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame
 def deduplicate(
     df: PolarsFrame
     , by: list[str]
-    , keep: UniqueKeepStrategy = "first"
+    , keep: UniqueKeepStrategy = "any"
+    , persist: bool = False
 ) -> PolarsFrame:
     '''
-    A wrapper function for Polar's unique method.
+    A wrapper function for Polar's unique method. It deduplicates the dataframe by the columns in `by`.
 
     Parameters
     ----------
     df
         Either an eager or lazy dataframe
     by
-        The list of columns to dedplicate by
+        The list of columns to deduplicate by
     keep
-        One of 'first', 'last', 'any', 'none'
+        One of 'first', 'last', 'any', 'none'. Default is 'any', which is somewhat random.
+    persist
+        If true and when used in pipeline, this step will be remembered.
 
     Returns
     -------
         A deduplicated eager/lazy frame.
     '''
-    return df.unique(subset=by, keep = keep)
+    output = df.unique(subset=by, keep = keep)
+    if isinstance(df, pl.LazyFrame) and persist:
+        return output.blueprint.apply_func(df, deduplicate, kwargs = {"by":by,"keep":keep})
+    return output
 
 def simple_upsample(
     df: PolarsFrame
@@ -64,6 +70,7 @@ def simple_upsample(
     , exclude: Optional[list[str]] = None
     , positive: bool = False
     , seed: int = 42
+    , persist: bool = False
 ) -> PolarsFrame:
     '''
     For records in the subgroup, we (1) sample with replacement for `count` many records
@@ -92,6 +99,8 @@ def simple_upsample(
         Columns to which random noises should not be added
     seed
         The random seed
+    persist
+        If true and when used in pipeline, this step will be remembered.
 
     Returns
     -------
@@ -167,7 +176,13 @@ def simple_upsample(
         sub = sub.replace_at_idx(sub.find_idx_by_name(c), new_c)
 
     if isinstance(df, pl.LazyFrame):
-        return pl.concat([df, sub.lazy()])
+        output = pl.concat([df, sub.lazy()])
+        if persist:
+            output = output.blueprint.apply_func(df, simple_upsample, kwargs = {"subgroup":subgroup,"count":count
+                                                                                ,"epsilon":epsilon,"include":include
+                                                                                ,"exclude":exclude,"positive":positive
+                                                                                , "seed":seed})
+        return output
     return pl.concat([df, sub])
 
 def stratified_downsample(
@@ -175,6 +190,7 @@ def stratified_downsample(
     , by:list[str]
     , keep:int | float
     , min_keep:int = 1
+    , persist: bool = False
 ) -> PolarsFrame:
     '''
     Stratified downsampling.
@@ -193,6 +209,8 @@ def stratified_downsample(
         keep = 0.3, then we are keeping 0.6 records, which means we are removing the entire
         subpopulation. Setting min_keep will make sure we keep at least this many of each 
         subpopulation provided that it has this many records.
+    persist
+        If true and when used in pipeline, this step will be remembered.
 
     Returns
     -------
@@ -209,9 +227,12 @@ def stratified_downsample(
     else:
         raise TypeError("The argument `keep` must either be a Python int or float.")
 
-    return df.filter(
+    output = df.filter(
         pl.arange(0, pl.count(), dtype=pl.UInt64).shuffle().over(by) < rhs
     )
+    if isinstance(df, pl.LazyFrame) and persist:
+        return output.blueprint.apply_func(df, stratified_downsample, kwargs={"by":by, "keep":keep, "min_keep":min_keep})
+    return output
 
 def train_test_split(
     df: PolarsFrame

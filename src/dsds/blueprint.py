@@ -1,6 +1,6 @@
 import pickle
 import polars as pl
-# import importlib
+import importlib
 from pathlib import Path
 from polars import LazyFrame
 from dataclasses import dataclass
@@ -8,6 +8,9 @@ from typing import (
     Any
     , Iterable
     , Optional
+    , Callable
+    , Concatenate
+    , ParamSpec
 )
 from polars.type_aliases import IntoExpr
 from .type_alias import (
@@ -16,6 +19,7 @@ from .type_alias import (
     # , PipeFunction
 )
 
+P = ParamSpec("P")
 
 @dataclass
 class MapDict:
@@ -27,8 +31,11 @@ class MapDict:
 @dataclass
 class Step:
     action:ActionType
-    associated_data: Iterable[IntoExpr] | MapDict | list[str]
-    # First is a with_column, second is a string encoder, third is a drop/select/apply_func
+    associated_data: Iterable[IntoExpr] | MapDict | list[str] | dict[str, Any]
+    # First is everything that can be done with with_columns
+    # Second is a 1-to-1 encoder
+    # Third is a drop/select
+    # Fourth is apply_func
 
 
 @pl.api.register_lazyframe_namespace("blueprint")
@@ -56,50 +63,60 @@ class Blueprint:
     # carried out using a join logic to avoid the use of Python UDF.
     def map_dict(self, left_col:str, ref:dict, right_col:str, default:Optional[Any]) -> LazyFrame:
         map_dict = MapDict(left_col = left_col, ref = ref, right_col = right_col, default = default)
-        self.steps.append(
+        output = self._map_dict(self._ldf, map_dict)
+        output.blueprint.steps = self.steps.copy() 
+        output.blueprint.steps.append(
             Step(action = "map_dict", associated_data = map_dict)
         )
-        output = self._map_dict(self._ldf, map_dict)
-        output.blueprint.steps = self.steps # Change "ownership" of this list[Steps] to output.blueprint
-        self.steps = [] # Give up self.steps's ownership of the list[Steps] by setting it to an empty list.
         return output
-
+    
+    # Shallow copy should work
+    # Just make sure exprs are not lazy structures like generators
+    
     # Transformations are just with_columns(exprs)
     def with_columns(self, exprs:Iterable[IntoExpr]) -> LazyFrame:
-        self.steps.append(
-            Step(action = "with_column", associated_data = list(exprs))
-        )
         output = self._ldf.with_columns(exprs)
-        output.blueprint.steps = self.steps # Change "ownership" of this list[Steps] to output.blueprint
-        self.steps = [] # Give up self.steps's ownership of the list[Steps] by setting it to an empty list.
+        output.blueprint.steps = self.steps.copy() # Shallow copy should work
+        output.blueprint.steps.append(
+            Step(action = "with_column", associated_data = exprs)
+        )
         return output
+    
     
     # Transformations are just select, used mostly in selector functions
     def select(self, to_select:list[str]) -> LazyFrame:
-        self.steps.append(
+        output = self._ldf.select(to_select)
+        output.blueprint.steps = self.steps.copy() 
+        output.blueprint.steps.append(
             Step(action = "select", associated_data = to_select)
         )
-        output = self._ldf.select(to_select)
-        output.blueprint.steps = self.steps # Change "ownership" of this list[Steps] to output.blueprint
-        self.steps = [] # Give up self.steps's ownership of the list[Steps] by setting it to an empty list.
         return output
     
     # Transformations that drops, used mostly in removal functions
     def drop(self, drop_cols:list[str]) -> LazyFrame:
-        self.steps.append(
+        output = self._ldf.drop(drop_cols)
+        output.blueprint.steps = self.steps.copy() 
+        output.blueprint.steps.append(
             Step(action = "drop", associated_data = drop_cols)
         )
-        output = self._ldf.drop(drop_cols)
-        output.blueprint.steps = self.steps # Change "ownership" of this list[Steps] to output.blueprint
-        self.steps = []  # Give up self.steps's ownership of the list[Steps] by setting it to an empty list.
         return output
     
-    # # Functional steps are steps like upsample/downsample, which can be persisted in pipeline, but 
-    # # may not be repeatable.
-    # def add_functional_step(self, func:PipeFunction):
-    #     self.steps.append(
-    #         Step(action="apply_func", associated_data=[func.__module__, func.__name__])
-    #     )
+    # This doesn't work with the pipeline right now because it clears all steps before this.
+    def apply_func(self
+        , df:LazyFrame # The input to the function that needs to be persisted.
+        , func:Callable[Concatenate[LazyFrame, P], LazyFrame]
+        , kwargs:dict[str, Any]
+    ) -> LazyFrame:
+        # df: The input lazyframe to the function that needs to be persisted. We need this because:
+        # When running the function, the reference to df might be changed, therefore losing the steps
+
+        # When this is called, the actual function should be already applied.
+        output = self._ldf # .lazy()
+        output.blueprint.steps = df.blueprint.steps.copy() 
+        output.blueprint.steps.append(
+            Step(action="apply_func", associated_data={"module":func.__module__, "name":func.__name__, "kwargs":kwargs})
+        )
+        return output
         
     def preserve(self, path:str|Path):
         f = open(path, "wb")
@@ -116,5 +133,8 @@ class Blueprint:
                 df = self._map_dict(df, s.associated_data)
             elif s.action == "select":
                 df = df.select(s.associated_data)
+            elif s.action == "apply_func":
+                func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
+                df = df.pipe(func, **s.associated_data["kwargs"])
             
         return df

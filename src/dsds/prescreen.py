@@ -644,7 +644,7 @@ def suggest_dist(
     , threshold:float = 0.05
     , dist: CommonContinuousDist = "norm"
 ) -> list[str]:
-    '''Suggests which columns follow the given distribution. This takes the columns which the null hypothesis
+    '''Suggests which columns follow the given distribution. This returns the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
     return dist_test(df, dist, target=target).filter(pl.col("p-value") > threshold)\
