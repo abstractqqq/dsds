@@ -143,6 +143,24 @@ def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
+def missing_indicator(
+    df: PolarsFrame
+    , cols: Optional[list[str]]
+    , suffix: str = ":missing_ind"
+) -> PolarsFrame:
+    if cols is None:
+        to_add = df.columns
+    else:
+        to_add = cols
+    
+    one = pl.lit(1, dtype=pl.UInt8)
+    zero = pl.lit(0, dtype=pl.UInt8)
+    exprs = (pl.when(pl.col(c).is_null()).then(one).otherwise(zero).alias(c+suffix) for c in to_add)
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(list(exprs))
+    return df.with_columns(exprs)
+
 def one_hot_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None

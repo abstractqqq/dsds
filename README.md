@@ -69,9 +69,13 @@ Note: scikit-learn, lightgbm, xgboost are needed for full functionalities.
 # Why DSDS?
 
 (1) Fast and furious
+
 (2) Simple, single-purpose, clean, optimized and fully typed functions
+
 (3) Easy to extend
+
 (4) Supports Polars LazyFrame, and therefore query optimizations in pipeline.
+
 (5) No boilerplate
 
 # Why the name DSDS?
