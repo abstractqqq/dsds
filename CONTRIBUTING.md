@@ -54,12 +54,12 @@ The major focus is in:
 4. Performance improvement without sacrifing user experience.
 
 There are some new areas that my learning leads me to:
-1. Sampling strategies
+1. Sampling strategies. (Basic ones are done)
 2. Splitting strategies.
 3. Writing useful model evaluation metrics from scratch.
 
 There are some abandoned effort due to scope and limited time:
-1. EDA with regard to text data.
+1. EDA with regard to text data. This by itself can be a huge module! Polars has great text support.
 
 There are some interesting ideas:
 1. Add a trading/time series module. Polars make technical indicators easy and fast to compute!!!
