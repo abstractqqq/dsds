@@ -29,9 +29,12 @@ from typing import Any, Optional, Tuple
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 from tqdm import tqdm
 import math
 from itertools import combinations
+
+logger = logging.getLogger(__name__)
 
 def _conditional_entropy(
     df:pl.DataFrame
@@ -187,8 +190,14 @@ def mutual_info(
 
     estimates = []
     psi_n_and_k = psi(n) + psi(n_neighbors)
-    for col in tqdm(conti_cols, desc = "Mutual Info"):
-        c = df.get_column(col).cast(pl.Float64).to_numpy().reshape(-1,1)
+    pbar = tqdm(total = len(conti_cols), desc = "Mutual Info")
+    for col in df.select(conti_cols).get_columns():
+        if col.null_count() > 0:
+            logger.warn(f"Found column {col.name} has null values. It is filled with the mean of the column. "
+                        "It is highly recommended that you impute the column beforehand.")
+            c = col.fill_null(col.mean()).cast(pl.Float64).to_numpy().reshape(-1,1)
+        else:
+            c = col.cast(pl.Float64).to_numpy().reshape(-1,1)
         # Add random noise here because if inpute data is too big, then adding
         # a random matrix of the same size will require a lot of memory upfront.
         c = c + (1e-10 * np.mean(c) * rng.standard_normal(size=c.shape)) 
@@ -209,7 +218,9 @@ def mutual_info(
         estimates.append(
             max(0, psi_n_and_k - np.mean(psi(label_counts) + psi(m_all)))
         ) # smallest is 0
+        pbar.update(1)
 
+    pbar.close()
     return pl.from_records((conti_cols, estimates), schema=["feature", "estimated_mi"])
 
 # Selectors should always return target
@@ -652,7 +663,6 @@ def woe_iv_cat(
         if not check_binary_target(df, target):
             raise ValueError("Target is not binary or not properly encoded.")
 
-    # No tqdm then..
     results = (
         df.lazy().groupby(s).agg(
             ev = pl.col(target).sum()

@@ -44,6 +44,29 @@ class Blueprint:
         self._ldf = ldf
         self.steps:list[Step] = []
 
+    def __str__(self) -> str:
+        output = ""
+        for k,s in enumerate(self.steps):
+            output += f"Step {k} | Action: {s.action}\n"
+            if s.action == "with_columns":
+                output += "Details: \n"
+                for i,expr in enumerate(s.associated_data):
+                    output += f"({i+1}) {expr}\n"
+            elif s.action == "apply_func":
+                d:dict = s.associated_data
+                output += f"Function Module: {d['module']}, Function Name: {d['name']}\n"
+                output += "Parameters:\n"
+                for k,v in d["kwargs"].items():
+                    output += f"{k} = {v},\n"
+            else:
+                output += str(s.associated_data)
+
+            output += "\n\n"
+        return output
+    
+    def _ipython_display_(self):
+        print(self)
+
     @staticmethod
     def _map_dict(df:PolarsFrame, map_dict:MapDict) -> PolarsFrame:
         temp = pl.from_dict(map_dict.ref) # Always an eager read
@@ -78,7 +101,7 @@ class Blueprint:
         output = self._ldf.with_columns(exprs)
         output.blueprint.steps = self.steps.copy() # Shallow copy should work
         output.blueprint.steps.append(
-            Step(action = "with_column", associated_data = exprs)
+            Step(action = "with_columns", associated_data = exprs)
         )
         return output
     
@@ -127,7 +150,7 @@ class Blueprint:
         for s in self.steps:
             if s.action == "drop":
                 df = df.drop(s.associated_data)
-            elif s.action == "with_column":
+            elif s.action == "with_columns":
                 df = df.with_columns(s.associated_data)
             elif s.action == "map_dict":
                 df = self._map_dict(df, s.associated_data)

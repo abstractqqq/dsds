@@ -145,14 +145,14 @@ def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
 
 def missing_indicator(
     df: PolarsFrame
-    , cols: Optional[list[str]]
-    , suffix: str = ":missing_ind"
+    , cols: Optional[list[str]] = None
+    , suffix: str = "::missing"
 ) -> PolarsFrame:
+    
     if cols is None:
         to_add = df.columns
     else:
         to_add = cols
-    
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
     exprs = (pl.when(pl.col(c).is_null()).then(one).otherwise(zero).alias(c+suffix) for c in to_add)
@@ -235,7 +235,7 @@ def multicat_one_hot_encode(
     , cols: list[str]
     , delimiter: str
     , drop_first: bool = False
-):
+) -> PolarsFrame:
     '''
     Example
     -------
@@ -265,10 +265,7 @@ def multicat_one_hot_encode(
     │ 1         ┆ 0         ┆ 0         ┆ 1         ┆ 1         ┆ 0         ┆ 1         │
     │ 1         ┆ 1         ┆ 0         ┆ 0         ┆ 0         ┆ 1         ┆ 1         │
     └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
-
-
     '''
-    
     temp = df.lazy().select(cols).groupby(1).agg(
         pl.all().str.split(delimiter).explode().unique().sort()
     ).select(cols) 
@@ -293,7 +290,7 @@ def multicat_one_hot_encode(
 def force_binary(
     df:PolarsFrame
     , cols:Optional[list[str]]=None
-):
+) -> PolarsFrame:
     '''
     Force every binary column, no matter what data type, to be turned into 0s and 1s by the order of the elements. If a 
     column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
@@ -301,7 +298,7 @@ def force_binary(
     if cols is None:
         binary_list = get_unique_count(df)\
             .filter(pl.col("n_unique") == 2)\
-            .get_column("column").to_list()
+            .get_column("column")
     else:
         binary_list = cols
 
@@ -787,7 +784,7 @@ def power_transform(
 
     if len(exclude_columns_w_nulls) > 0:
         logger.info("The following columns will not be processed by power_transform because they contain missing "
-                    f"values. Please impute them.\n{exclude_columns_w_nulls}")
+                    f"values. Please impute them:\n{exclude_columns_w_nulls}")
         
     non_null_list = [c for c in cols if c not in exclude_columns_w_nulls]
     pbar = tqdm(non_null_list, desc = "Inferring best paramters")

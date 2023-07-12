@@ -17,7 +17,7 @@ POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date, pl.Time
 
 PolarsFrame:TypeAlias = pl.DataFrame | pl.LazyFrame
 PipeFunction = Callable[Concatenate[PolarsFrame, P], PolarsFrame]
-ActionType = Literal["with_column", "map_dict", "drop", "select", "apply_func"]
+ActionType = Literal["with_columns", "map_dict", "drop", "select", "apply_func"]
 MRMRStrategy = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf", "random_forest", "mis"
                        , "mutual_info_score", "lgbm", "lightgbm"]
 ScalingStrategy = Literal["normal", "standard", "normalize", "min_max", "const", "constant"]
