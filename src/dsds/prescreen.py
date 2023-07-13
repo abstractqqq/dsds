@@ -57,8 +57,52 @@ def get_bool_cols(df:PolarsFrame) -> list[str]:
 def get_cols_regex(df:PolarsFrame, pattern:str) -> list[str]:
     return df.select(cs.matches(pattern=pattern)).columns
 
-def lowercase_columns(df:PolarsFrame) -> PolarsFrame:
-    return df.rename({c: c.lower() for c in df.columns})
+def lowercase_columns(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
+    '''
+    A convenience function that lowercases all column names. It can be used and persisted in pipelines.
+    '''
+    
+    output = df.rename({c: c.lower() for c in df.columns})
+    if isinstance(df, pl.LazyFrame) and persist:
+        return output.blueprint.apply_func(df, lowercase_columns, kwargs = {})
+    return output
+
+def drop_nulls(
+    df:PolarsFrame
+    , subset:Optional[list[str]] = None
+    , persist:bool=False
+) -> PolarsFrame:
+    '''
+    A wrapper function for Polar's drop_nulls so that it can be used and persisted in pipelines.
+    '''
+    if subset is None:
+        by = df.columns
+    else:
+        by = subset
+
+    if isinstance(df, pl.LazyFrame):
+        cond = pl.lit(True)
+        for c in by:
+            cond = cond & pl.col(c).is_not_null()
+        
+        if persist:
+            return df.blueprint.filter(cond)
+        return df.filter(cond)
+    else:
+        return df.drop_nulls(subset=by)
+
+def filter(
+    df:PolarsFrame
+    , condition: pl.Expr
+    , persist: bool = False
+) -> PolarsFrame:
+    ''' 
+    A wrapper function for Polars's filter so that it can be used and persisted in pipelines.
+    '''
+    if isinstance(df, pl.LazyFrame):
+        if persist:
+            return df.blueprint.filter(condition)
+    return df.filter(condition)
 
 def check_binary_target(df:PolarsFrame, target:str) -> bool:
     target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)

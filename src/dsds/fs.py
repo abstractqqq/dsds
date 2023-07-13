@@ -36,53 +36,12 @@ from itertools import combinations
 
 logger = logging.getLogger(__name__)
 
-def _conditional_entropy(
-    df:pl.DataFrame
-    , target:str
-    , predictive:str
-) -> Tuple[str, float]:
-
-    cond_entropy = df.groupby((target, predictive)).agg(
-        pl.count()
-    ).with_columns(
-        (pl.col("count").sum().over(predictive) / len(df)).alias("prob(predictive)"),
-        (pl.col("count") / pl.col("count").sum()).alias("prob(target,predictive)")
-    ).select(
-        (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() 
-           * pl.col("prob(target,predictive)")).sum()) # This is the conditional entropy.
-    ).row(0)[0]
-
-    return (predictive, cond_entropy)
-
-# !!!NEED REVIEW FOR CORRECTNESS
 def discrete_ig(
     df:pl.DataFrame
     , target:str
     , cols:Optional[list[str]] = None
-    , n_threads:int = CPU_COUNT
 ) -> pl.DataFrame:
-    '''The entropy here is "discrete entropy".
 
-        Computes the information gain: Entropy(target) - Conditional_Entropy(target|c), where c is a column in 
-        discrete_cols. For more information, please take a look at https://en.wikipedia.org/wiki/Entropy_(information_theory)
-
-        Information gain defined in this way suffers from high cardinality (high uniqueness), and therefore a weighted 
-        information gain is provided, weighted by (1 - unique_pct), where unique_pct represents the percentage of unique
-         values in feature.
-
-        Currently this only works for discrete columns. For continuous features vs discrete target, use mutual_info.
-
-        Arguments:
-            df: Eager frame only.
-            target:
-            cols: list of discrete columns. If not provided, they will be inferred.
-            top_k: must be >= 0. If <= 0, the entire DataFrame will be returned.
-            n_threads: 4, 8 ,16 will not make any real difference. But there is a difference between 0 and 4 threads. 
-            
-        Returns:
-            a poalrs dataframe with information gain computed for each categorical column. 
-    '''
-    output = []
     if isinstance(cols, list):
         discretes = cols
     else: # If discrete_cols is not passed, infer it
@@ -98,22 +57,29 @@ def discrete_ig(
         (pl.col("n_unique") / len(df)).alias("unique_pct")
     ).rename({"column":"feature"})
 
-    with ThreadPoolExecutor(max_workers=n_threads) as ex: # 10% speed gain ? Need to retest this..
-        pbar = tqdm(total=len(discretes), desc = "discrete_ig")
-        for f in as_completed(ex.submit(_conditional_entropy, df, target, pred) for pred in discretes):
-            output.append(f.result())
-            pbar.update(1)
-        pbar.close()
+    conditional_entropy = (
+        df.lazy().groupby(target, pred).agg(
+            pl.count()
+        ).with_columns(
+            (pl.col("count").sum().over(pred) / len(df)).alias("prob(predictive)"),
+            (pl.col("count") / pl.col("count").sum()).alias("prob(target,predictive)")
+        ).select(
+            pl.lit(pred, dtype=pl.Utf8).alias("feature"),
+            (-((pl.col("prob(target,predictive)")/pl.col("prob(predictive)")).log() 
+            * pl.col("prob(target,predictive)")).sum()).alias("conditional_entropy") 
+        )
+        for pred in discretes
+    )
 
-    return pl.from_records(output, schema=["feature", "conditional_entropy"])\
+    return pl.concat(conditional_entropy)\
         .with_columns(
             target_entropy = pl.lit(target_entropy),
-            information_gain = pl.lit(target_entropy) - pl.col("conditional_entropy")
+            information_gain = pl.max(pl.lit(target_entropy) - pl.col("conditional_entropy"), 0)
         ).join(unique_count, on="feature")\
         .select("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain")\
         .with_columns(
             weighted_information_gain = (1 - pl.col("unique_pct")) * pl.col("information_gain")
-        )
+        ).collect()
 
 discrete_mi = discrete_ig
 

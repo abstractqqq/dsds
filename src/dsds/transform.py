@@ -492,8 +492,8 @@ def smooth_target_encode(
 
 def _when_then_replace(c:str, repl_map:dict):
     expr = pl.col(c)
-    for code, repl in repl_map.items():
-        expr = pl.when(pl.col(c).eq(code)).then(repl).otherwise(expr)
+    for og, repl in repl_map.items():
+        expr = pl.when(pl.col(c).eq(og)).then(repl).otherwise(expr)
     
     return expr.alias(c)
 
@@ -596,7 +596,6 @@ def custom_binning(
     '''
     Bins according to the cuts provided. The same cuts will be applied to all columns in cols.
     '''
-
     if isinstance(df, pl.LazyFrame):
         exprs = [
             pl.col(c).cut(cuts).cast(pl.Utf8) for c in cols
@@ -675,7 +674,6 @@ def quantile_binning(
             pl.all().qcut(qcuts).unique().cast(pl.Utf8).str.extract(r"\((.*?),")
             .cast(pl.Float64).sort().tail(len(qcuts))
         ).collect()
-        # For some reasons a generator here doesn't work. Use list instead
         exprs = [
             pl.col(c).cut(cuts.drop_in_place(c).to_list()).cast(pl.Utf8) for c in cols
         ]

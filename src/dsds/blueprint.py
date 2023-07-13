@@ -31,11 +31,12 @@ class MapDict:
 @dataclass
 class Step:
     action:ActionType
-    associated_data: Iterable[IntoExpr] | MapDict | list[str] | dict[str, Any]
+    associated_data: Iterable[IntoExpr] | MapDict | list[str] | dict[str, Any] | pl.Expr
     # First is everything that can be done with with_columns
     # Second is a 1-to-1 encoder
     # Third is a drop/select
     # Fourth is apply_func
+    # Fifth is a filter statement
 
 
 @pl.api.register_lazyframe_namespace("blueprint")
@@ -58,6 +59,8 @@ class Blueprint:
                 output += "Parameters:\n"
                 for k,v in d["kwargs"].items():
                     output += f"{k} = {v},\n"
+            elif s.action == "filter":
+                output += f"By condition: {s.associated_data}\n"
             else:
                 output += str(s.associated_data)
 
@@ -105,6 +108,13 @@ class Blueprint:
         )
         return output
     
+    def filter(self, expr:pl.Expr) -> LazyFrame:
+        output = self._ldf.filter(expr)
+        output.blueprint.steps = self.steps.copy() # Shallow copy should work
+        output.blueprint.steps.append(
+            Step(action = "filter", associated_data = expr)
+        )
+        return output
     
     # Transformations are just select, used mostly in selector functions
     def select(self, to_select:list[str]) -> LazyFrame:
@@ -156,6 +166,8 @@ class Blueprint:
                 df = self._map_dict(df, s.associated_data)
             elif s.action == "select":
                 df = df.select(s.associated_data)
+            elif s.action == "filter":
+                df = df.filter(s.associated_data)
             elif s.action == "apply_func":
                 func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
                 df = df.pipe(func, **s.associated_data["kwargs"])
