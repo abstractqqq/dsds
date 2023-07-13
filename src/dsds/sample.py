@@ -8,7 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame:
+def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42, persist:bool=False) -> pl.LazyFrame:
     '''
     Random sample on a lazy dataframe.
     
@@ -20,6 +20,8 @@ def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame
         A number > 0 and < 1
     seed
         The random seed
+    persist
+        If true, this step will be kept in the blueprint
 
     Returns
     -------
@@ -28,13 +30,17 @@ def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42) -> pl.LazyFrame
     if sample_frac <= 0 or sample_frac >= 1:
         raise ValueError("Sample fraction must be > 0 and < 1.")
 
-    return df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
+    output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
         .filter(pl.col("row_nr") < pl.col("row_nr").max() * sample_frac)\
         .select(df.columns)
+    
+    if persist:
+        output = output.blueprint.apply_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac, "seed":seed})
+    return output
 
 def deduplicate(
     df: PolarsFrame
-    , by: list[str]
+    , subset: list[str]
     , keep: UniqueKeepStrategy = "any"
     , persist: bool = False
 ) -> PolarsFrame:
@@ -50,15 +56,15 @@ def deduplicate(
     keep
         One of 'first', 'last', 'any', 'none'. Default is 'any', which is somewhat random.
     persist
-        If true and when used in pipeline, this step will be remembered.
+        If true, this step will be kept in the blueprint
 
     Returns
     -------
         A deduplicated eager/lazy frame.
     '''
-    output = df.unique(subset=by, keep = keep)
+    output = df.unique(subset=subset, keep = keep)
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.apply_func(df, deduplicate, kwargs = {"by":by,"keep":keep})
+        return output.blueprint.apply_func(df, deduplicate, kwargs = {"subset":subset,"keep":keep})
     return output
 
 def simple_upsample(
@@ -84,7 +90,7 @@ def simple_upsample(
     subgroup
         Either a dict that looks like {"c1":[v1, v2], "c2":[v3]}, which will translates to
         pl.col("c1").is_in([v1,v2]) & pl.col("c2").is_in([v3]), or a Polars expression for 
-        more complicated subgroups.
+        more complicated subgroup. Only records in the subgroup will be upsampled
     count
         How many more to add
     epsilon
@@ -100,7 +106,7 @@ def simple_upsample(
     seed
         The random seed
     persist
-        If true and when used in pipeline, this step will be remembered.
+        If true, this step will be kept in the blueprint
 
     Returns
     -------
@@ -185,9 +191,58 @@ def simple_upsample(
         return output
     return pl.concat([df, sub])
 
+def simple_downsample(
+    df: PolarsFrame
+    , subgroup: dict[str, list] | pl.Expr
+    , sample_frac: float
+    , persist: bool = False
+) -> PolarsFrame:
+    '''
+    Downsample by the given fraction on the subgroup.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    subgroup
+        Either a dict that looks like {"c1":[v1, v2], "c2":[v3]}, which will translates to
+        pl.col("c1").is_in([v1,v2]) & pl.col("c2").is_in([v3]), or a Polars expression for 
+        more complicated subgroup. Only records in the subgroup will be downsampled
+    sample_frac
+        The percentage to downsample population in the subgroup to
+    persist
+        If true, this step will be kept in the blueprint
+
+    '''
+    
+    if isinstance(subgroup, pl.Expr):
+        expr = subgroup
+    elif isinstance(subgroup, dict):
+        expr = pl.lit(True)
+        for c, vals in subgroup.items():
+            if isinstance(vals, list):
+                expr = expr & pl.col(c).is_in(vals)
+            else:
+                logger.warn(f"The value for key `{c}` is not a list. Skipped.")
+    else:
+        raise TypeError("The `subgroup` argument must be either a Polars Expr or a dict[str, list]")
+
+    temp = df.lazy()
+    same_part = temp.filter(~expr)
+    sample_part = lazy_sample(temp.filter(expr), sample_frac=sample_frac)
+
+    output = pl.concat([same_part, sample_part])
+    if isinstance(df, pl.LazyFrame):
+        if persist:
+            output = output.blueprint.apply_func(df, simple_downsample
+                                                , kwargs={"subgroup":subgroup,"sample_frac":sample_frac})
+        return output
+    return output.collect()
+
+
 def stratified_downsample(
     df: PolarsFrame
-    , by:list[str]
+    , group:list[str]
     , keep:int | float
     , min_keep:int = 1
     , persist: bool = False
@@ -199,8 +254,8 @@ def stratified_downsample(
     ----------
     df
         Either an eager or lazy dataframe
-    by
-        Column groups you want to use to stratify the data
+    group
+        Column group you want to use to stratify the data
     keep
         If int, keep this number of records from this subpopulation; if float, then
         keep this % of the subpopulation.
@@ -210,7 +265,7 @@ def stratified_downsample(
         subpopulation. Setting min_keep will make sure we keep at least this many of each 
         subpopulation provided that it has this many records.
     persist
-        If true and when used in pipeline, this step will be remembered.
+        If true, this step will be kept in the blueprint
 
     Returns
     -------
@@ -223,15 +278,16 @@ def stratified_downsample(
     elif isinstance(keep, float):
         if keep < 0. or keep >= 1.:
             raise ValueError("The argument `keep` must be >0 and <1.")
-        rhs = pl.max(pl.count().over(by)*keep, min_keep)
+        rhs = pl.max(pl.count().over(group)*keep, min_keep)
     else:
         raise TypeError("The argument `keep` must either be a Python int or float.")
 
     output = df.filter(
-        pl.arange(0, pl.count(), dtype=pl.UInt64).shuffle().over(by) < rhs
+        pl.int_range(0, pl.count(), dtype=pl.UInt64).shuffle().over(group) < rhs
     )
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.apply_func(df, stratified_downsample, kwargs={"by":by, "keep":keep, "min_keep":min_keep})
+        return output.blueprint.apply_func(df, stratified_downsample
+                                        , kwargs={"group":group, "keep":keep, "min_keep":min_keep})
     return output
 
 def train_test_split(
