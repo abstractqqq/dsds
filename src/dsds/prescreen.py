@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 #----------------------------------------------------------------------------------------------#
 
 def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
+    '''Returns numerical columns except those in exclude.'''
     if exclude is None:
         selector = cs.numeric()
     else:
@@ -41,6 +42,7 @@ def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[s
     return df.select(selector).columns
 
 def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
+    '''Returns string columns except those in exclude.'''
     if exclude is None:
         selector = cs.string()
     else:
@@ -48,20 +50,23 @@ def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[st
     return df.select(selector).columns
 
 def get_datetime_cols(df:PolarsFrame) -> list[str]:
-    '''Only gets datetime columns, will not infer from strings.'''
+    '''Returns only datetime columns. This will not try to infer date from strings.'''
     return df.select(cs.datetime()).columns
 
 def get_bool_cols(df:PolarsFrame) -> list[str]:
+    '''Returns boolean columns.'''
     return df.select(cs.by_dtype(pl.Boolean)).columns
 
 def get_cols_regex(df:PolarsFrame, pattern:str) -> list[str]:
+    '''Returns columns that have names matching the regex pattern.'''
     return df.select(cs.matches(pattern=pattern)).columns
 
 def lowercase_columns(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
     '''
-    A convenience function that lowercases all column names. It can be used and persisted in pipelines.
+    Lowercases all column names.
+
+    Set persist = True if this needs to be remembered by the blueprint.
     '''
-    
     output = df.rename({c: c.lower() for c in df.columns})
     if isinstance(df, pl.LazyFrame) and persist:
         return output.blueprint.apply_func(df, lowercase_columns, kwargs = {})
@@ -73,7 +78,9 @@ def drop_nulls(
     , persist:bool=False
 ) -> PolarsFrame:
     '''
-    A wrapper function for Polar's drop_nulls so that it can be used and persisted in pipelines.
+    A wrapper function for Polars' drop_nulls so that it can be used in pipeline.
+
+    Set persist = True if this needs to be remembered by the blueprint.
     '''
     if subset is None:
         by = df.columns
@@ -97,7 +104,9 @@ def filter(
     , persist: bool = False
 ) -> PolarsFrame:
     ''' 
-    A wrapper function for Polars's filter so that it can be used and persisted in pipelines.
+    A wrapper function for Polars' filter so that it can be used in pipeline.
+
+    Set persist = True if this needs to be remembered by the blueprint.
     '''
     if isinstance(df, pl.LazyFrame):
         if persist:
@@ -105,6 +114,7 @@ def filter(
     return df.filter(condition)
 
 def check_binary_target(df:PolarsFrame, target:str) -> bool:
+    '''Checks if target is binary or not. Only binary targets with 0s and 1s will pass.'''
     target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)
     if len(target_uniques) != 2:
         logger.error("Target is not binary.")
@@ -115,11 +125,12 @@ def check_binary_target(df:PolarsFrame, target:str) -> bool:
     return True
     
 def check_target_cardinality(df:PolarsFrame, target:str) -> pl.DataFrame:
+    '''Returns a dataframe showing the cardinality of different target values.'''
     return df.lazy().groupby(target).count().sort(target).collect()
 
 def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
     '''Returns the unique types of given columns in a single string. If multiple types are present
-    they are joined by a |. If cols is not given, automatically uses all df's columns.'''
+    they are joined by a |. If cols is not given, automatically uses all columns.'''
     if cols is None:
         check_cols:list[str] = df.columns
     else:
@@ -151,15 +162,9 @@ def describe(
     df:PolarsFrame
     , sample_frac:float = 0.75
 ) -> pl.DataFrame:
-    '''Profile the data.
+    '''
+    Profile the data.
 
-        Arguments:
-            df: Either an eager dataframe or a lazy dataframe
-            sample_frac: If input is a LazyFrame, a sample of sample_frac will be used. If input is eager,
-            no sampling will be done.
-
-        Returns:
-            a dataframe containing the necessary information.
     '''
 
     if isinstance(df, pl.LazyFrame):
@@ -291,7 +296,8 @@ def pattern_inferral(
     , threshold:float = 0.9
     , count_null:bool = True
 ) -> list[str]:
-    '''Find all string columns whose elements reasonably match the given pattern. The match logic can 
+    '''
+    Find all string columns whose elements reasonably match the given pattern. The match logic can 
     be tuned using the all the parameters.
 
     Arguments:

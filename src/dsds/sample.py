@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42, persist:bool=False) -> pl.LazyFrame:
     '''
     Random sample on a lazy dataframe.
+
+    Set persist = True if this needs to be remembered by the blueprint.
     
     Parameters
     ----------
@@ -22,10 +24,6 @@ def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42, persist:bool=Fa
         The random seed
     persist
         If true, this step will be kept in the blueprint
-
-    Returns
-    -------
-        A lazy dataframe containing the sampling query
     '''
     if sample_frac <= 0 or sample_frac >= 1:
         raise ValueError("Sample fraction must be > 0 and < 1.")
@@ -47,6 +45,8 @@ def deduplicate(
     '''
     A wrapper function for Polar's unique method. It deduplicates the dataframe by the columns in `by`.
 
+    Set persist = True if this needs to be remembered by the blueprint.
+
     Parameters
     ----------
     df
@@ -57,10 +57,6 @@ def deduplicate(
         One of 'first', 'last', 'any', 'none'. Default is 'any', which is somewhat random.
     persist
         If true, this step will be kept in the blueprint
-
-    Returns
-    -------
-        A deduplicated eager/lazy frame.
     '''
     output = df.unique(subset=subset, keep = keep)
     if isinstance(df, pl.LazyFrame) and persist:
@@ -82,6 +78,8 @@ def simple_upsample(
     For records in the subgroup, we (1) sample with replacement for `count` many records
     and (2) add a small random number uniformly distributed in (-epsilon, epsilon) to all 
     the float-valued columns except those in exclude.
+
+    Set persist = True if this needs to be remembered by the blueprint.
 
     Parameters
     ----------
@@ -107,10 +105,6 @@ def simple_upsample(
         The random seed
     persist
         If true, this step will be kept in the blueprint
-
-    Returns
-    -------
-        a lazy/eager dataframe with the subgroup amplified.
 
     Examples
     --------
@@ -200,6 +194,8 @@ def simple_downsample(
     '''
     Downsample by the given fraction on the subgroup.
 
+    Set persist = True if this needs to be remembered by the blueprint.
+
     Parameters
     ----------
     df
@@ -212,9 +208,7 @@ def simple_downsample(
         The percentage to downsample population in the subgroup to
     persist
         If true, this step will be kept in the blueprint
-
     '''
-    
     if isinstance(subgroup, pl.Expr):
         expr = subgroup
     elif isinstance(subgroup, dict):
@@ -227,17 +221,20 @@ def simple_downsample(
     else:
         raise TypeError("The `subgroup` argument must be either a Polars Expr or a dict[str, list]")
 
-    temp = df.lazy()
-    same_part = temp.filter(~expr)
-    sample_part = lazy_sample(temp.filter(expr), sample_frac=sample_frac)
+    # lazy if df lazy, eager if df eager
+    output = df.with_columns(
+        pl.when(expr).then(True).otherwise(False).alias("~!")
+    ).filter(
+        (~pl.col("~!"))
+        | (pl.int_range(0, pl.count()).over("~!").shuffle() < pl.count().over("~!").max() * sample_frac)
+    ).select(df.columns)
 
-    output = pl.concat([same_part, sample_part])
     if isinstance(df, pl.LazyFrame):
         if persist:
             output = output.blueprint.apply_func(df, simple_downsample
                                                 , kwargs={"subgroup":subgroup,"sample_frac":sample_frac})
         return output
-    return output.collect()
+    return output
 
 
 def stratified_downsample(
@@ -249,6 +246,8 @@ def stratified_downsample(
 ) -> PolarsFrame:
     '''
     Stratified downsampling.
+
+    Set persist = True if this needs to be remembered by the blueprint.
 
     Parameters
     ----------
@@ -266,10 +265,6 @@ def stratified_downsample(
         subpopulation provided that it has this many records.
     persist
         If true, this step will be kept in the blueprint
-
-    Returns
-    -------
-        the downsampled eager/lazy frame
     '''
     if isinstance(keep, int):
         if keep <= 0:
@@ -297,8 +292,8 @@ def train_test_split(
 ) -> Tuple[PolarsFrame, PolarsFrame]:
     """
     Split polars dataframe into train and test set. If input is eager, output will be eager. If input is lazy, out
-    output will be lazy. Unlike scikit-learn, this only creates the train and test dataframe. This
-    will not break the dataframe into X and y and so target is not a necessary input.
+    output will be lazy. Unlike scikit-learn, this only creates the train and test dataframe. This will not break 
+    the dataframe into X and y and so target is not a necessary input.
 
     Parameters
     ----------
@@ -308,10 +303,6 @@ def train_test_split(
             Fraction that goes to train. Defaults to 0.75.
         seed
             the random seed.
-
-    Returns
-    -------
-        the lazy or eager train and test dataframes
     """
     keep = df.columns # with_row_count will add a row_nr column. Don't need it.
     if isinstance(df, pl.DataFrame):
@@ -320,7 +311,6 @@ def train_test_split(
                     .with_row_count().groupby(
                         pl.col("row_nr") >= len(df) * train_frac
                     )
-        
         # I am not sure if False group is always returned first...
         # p1 is a 2-tuple of (True/False, the corresponding group)
         if p2[0]: # if p2[0] == True, then p1[1] is train, p2[1] is test

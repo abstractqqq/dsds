@@ -28,16 +28,16 @@ def get_tp_fp(
     , ratio:bool = True
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     '''
-        Get true positive and false positive counts at various thresholds.
+    Get true positive and false positive counts at various thresholds.
 
-        Arguments:
-            y_actual: actual binary labels
-            y_predicted: predicted labels
-            ratio: if true, return true positive rate and false positive rate at the threholds; 
-            if false return the count.
-
-        Returns:
-            True positive count/rate, False positive count/rate, the thresholds
+    Parameters
+    ----------
+    y_actual
+        Actual binary labels
+    y_predicted
+        Predicted probabilities
+    ratio
+        If true, return true positive rate and false positive rate at the threholds; if false return the count
     '''
    
     df = pl.from_records((y_predicted, y_actual), schema=["predicted", "actual"])
@@ -65,14 +65,17 @@ def get_tp_fp(
     return tp, fp, temp["predicted"].to_numpy()
 
 def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True) -> float:
-    '''Return the Area Under the Curve metric for the model's predictions.
+    '''
+    Return the Area Under the Curve metric for the model's predictions.
 
-        Arguments:
-            y_actual: actual target
-            y_predicted: predicted probability
-
-        Returns:
-            the auc value
+    Parameters
+    ----------
+    y_actual
+        Actual binary labels
+    y_predicted
+        Predicted probabilities
+    check_binary
+        If true, checks if y_actual is binary
     ''' 
     
     # This currently has difference of magnitude 1e-10 from the sklearn implementation, 
@@ -99,21 +102,23 @@ def logloss(
     , min_prob:float = 1e-12
     , check_binary:bool = True
 ) -> float:
-    '''Return the logloss of the prediction.
-
-        Arguments:
-            y_actual: actual target
-            y_predicted: predicted probability
-            sample_weights: an array of size (n_sample, ) which provides weights to each sample
-            min_prob: minimum probability to clip so that we can prevent illegal computations like 
-            log(0). If p < min_prob, log(min_prob) will be computed instead.
-
-        Returns:
-            the average logloss
-
     '''
-    # Takes about 1/3 time of sklearn's log_loss because we parallelized some computations
+    Return the logloss of the binary classification.
 
+    Parameters
+    ----------
+    y_actual
+        Actual binary labels
+    y_predicted
+        Predicted probabilities
+    sample_weights
+        An array of size (n_sample, ) which provides weights to each sample
+    min_prob
+        Minimum probability to clip so that we can prevent illegal computations like 
+        log(0). If p < min_prob, log(min_prob) will be computed instead.
+    '''
+
+    # Takes about 1/3 time of sklearn's log_loss because we parallelized some computations
     y_a, y_p = _flatten_input(y_actual, y_predicted)
     if check_binary:
         uniques = np.unique(y_a)
@@ -142,12 +147,23 @@ def logloss(
             * (pl.col("y") * pl.col("l") + pl.col("ny") * pl.col("o")).mean()
         ).row(0)[0]
 
-
 def l2_loss(
     y_actual:np.ndarray
     , y_predicted:np.ndarray
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
+    '''
+    Computes average L2 loss of some regression model
+
+    Parameters
+    ----------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    sample_weights
+        An array of size (n_sample, ) which provides weights to each sample
+    '''
     diff = y_actual - y_predicted
     if sample_weights is None:
         return np.mean(diff.dot(diff))
@@ -161,6 +177,18 @@ def l1_loss(
     , y_predicted:np.ndarray
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
+    '''
+    Computes average L1 loss of some regression model
+
+    Parameters
+    ----------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    sample_weights
+        An array of size (n_sample, ) which provides weights to each sample
+    '''
     diff = np.abs(y_actual - y_predicted)
     if sample_weights is None:
         return np.mean(diff)
@@ -170,7 +198,16 @@ def l1_loss(
 mae = l1_loss 
 
 def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
-    '''Returns the r2 of the prediction.'''
+    '''
+    Computes R square metric for some regression model
+
+    Parameters
+    ----------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    '''
 
     # This is trivial, and we won't really have any performance gain by using Polars' or other stuff.
     # This is here just for completeness
@@ -184,9 +221,17 @@ def adjusted_r2(
     , y_predicted:np.ndarray
     , p:int
 ) -> float:
-    '''Computes the adjusted r2 of the prediction.
+    '''
+    Computes adjusted R square metric for some regression model
 
-        p: number of predictive variables
+    Parameters
+    ----------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    p
+        Number of predictive variables used
     '''
     df_tot = len(y_actual) - 1
     return 1 - (1 - r2(y_actual, y_predicted)) * df_tot / (df_tot - p)
@@ -197,6 +242,22 @@ def huber_loss(
     , delta:float
     , sample_weights:Optional[np.ndarray]=None  
 ) -> float:
+    '''
+    Computes huber loss of some regression model
+
+    See: https://en.wikipedia.org/wiki/Huber_loss
+
+    Parameters
+    ----------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    delta
+        The delta parameter in huber loss
+    sample_weights
+        An array of size (n_sample, ) which provides weights to each sample
+    '''
     
     y_a = y_actual.ravel()
     y_p = y_predicted.ravel()

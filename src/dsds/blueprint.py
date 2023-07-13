@@ -44,6 +44,8 @@ class Blueprint:
     def __init__(self, ldf: LazyFrame):
         self._ldf = ldf
         self.steps:list[Step] = []
+        self.target:str = ""
+        self.model = None
 
     def __str__(self) -> str:
         output = ""

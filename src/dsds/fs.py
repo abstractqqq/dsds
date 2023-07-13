@@ -117,32 +117,36 @@ def mutual_info(
     , seed:int=42
     , n_threads:int=CPU_COUNT
 ) -> pl.DataFrame:
-    '''Approximates mutual information (information gain) between the continuous variables and the target.
+    '''
+    Approximates mutual information (information gain) between the continuous variables and the target. This
+    is essentially the same as sklearn's implementation, except that
 
-        This is essentially a "copy-and-paste" of the mutual_info_classif call in sklearn library. 
-        There are a few important distinctions:
+    1. This uses Scipy library's kdtree, instead of sklearn's kdtree and nearneighbors
+    2. This uses all cores by default
+    3. There are less "checks" and "safeguards", meaning input data quality is expected to be "good".
+    4. Conti_cols are supposed to be "continuous" variables. In sklearn's mutual_info_classif, if you input a dense 
+        matrix X, it will always be treated as continuous, and if X is sparse, it will be treated as discrete.
 
-        1. This uses Scipy library's kdtree, instead of sklearn's kdtree and nearneighbors. 
-        2. The use of Scipy enables us to use more cores. 
-        3. There are less "checks" and "safeguards", meaning input data quality is expected to be "good".
-        4. Conti_cols are supposed to be "continuous" variables. In sklearn's mutual_info_classif, if you input a dense 
-            matrix X, it will always be treated as continuous, and if X is sparse, it will be treated as discrete.
-        5. This method is based on method described the sources.
+    Parameters
+    ----------
+    df
+        An eager dataframe
+    target
+        The target column
+    conti_cols
+        A list of columns with continuous values
+    n_neighbors
+        Number of neighbors. Used in the approximation method provided by the paper
+    seed
+        The random seed used to generate noise, which prevents points to collide and cause difficulty for the
+        nearest neighbor method used in the approximation
+    n_threads
+        The number of threads used in scipy's Kdtree
 
-        Arguments:
-            df:
-            conti_cols: 
-            target: list of discrete columns.
-            n_neighbors:
-            random_state: a random seed to generate small noise.
-            n_threads: 
-            
-        Returns:
-
-        Sources:
-            (1). B. C. Ross “Mutual Information between Discrete and Continuous Data Sets”. PLoS ONE 9(2), 2014.\n
-            (2). A. Kraskov, H. Stogbauer and P. Grassberger, “Estimating mutual information”. Phys. Rev. E 69, 2004.
-            
+    Sources
+    -------
+        (1). B. C. Ross “Mutual Information between Discrete and Continuous Data Sets”. PLoS ONE 9(2), 2014.\n
+        (2). A. Kraskov, H. Stogbauer and P. Grassberger, “Estimating mutual information”. Phys. Rev. E 69, 2004. 
     '''
     n = len(df)
     rng = np.random.default_rng(seed)
@@ -198,6 +202,12 @@ def mutual_info_selector(
     , n_threads:int=CPU_COUNT
     , top_k:int = 50
 ) -> PolarsFrame:
+    '''
+    A selector based on the mutual_info feature selection method.
+
+    This 
+    
+    '''
     
     is_lazy = isinstance(df, pl.LazyFrame)
     if is_lazy:

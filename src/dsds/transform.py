@@ -29,8 +29,6 @@ from scipy.stats._morestats import (
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 
-# Rewrite all docstrings using Polars' format.
-
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
 
@@ -42,21 +40,22 @@ def impute(
     , strategy:ImputationStrategy = 'median'
     , const:float = 1.
 ) -> PolarsFrame:
-    '''Imputes the given columns using the given strategy.
+    '''
+    Impute the given columns with the given strategy.
 
-        Arguments:
-            df: either a eager/lazy Polars dataframe
-            cols: cols to impute. If none, use all columns.
-            strategy: one of 'mean', 'avg', 'average', 'median', 'const', 'constant', 'mode', 'most_frequent'. Some are 
-            just alternative names for the same strategy.
-            const: only uses this value if strategy = const
-
-        Returns:
-            the imputed lazy / eager dataframe.
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        The columns to impute
+    strategy
+        One of 'median', 'mean', 'const' or 'mode'. If 'const', the const argument should be provided. Note that
+        if strategy is mode and if two values occur the same number of times, a random one will be picked.
+    const
+        The constant value to impute by if strategy = 'const'    
     '''
     s = clean_strategy_str(strategy)
-
-    # Given Strategy, define expressions
     if s == "median":
         all_medians = df.lazy().select(cols).median().collect().row(0)
         exprs = (pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols))
@@ -71,8 +70,6 @@ def impute(
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
 
-    # Need to cast to list so that pickle can work with it
-    # This is unfortunate because we will be looping over this list twice... Whatever...
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
@@ -84,18 +81,18 @@ def scale(
     , const:float = 1.0
 ) -> PolarsFrame:
     '''
-    Scale given columns using the given strategy. Will skip null values.
+    Scale the given columns with the given strategy.
 
-        Arguments:
-            df: either a lazy or eager dataframe
-            cols: list of columns to scale
-            strategy: one of 'normal', 'standard', 'normalize', 'min_max', 'const', 'constant',
-            where normal = standard = normalize.
-            const: only uses this value if strategy = const
-
-        Returns:
-            the scaled lazy / eager dataframe.
-    
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        The columns to scale
+    strategy
+        One of 'normal', 'min_max', 'const'. If 'const', the const argument should be provided
+    const
+        The constant value to scale by if strategy = 'const'    
     '''
     types = check_columns_types(df, cols)
     if types != "numeric":
@@ -124,14 +121,15 @@ def scale(
     return df.with_columns(exprs)
 
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
-    '''Converts all boolean columns into binary columns.
+    '''
+    Converts all boolean columns into binary columns.
 
-        Arguments:
-            df: either a lazy or eager Polars DataFrame
-            keep_null: if true, null will be kept. If false, null will be mapped to 0.
-
-        Returns:
-            a dataframe with booleans mapped to 0s and 1s.
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    keep_null
+        If true, null will be kept. If false, null will be mapped to 0.
     '''
     bool_cols = get_bool_cols(df)
     if keep_null: # Directly cast. If null, then cast will also return null
@@ -148,7 +146,18 @@ def missing_indicator(
     , cols: Optional[list[str]] = None
     , suffix: str = "::missing"
 ) -> PolarsFrame:
-    
+    '''
+    Add one-hot columns for missing values in the given columns.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If not provided, will create missing indicators for all columns
+    suffix
+        The suffix given to the missing indicator columns
+    '''
     if cols is None:
         to_add = df.columns
     else:
@@ -156,7 +165,6 @@ def missing_indicator(
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
     exprs = (pl.when(pl.col(c).is_null()).then(one).otherwise(zero).alias(c+suffix) for c in to_add)
-
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
@@ -167,7 +175,24 @@ def one_hot_encode(
     , separator:str="_"
     , drop_first:bool=False
 ) -> PolarsFrame:
-    '''One hot encoding. The separator must be a single character.'''
+    '''
+    One-hot-encode the given columns.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If not provided, will use all string columns
+    separator
+        The separator used in the names of the new columns
+    drop_first
+        If true, the first category in the each column will be dropped. E.g. if column "D" has 3 distinct values, 
+        say 'A', 'B', 'C', then only two binary indicators 'D_B' and 'D_C' will be created. This is useful for
+        reducing dimensions and also good for optimization methods that require data to be non-degenerate.
+    '''
     
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
@@ -202,19 +227,24 @@ def one_hot_encode(
 def binary_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None
+    , separator: str = "_"
     , exclude:Optional[list[str]]=None
 ) -> PolarsFrame:
     '''
-    Encode the given columns as binary values. Only handles string binary at this moment. This is equivalent
-    to using one-hot-encoding on binary columns using drop_first=True.
+    Encode binary string columns as 0s and 1s depending on the order of the 2 unique strings. E.g. if the two unique 
+    values are 'N' and 'Y', then 'N' will be mapped to 0 and 'Y' to 1 because 'N' < 'Y'. This is essentially 
+    one-hot-encode for binary string columns with drop_first = True.
 
-        Arguments:
-            df:
-            binary_cols: the binary_cols you wish to convert. If no input, will infer.
-            exclude: the columns you wish to exclude in this transformation. 
+    This will be remembered by blueprint by default.
 
-        Returns: 
-            (the transformed dataframe, mapping table between old values to [0,1])
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If not provided, will use all string columns
+    separator
+        The separator used in the names of the new columns
     '''
 
     if cols is None:
@@ -224,11 +254,10 @@ def binary_encode(
             .filter( # Binary + Not Exclude + Only String
                 (pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude)) & (pl.col("column").is_in(str_cols))
             ).get_column("column").to_list()
-
-    else: # No need to do all that type checking steps because we are gonna do that in one-hot anyways
+    else:
         binary_list = cols
     
-    return one_hot_encode(df, cols=binary_list, drop_first=True)
+    return one_hot_encode(df, cols=binary_list, drop_first=True, separator=separator)
 
 def multicat_one_hot_encode(
     df:PolarsFrame
@@ -237,6 +266,30 @@ def multicat_one_hot_encode(
     , drop_first: bool = False
 ) -> PolarsFrame:
     '''
+    Expands multicategorical columns into several one-hot-encoded columns respectively. A multicategorical column is a 
+    column with strings like `aaa|bbb|ccc`, where it means this row belongs to categories aaa, bbb, and ccc. Typically, 
+    such a column will contain strings separated by a delimiter. This method will collect all unique strings separated 
+    by the delimiter and one hot encode the corresponding column.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If not provided, will use all string columns
+    separator
+        The separator used in the names of the new columns
+    drop_first
+        If true, the first category in the each column will be dropped. E.g. if column "D" has 3 distinct values, 
+        say 'A', 'B', 'C', then only two binary indicators 'D_B' and 'D_C' will be created. This is useful for
+        reducing dimensions and also good for optimization methods that require data to be non-degenerate.
+
+    Returns
+    -------
+        A lazy/eager dataframe with multicategorical columns one-hot-encoded
+
     Example
     -------
     >>> df = pl.DataFrame({
@@ -287,67 +340,35 @@ def multicat_one_hot_encode(
         return df.blueprint.with_columns(exprs).blueprint.drop(cols)
     return df.with_columns(exprs).drop(cols)
 
-def force_binary(
-    df:PolarsFrame
-    , cols:Optional[list[str]]=None
-) -> PolarsFrame:
+def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''
-    Force every binary column, no matter what data type, to be turned into 0s and 1s by the order of the elements. If a 
-    column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
-    '''
-    if cols is None:
-        binary_list = get_unique_count(df)\
-            .filter(pl.col("n_unique") == 2)\
-            .get_column("column")
-    else:
-        binary_list = cols
+    Force every binary column, no matter what data type, to be turned into 0s and 1s according to the order of the 
+    elements. If a column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
 
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    '''
+
+    binary_list = get_unique_count(df).filter(pl.col("n_unique") == 2).get_column("column")
     temp = df.lazy().select(binary_list).groupby(1).agg(
             pl.all().unique().sort()
-        ).select(binary_list) # Need this to get rid of the literal 1 column
+        ).select(binary_list)
     exprs:list[pl.Expr] = []
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     for t in temp.collect().get_columns():
         u:pl.List = t[0] # t is a Series which contains a single list which contains the 2 unique values 
-        if len(u) == 2:
-            exprs.append(
-                pl.when(pl.col(t.name) == u[0]).then(zero).otherwise(one).alias(t.name)
-            )
-        else:
-            logger.info(f"During force_binary, the column {t.name} is found to have != 2 unique values. Ignored.")
-    
+        exprs.append(
+            pl.when(pl.col(t.name) == u[0]).then(zero).otherwise(one).alias(t.name)
+        )
+
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)    
-
-def get_mapping_table(ordinal_mapping:dict[str, dict[str,int]]) -> pl.DataFrame:
-    '''
-        Helper function to get a table from an ordinal_mapping dict.
-
-        >>> {
-        >>> "a": 
-        >>>    {"a1": 1, "a2": 2,},
-        >>> "b":
-        >>>    {"b1": 3, "b2": 4,},
-        >>> }
-
-
-        Arguments:
-            ordinal_mapping: {name_of_feature: {value_1 : mapped_to_number_1, value_2 : mapped_to_number_2, ...}, ...}
-
-        Returns:
-            A table with feature name, value, and mapped_to
-    
-    '''
-    mapping_tables:list[pl.DataFrame] = []
-    for feature, mapping in ordinal_mapping.items():
-        table = pl.from_records(list(mapping.items()), schema=["value", "mapped_to"]).with_columns(
-            pl.lit(feature).alias("feature")
-        ).select("feature", "value", "mapped_to")
-        mapping_tables.append(table)
-
-    return pl.concat(mapping_tables)
+    return df.with_columns(exprs)
 
 def ordinal_auto_encode(
     df:PolarsFrame
@@ -356,20 +377,21 @@ def ordinal_auto_encode(
     , exclude:Optional[list[str]]=None
 ) -> PolarsFrame:
     '''
-        Automatically applies ordinal encoding to the provided columns by the following logic:
-            Sort the column, smallest value will be assigned to 0, second smallest will be assigned to 1...
+    Automatically applies ordinal encoding to the provided columns by the order of the elements. This method is 
+    great for string columns like age ranges, with values like ["10-20", "20-30"], etc.
 
-        This will automatically detect string columns and apply this operation if ordinal_cols is not provided. 
-        This method is great for string columns like age ranges, with values like ["10-20", "20-30"], etc...
+    This will be remembered by blueprint by default.
         
-        Arguments:
-            df:
-            default:
-            cols:
-            exclude: the columns you wish to exclude in this transformation.
-        
-        Returns:
-            (encoded df, mapping table)
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If not provided, will use all string columns
+    descending
+        If true, will use descending order (0 will be mapped to largest element)
+    exclude
+        Columns to exclude. This is only used when cols is not provided.
     '''
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
@@ -402,19 +424,20 @@ def ordinal_encode(
     , default:int|None=None
 ) -> PolarsFrame:
     '''
-        Ordinal encode the data with given mapping.
+    Ordinal encode the columns in the ordinal_mapping dictionary. The ordinal_mapping dict should look like:
+    {"a":{"a1":1, "a2":2}, ...}, which means for column a, a1 should be mapped to 1, a2 mapped to 2. Values 
+    not mentioned in the dict will be mapped to default.
 
-        Notice that this function assumes that you already have the mapping, in correct mapping format.
-        since you have to supply the ordinal_mapping argument. If you still want the tabular output format,
-        please call get_ordinal_mapping_table with ordinal_mapping, which will create a table from this.
-
-        Arguments:
-            df:
-            ordinal_mapping:
-            default: if a value for a feature does not exist in ordinal_mapping, use default.
-
-        Returns:
-            encoded df
+    This will be remembered by blueprint by default.
+        
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    ordinal_mapping
+        A dictionary that looks like {"a":{"a1":1, "a2":2}, ...}
+    default
+        Default value for values not mentioned in the dict.
     '''
 
     for c in ordinal_mapping:
@@ -442,17 +465,27 @@ def smooth_target_encode(
     , smoothing:float
     , check_binary:bool=True
 ) -> PolarsFrame:
-    '''Smooth target encoding for binary classification. Currently only implemented for binary target.
+    '''
+    Smooth target encoding for binary classification. Currently only implemented for binary target.
 
-        See https://towardsdatascience.com/dealing-with-categorical-variables-by-using-target-encoder-a0f1733a4c69
+    This will be remembered by blueprint by default.
+    
+    See https://towardsdatascience.com/dealing-with-categorical-variables-by-using-target-encoder-a0f1733a4c69
 
-        Arguments:
-            df:
-            target:
-            cat_cols:
-            min_samples_leaf:
-            smoothing:
-            check_binary:
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    target
+        Name of the target column
+    cols
+        If not provided, will use all string columns
+    min_samples_leaf
+        The k in the smoothing factor equation
+    smoothing
+        The f of the smoothing factor equation 
+    check_binary
+        Checks if target is binary. If not, throw an error
     '''
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
@@ -505,6 +538,8 @@ def feature_mapping(
     Maps specific values of a feature into values provided. This is a common task when the feature columns come with 
     error codes.
 
+    This will be remembered by blueprint by default.
+
     Parameters
     ----------
     df
@@ -514,10 +549,6 @@ def feature_mapping(
         should be replaced by null, or a list/a single Polars (when-then) expression(s) like the following,  
         pl.when(pl.col("a") >= 997).then(None).otherwise(pl.col("a")).alias("a"), which will perform the same mapping 
         as the dict example. Note that using Polars expression can tackle more complex replacement.
-
-    Returns
-    -------
-        Either a lazy or eager Polars dataframe with specific values of features replaced
 
     Example
     -------
@@ -595,6 +626,17 @@ def custom_binning(
 ) -> PolarsFrame:
     '''
     Bins according to the cuts provided. The same cuts will be applied to all columns in cols.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        Numerical columns that will be replaced by the bins
+    cuts
+        A list of floats representing break points in the intervals
     '''
     if isinstance(df, pl.LazyFrame):
         exprs = [
@@ -616,6 +658,8 @@ def quantile_binning(
     rule will be applied to all columns in cols. If you want different n_bins for different columns, chain another 
     quantile_binning with different cols and n_bins.
 
+    This will be remembered by blueprint by default.
+
     Parameters
     ----------
     df
@@ -627,10 +671,6 @@ def quantile_binning(
         The number of desired bins. If n_bins = 4, the quantile cuts will be [0.25,0.5,0.74], and 4 
         categories will be created, which represent values ranging from (-inf, 0.25 quantile value],
         (0.25 quantile value, 0.5 quantile value],...(0.75 quantile value, inf]
-    
-    Returns
-    -------
-        A lazy or eager frame with the columns binned.
 
     Example
     -------
@@ -691,20 +731,26 @@ def woe_cat_encode(
     , default: float = -10.
     , check_binary:bool = True
 ) -> PolarsFrame:
-    '''Performs WOE encoding for categorical features. Currently woe encoding is only available
-    for categorical (string) features. Numerical WOE encoding requires binning and the binning
-    transform is being considered (Need it to be comptible with blueprints and all that).
+    '''
+    Performs WOE encoding for categorical features. To WOE encode numerical columns, first bin them using
+    custom_binning or quantile_binning. This only works for binary target.
 
-        Arguments:
-            df: either a lazy or eager dataframe
-            target: target column
-            cols: string columns to be encoded. If none, it will use all from the df.
-            min_count: a regularization term that prevents ln(0).
-            default: default value for nulls resulted in the left-join.
-            check_binary: whether to check if target is binary or not
+    This will be remembered by blueprint by default.
 
-        Returns:
-            an woe encoded lazy or eager Polars dataframe
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    target
+        The name of the target column
+    cols
+        If not provided, all string columns will be used
+    min_count
+        A numerical factor that prevents values like infinity to occur when taking log
+    default
+        Null values will be mapped to default
+    check_binary
+        Whether to check target is binary or not.
     '''
     if isinstance(cols, list):
         types = check_columns_types(df, cols)
@@ -757,16 +803,21 @@ def power_transform(
     , n_threads:int = CPU_COUNT
     # , lmbda: Optional[float] = None
 ) -> PolarsFrame:
-    '''Performs power transform on the numerical columns.
+    '''
+    Performs power transform on the numerical columns.
 
-        Arguments:
-            df: either a lazy or eager Polars dataframe
-            cols: a list of numerical columns to perform the transform.
-            strategy: either yeo_johnson or box_cox
-            n_threads: max number of threads you want to use. Default = CPU_COUNT
+    This will be remembered by blueprint by default.
 
-        Returns:
-            the transformed lazy or eager dataframe
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and must all be numerical
+    strategy
+        Either 'yeo_johnson' or 'box_cox'
+    n_threads
+        The max number of worker threads to use in Python
     '''
 
     types = check_columns_types(df, cols)
