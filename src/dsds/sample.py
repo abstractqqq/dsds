@@ -1,14 +1,22 @@
 import polars as pl
 from typing import Tuple, Optional
+from collections.abc import Iterator
 from .type_alias import PolarsFrame
 from polars.type_aliases import UniqueKeepStrategy
 import polars.selectors as cs
 import numpy as np
+import random
 import logging
 
 logger = logging.getLogger(__name__)
 
-def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42, persist:bool=False) -> pl.LazyFrame:
+def lazy_sample(
+    df:pl.LazyFrame
+    , sample_frac:float | None = 0.75
+    , sample_amt: int | None = None
+    , seed:int=42
+    , persist:bool=False
+) -> pl.LazyFrame:
     '''
     Random sample on a lazy dataframe.
 
@@ -19,21 +27,37 @@ def lazy_sample(df:pl.LazyFrame, sample_frac:float, seed:int=42, persist:bool=Fa
     df
         A lazy dataframe
     sample_frac
-        A number > 0 and < 1
+        A number > 0 and < 1. If this and sample_amt are both not net, this defaults to 0.75
+    sample_amt
+        If this is set, sample this amount, and sample_frac will be ignored
     seed
         The random seed
     persist
         If true, this step will be kept in the blueprint
     '''
-    if sample_frac <= 0 or sample_frac >= 1:
-        raise ValueError("Sample fraction must be > 0 and < 1.")
+    if sample_amt is None:
+        if sample_frac is None:
+            frac = 0.75
+        elif sample_frac <= 0 or sample_frac >= 1:
+            raise ValueError("Sample fraction must be > 0 and < 1.")
+        else:
+            frac = sample_frac
 
-    output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
-        .filter(pl.col("row_nr") < pl.col("row_nr").max() * sample_frac)\
+        output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
+        .filter(pl.col("row_nr") < pl.col("row_nr").max() * frac)\
         .select(df.columns)
-    
+
+    else:
+        if sample_amt <= 0:
+            raise ValueError("Sample amount must be > 0.")
+        
+        output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
+        .filter(pl.col("row_nr") < sample_amt)\
+        .select(df.columns)
+
     if persist:
-        output = output.blueprint.apply_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac, "seed":seed})
+        output = output.blueprint.apply_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac
+                                                                        , "sample_amt":sample_amt,"seed":seed})
     return output
 
 def deduplicate(
@@ -321,3 +345,68 @@ def train_test_split(
         df_train = df.filter(pl.col("row_nr") < pl.col("row_nr").max() * train_frac)
         df_test = df.filter(pl.col("row_nr") >= pl.col("row_nr").max() * train_frac)
         return df_train.select(keep), df_test.select(keep)
+    
+def bootstrap(
+    df: PolarsFrame
+    , times: int
+    , sample_frac: float | None = 0.25
+    , sample_amt: int | None = None
+) -> Iterator[PolarsFrame]:
+    """
+    Returns an iterator (generator) where each element is a sample from the underlying df.
+
+    Parameters
+    ----------
+        df
+            Either a lazy or eager dataframe to split
+        times
+            The number of times to sample. Total number of yields for this generator
+        sample_frac
+            The fraction to sample. Defaults to 0.25
+        sample_amt
+            If set, sample this amount instead of fraction
+    """
+    
+    start = random.randint(0, 100_000)
+    if isinstance(df, pl.LazyFrame):
+        return (
+            lazy_sample(df, sample_frac=sample_frac, sample_amt = sample_amt, seed=i)
+            for i in range(start, start + times)
+        )
+    else:
+        return (
+            df.sample(n = sample_amt, fraction=sample_frac, seed=i)
+            for i in range(start, start + times)
+        )
+
+def col_subsample(
+    df: PolarsFrame
+    , times: int
+    , sample_amt: int
+    , always_keep: list[str] | None = None
+) -> Iterator[list[str]]:
+    """
+    Returns an iterator (generator) where each element is a subset of column names of df.
+
+    Parameters
+    ----------
+        df
+            Either a lazy or eager dataframe to split
+        times
+            The number of times to sample. Total number of yields for this generator
+        sample_amt
+            The number of columns to sample. Will not exceed the max number of columns
+        always_keep
+            Columns you want to always keep in the subsample. If always_keep = ['target'] and sample_amt = 2, then each 
+            time 3 columns will be returned, 'target' and 2 other which are randomly sampled. 
+    """
+    if always_keep is None:
+        keep = []
+        to_sample = df.columns
+    else:
+        keep = always_keep
+        to_sample = [c for c in df.columns if c not in keep]
+    
+    for _ in range(times):
+        random.shuffle(to_sample)
+        yield to_sample[:sample_amt] + keep

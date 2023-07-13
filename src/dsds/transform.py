@@ -169,6 +169,100 @@ def missing_indicator(
         return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
 
+def merge_infreq_values(
+    df: PolarsFrame
+    , cols: list[str]
+    , min_count: int | None = 10
+    , min_frac: float | None = None
+    , separator: str = '|'
+) -> PolarsFrame:
+    '''
+    Combines infrequent categories in string columns together.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        List of string columns to perform this operation
+    min_count
+        Define a category to be infrequent if it occurs less than min_count. This defaults to 10 if both min_count and 
+        min_frac are None.
+    min_frac
+        Define category to be infrequent if it occurs less than this percentage of times. If both min_count and min_frac
+        are set, min_frac takes priority
+    separator
+        The separator for the new value representing the combined categories
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "a":["a", "b", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c"],
+    ...     "b":["a", "b", "c", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d", "d"]
+    ... })
+    >>> df
+    shape: (14, 2)
+    ┌─────┬─────┐
+    │ a   ┆ b   │
+    │ --- ┆ --- │
+    │ str ┆ str │
+    ╞═════╪═════╡
+    │ a   ┆ a   │
+    │ b   ┆ b   │
+    │ c   ┆ c   │
+    │ c   ┆ d   │
+    │ …   ┆ …   │
+    │ c   ┆ d   │
+    │ c   ┆ d   │
+    │ c   ┆ d   │
+    │ c   ┆ d   │
+    └─────┴─────┘
+    >>> t.merge_infreq_values(df, ["a", "b"], min_count=3)
+    shape: (14, 2)
+    ┌─────┬───────┐
+    │ a   ┆ b     │
+    │ --- ┆ ---   │
+    │ str ┆ str   │
+    ╞═════╪═══════╡
+    │ a|b ┆ a|c|b │
+    │ a|b ┆ a|c|b │
+    │ c   ┆ a|c|b │
+    │ c   ┆ d     │
+    │ …   ┆ …     │
+    │ c   ┆ d     │
+    │ c   ┆ d     │
+    │ c   ┆ d     │
+    │ c   ┆ d     │
+    └─────┴───────┘
+    '''
+    
+    types = check_columns_types(df, cols)
+    if types != "string":
+        raise TypeError(f"merge_infreq_values can only be used on string columns, not {types} types.")
+    
+    if min_frac is None:
+        if min_count is None:
+            comp = pl.col("count") < 10
+        else:
+            comp = pl.col("count") < min_count
+    else:
+        comp = pl.col("count")/pl.col("count").sum() < min_frac
+
+    exprs = []
+    for c in cols:
+        infreq = df.lazy().groupby(c).count().filter(
+            comp
+        ).collect().get_column(c)
+        value = separator.join(infreq)
+        exprs.append(
+            pl.when(pl.col(c).is_in(infreq)).then(value).otherwise(pl.col(c)).alias(c)
+        )
+    
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
 def one_hot_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None

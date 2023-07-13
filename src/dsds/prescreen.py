@@ -196,11 +196,12 @@ def describe(
         pl.col(c).cast(pl.Float64) for c in nums
     ).with_columns(
         null_pct = pl.col("null_count")/pl.col("count")
+        , CoV = pl.col("std") / pl.col("mean")
         , dtype = pl.col("column").map_dict(dtypes_dict)
     ).join(unique_counts, on="column").join(skew_and_kt, on="column")
     
     return final.select('column','count','null_count','null_pct','n_unique'
-                        , 'unique_pct','mean','std','min','max','25%'
+                        , 'unique_pct','mean','std', 'CoV','min','max','25%'
                         , 'median','75%', "skew", "kurtosis",'dtype')
 
 # Numeric only describe. Be more detailed.
