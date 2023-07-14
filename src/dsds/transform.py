@@ -511,47 +511,46 @@ def ordinal_auto_encode(
             df = df.join(map_tb, on = t.name).with_columns(
                 pl.col("to").alias(t.name)
             ).drop("to")
-
     return df
 
-# def ordinal_encode(
-#     df:PolarsFrame
-#     , ordinal_mapping:dict[str, dict[str,int]]
-#     , default:int|None=None
-# ) -> PolarsFrame:
-#     '''
-#     Ordinal encode the columns in the ordinal_mapping dictionary. The ordinal_mapping dict should look like:
-#     {"a":{"a1":1, "a2":2}, ...}, which means for column a, a1 should be mapped to 1, a2 mapped to 2. Values 
-#     not mentioned in the dict will be mapped to default.
+def ordinal_encode(
+    df:PolarsFrame
+    , ordinal_mapping:dict[str, dict[str,int]]
+    , default:int|None=None
+) -> PolarsFrame:
+    '''
+    Ordinal encode the columns in the ordinal_mapping dictionary. The ordinal_mapping dict should look like:
+    {"a":{"a1":1, "a2":2}, ...}, which means for column a, a1 should be mapped to 1, a2 mapped to 2. Values 
+    not mentioned in the dict will be mapped to default.
 
-#     This will be remembered by blueprint by default.
+    This will be remembered by blueprint by default.
         
-#     Parameters
-#     ----------
-#     df
-#         Either a lazy or eager Polars DataFrame
-#     ordinal_mapping
-#         A dictionary that looks like {"a":{"a1":1, "a2":2}, ...}
-#     default
-#         Default value for values not mentioned in the dict.
-#     '''
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    ordinal_mapping
+        A dictionary that looks like {"a":{"a1":1, "a2":2}, ...}
+    default
+        Default value for values not mentioned in the dict.
+    '''
 
-#     for c in ordinal_mapping:
-#         if c in df.columns:
-#             mapping = ordinal_mapping[c]
-#             if isinstance(df, pl.LazyFrame):
-#                 # This relies on the fact that dicts in Python is ordered
-#                 mapping = {c: mapping.keys(), "to": mapping.values()}
-#                 df = df.blueprint.map_dict(c, mapping, "to", default)
-#             else:
-#                 mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[c, "to"])
-#                 df = df.join(mapping, on = c, how="left").with_columns(
-#                     pl.col("to").fill_null(default).alias(c)
-#                 ).drop("to")
-#         else:
-#             logger.warning(f"Found that column {c} is not in df. Skipped.")
+    for c in ordinal_mapping:
+        if c in df.columns:
+            mapping = ordinal_mapping[c]
+            if isinstance(df, pl.LazyFrame):
+                # This relies on the fact that dicts in Python is ordered
+                mapping = {c: mapping.keys(), "to": mapping.values()}
+                df = df.blueprint.map_dict(c, mapping, "to", default)
+            else:
+                mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[c, "to"])
+                df = df.join(mapping, on = c, how="left").with_columns(
+                    pl.col("to").fill_null(default).alias(c)
+                ).drop("to")
+        else:
+            logger.warning(f"Found that column {c} is not in df. Skipped.")
 
-#     return df
+    return df
 
 def smooth_target_encode(
     df:PolarsFrame
@@ -617,7 +616,7 @@ def smooth_target_encode(
             ).drop("to")
     return df
 
-def _when_then_replace(c:str, repl_map:dict):
+def _when_then_repl(c:str, repl_map:dict):
     expr = pl.col(c)
     for og, repl in repl_map.items():
         expr = pl.when(pl.col(c).eq(og)).then(repl).otherwise(expr)
@@ -695,7 +694,7 @@ def feature_mapping(
     if isinstance(mapping, dict):
         exprs = []
         for c, repl_map in mapping.items():
-            exprs.append(_when_then_replace(c, repl_map))
+            exprs.append(_when_then_repl(c, repl_map))
     elif isinstance(mapping, list):
         exprs = []
         for f in mapping:
