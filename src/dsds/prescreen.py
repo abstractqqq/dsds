@@ -2,6 +2,7 @@ from .type_alias import (
     PolarsFrame
     , KSAlternatives
     , CommonContinuousDist
+    , SimpleDtypes
     , CPU_COUNT
     , POLARS_DATETIME_TYPES
     , POLARS_NUMERICAL_TYPES
@@ -138,9 +139,15 @@ def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
 
     types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
     return "|".join(types) if len(types) > 0 else "unknown"
-    
+
+def type_checker(df:PolarsFrame, cols:list[str], expected_type:SimpleDtypes, caller_name:str) -> bool:
+    types = check_columns_types(df, cols)
+    if types != expected_type:
+        raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")    
+    return True
+
 # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
-def dtype_mapping(d: Any) -> str:
+def dtype_mapping(d: Any) -> SimpleDtypes:
     if isinstance(d, str) or d == pl.Utf8:
         return "string"
     elif isinstance(d, bool) or d == pl.Boolean:

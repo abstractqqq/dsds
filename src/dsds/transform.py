@@ -5,6 +5,7 @@ from .type_alias import (
     , ImputationStrategy
     , ScalingStrategy
     , PowerTransformStrategy
+    , DateExtract
     , clean_strategy_str
     , CPU_COUNT
 )
@@ -14,11 +15,13 @@ from .prescreen import (
     , get_unique_count
     , check_binary_target
     , check_columns_types
+    , type_checker
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint
 )
 import logging
+import math
 import numpy as np
 import polars as pl
 from typing import Optional, Tuple, Any
@@ -42,6 +45,8 @@ def impute(
 ) -> PolarsFrame:
     '''
     Impute the given columns with the given strategy.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -77,11 +82,13 @@ def impute(
 def scale(
     df:PolarsFrame
     , cols:list[str]
-    , strategy:ScalingStrategy="normal"
+    , strategy:ScalingStrategy="standard"
     , const:float = 1.0
 ) -> PolarsFrame:
     '''
     Scale the given columns with the given strategy.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -90,23 +97,20 @@ def scale(
     cols
         The columns to scale
     strategy
-        One of 'normal', 'min_max', 'const'. If 'const', the const argument should be provided
+        One of 'standard', 'min_max', 'const'. If 'const', the const argument should be provided
     const
         The constant value to scale by if strategy = 'const'    
     '''
-    types = check_columns_types(df, cols)
-    if types != "numeric":
-        raise TypeError(f"Scaling can only be used on numeric columns, not {types} types.")
-
+    _ = type_checker(df, cols, "numeric", "scale")
     s = clean_strategy_str(strategy)
-    if s in ("normal", "standard", "normalize"):
-        mean_std = df.select(cols).lazy().select(
+    if s == "standard":
+        mean_std = df.lazy().select(cols).select(
             pl.all().mean().prefix("mean:")
             , pl.all().std().prefix("std:")
         ).collect().row(0)
         exprs = ( (pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols) )
     elif s == "min_max":
-        min_max = df.select(cols).lazy().select(
+        min_max = df.lazy().select(cols).select(
             pl.all().min().prefix("min:"),
             pl.all().max().prefix("max:")
         ).collect().row(0) # All mins come first, then maxs
@@ -123,6 +127,8 @@ def scale(
 def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
     '''
     Converts all boolean columns into binary columns.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -144,10 +150,12 @@ def boolean_transform(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
 def missing_indicator(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
-    , suffix: str = "::missing"
+    , suffix: str = "_missing"
 ) -> PolarsFrame:
     '''
     Add one-hot columns for missing values in the given columns.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -164,7 +172,7 @@ def missing_indicator(
         to_add = cols
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
-    exprs = (pl.when(pl.col(c).is_null()).then(one).otherwise(zero).alias(c+suffix) for c in to_add)
+    exprs = (pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add)
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
@@ -178,6 +186,8 @@ def merge_infreq_values(
 ) -> PolarsFrame:
     '''
     Combines infrequent categories in string columns together.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -236,11 +246,7 @@ def merge_infreq_values(
     │ c   ┆ d     │
     └─────┴───────┘
     '''
-    
-    types = check_columns_types(df, cols)
-    if types != "string":
-        raise TypeError(f"merge_infreq_values can only be used on string columns, not {types} types.")
-    
+    _ = type_checker(df, cols, "string", "merge_infreq_values")
     if min_frac is None:
         if min_count is None:
             comp = pl.col("count") < 10
@@ -289,9 +295,7 @@ def one_hot_encode(
     '''
     
     if isinstance(cols, list):
-        types = check_columns_types(df, cols)
-        if types != "string":
-            raise TypeError(f"One-hot encoding can only be used on string columns, not {types} types.")
+        _ = type_checker(df, cols, "string", "one_hot_encode")
         str_cols = cols
     else:
         str_cols = get_string_cols(df)
@@ -413,6 +417,7 @@ def multicat_one_hot_encode(
     │ 1         ┆ 1         ┆ 0         ┆ 0         ┆ 0         ┆ 1         ┆ 1         │
     └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
     '''
+    _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
     temp = df.lazy().select(cols).groupby(1).agg(
         pl.all().str.split(delimiter).explode().unique().sort()
     ).select(cols) 
@@ -446,7 +451,6 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
     df
         Either a lazy or eager Polars DataFrame
     '''
-
     binary_list = get_unique_count(df).filter(pl.col("n_unique") == 2).get_column("column")
     temp = df.lazy().select(binary_list).groupby(1).agg(
             pl.all().unique().sort()
@@ -488,9 +492,7 @@ def ordinal_auto_encode(
         Columns to exclude. This is only used when cols is not provided.
     '''
     if isinstance(cols, list):
-        types = check_columns_types(df, cols)
-        if types != "string":
-            raise TypeError(f"Ordinal encoding can only be used on string columns, not {types} types.")
+        _ = type_checker(df, cols, "string", "ordinal_auto_encode")
         ordinal_list = cols
     else:
         ordinal_list = get_string_cols(df, exclude=exclude)
@@ -512,44 +514,44 @@ def ordinal_auto_encode(
 
     return df
 
-def ordinal_encode(
-    df:PolarsFrame
-    , ordinal_mapping:dict[str, dict[str,int]]
-    , default:int|None=None
-) -> PolarsFrame:
-    '''
-    Ordinal encode the columns in the ordinal_mapping dictionary. The ordinal_mapping dict should look like:
-    {"a":{"a1":1, "a2":2}, ...}, which means for column a, a1 should be mapped to 1, a2 mapped to 2. Values 
-    not mentioned in the dict will be mapped to default.
+# def ordinal_encode(
+#     df:PolarsFrame
+#     , ordinal_mapping:dict[str, dict[str,int]]
+#     , default:int|None=None
+# ) -> PolarsFrame:
+#     '''
+#     Ordinal encode the columns in the ordinal_mapping dictionary. The ordinal_mapping dict should look like:
+#     {"a":{"a1":1, "a2":2}, ...}, which means for column a, a1 should be mapped to 1, a2 mapped to 2. Values 
+#     not mentioned in the dict will be mapped to default.
 
-    This will be remembered by blueprint by default.
+#     This will be remembered by blueprint by default.
         
-    Parameters
-    ----------
-    df
-        Either a lazy or eager Polars DataFrame
-    ordinal_mapping
-        A dictionary that looks like {"a":{"a1":1, "a2":2}, ...}
-    default
-        Default value for values not mentioned in the dict.
-    '''
+#     Parameters
+#     ----------
+#     df
+#         Either a lazy or eager Polars DataFrame
+#     ordinal_mapping
+#         A dictionary that looks like {"a":{"a1":1, "a2":2}, ...}
+#     default
+#         Default value for values not mentioned in the dict.
+#     '''
 
-    for c in ordinal_mapping:
-        if c in df.columns:
-            mapping = ordinal_mapping[c]
-            if isinstance(df, pl.LazyFrame):
-                # This relies on the fact that dicts in Python is ordered
-                mapping = {c: mapping.keys(), "to": mapping.values()}
-                df = df.blueprint.map_dict(c, mapping, "to", default)
-            else:
-                mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[c, "to"])
-                df = df.join(mapping, on = c, how="left").with_columns(
-                    pl.col("to").fill_null(default).alias(c)
-                ).drop("to")
-        else:
-            logger.warning(f"Found that column {c} is not in df. Skipped.")
+#     for c in ordinal_mapping:
+#         if c in df.columns:
+#             mapping = ordinal_mapping[c]
+#             if isinstance(df, pl.LazyFrame):
+#                 # This relies on the fact that dicts in Python is ordered
+#                 mapping = {c: mapping.keys(), "to": mapping.values()}
+#                 df = df.blueprint.map_dict(c, mapping, "to", default)
+#             else:
+#                 mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[c, "to"])
+#                 df = df.join(mapping, on = c, how="left").with_columns(
+#                     pl.col("to").fill_null(default).alias(c)
+#                 ).drop("to")
+#         else:
+#             logger.warning(f"Found that column {c} is not in df. Skipped.")
 
-    return df
+#     return df
 
 def smooth_target_encode(
     df:PolarsFrame
@@ -582,9 +584,7 @@ def smooth_target_encode(
         Checks if target is binary. If not, throw an error
     '''
     if isinstance(cols, list):
-        types = check_columns_types(df, cols)
-        if types != "string":
-            raise ValueError(f"Target encoding can only be used on string columns, not {types} types.")
+        _ = type_checker(df, cols, "string", "smooth_target_encode")
         str_cols = cols
     else:
         str_cols = get_string_cols(df)
@@ -798,10 +798,7 @@ def quantile_binning(
     │ (3, inf]  │
     └───────────┘
     '''
-    types = check_columns_types(df, cols)
-    if types != "numeric":
-        raise ValueError(f"Quantile binning can only be used on numeric columns, not {types} types.")
-    
+    _ = type_checker(df, cols, "numeric", "quantile_binning")
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
     if isinstance(df, pl.LazyFrame):
         cuts = df.select(cols).select(
@@ -847,9 +844,7 @@ def woe_cat_encode(
         Whether to check target is binary or not.
     '''
     if isinstance(cols, list):
-        types = check_columns_types(df, cols)
-        if types != "string":
-            raise ValueError(f"woe_cat_encode encoding can only be used on string columns, not {types} types.")
+        _ = type_checker(df, cols, "string", "woe_cat_encode")
         str_cols = cols
     else:
         str_cols = get_string_cols(df)
@@ -913,11 +908,7 @@ def power_transform(
     n_threads
         The max number of worker threads to use in Python
     '''
-
-    types = check_columns_types(df, cols)
-    if types != "numeric":
-        raise ValueError(f"Power Transform can only be used on numeric columns, not {types} types.")
-    
+    _ = type_checker(df, cols, "numeric", "power_transform")
     s = clean_strategy_str(strategy)
     exprs:list[pl.Expr] = []
     # Ensure columns do not have missing values
@@ -970,4 +961,147 @@ def power_transform(
         return df.lazy().blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
+
+# Should feature engineering spin off to its own module? Or stay in transform?
+# First, I need to wait until I have more feature engineering stuff..
+
+def normalize(
+    df: PolarsFrame
+    , cols:list[str]
+) -> PolarsFrame:
+    '''
+    Normalize the given columns by dividing them with the respective column sum.
+
+    !!!Note this will not be remember by the pipeline!!!
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be numeric columns
+    '''
     
+    types = check_columns_types(df, cols)
+    if types != "numeric":
+        raise ValueError(f"normalize can only be used on numeric columns, not {types} types.")
+
+    return df.with_columns(pl.col(c)/pl.col(c).sum() for c in cols)
+
+def log_transform(
+    df: PolarsFrame
+    , cols:list[str]
+    , base:float = math.e
+    , cast_non_positive: None | float = None
+) -> PolarsFrame:
+    '''
+    Performs classical log transform on the given columns
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be numeric columns
+    base
+        Base of log. Default is math.e
+    cast_non_positive
+        How to deal with non positive values (<=0). None means turn them into null
+    '''
+    _ = type_checker(df, cols, "numeric", "log_transform")
+    exprs = [
+        pl.when(pl.col(c) <= 0).then(cast_non_positive).otherwise(pl.col(c).log(base)).suffix("_log") for c in cols
+    ]
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
+def extract_dt_features(
+    df: PolarsFrame
+    , cols: list[str]
+    , extract: DateExtract | list[DateExtract] = ["year", "quarter", "month"]
+    , sunday_first: bool = False
+) -> PolarsFrame:
+    '''
+    Extracts additional date related features from existing date/datetime columns.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be date/datetime columns
+    extract
+        One of "year", "quarter", "month", "week", "day_of_week", "day_of_year", or a list of these values
+        such as ["year", "quarter"], which means extract year and quarter from all the columns provided 
+    sunday_first
+        For day_of_week, by default, Monday maps to 1, and so on. If sunday_first = True, then Sunday will be
+        mapped to 1 and so on
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "date1":["2021-01-01", "2022-02-03", "2023-11-23"]
+    ...     , "date2":["2021-01-01", "2022-02-03", "2023-11-23"]
+    ... }).with_columns(
+    ...     pl.col(c).str.to_date() for c in ["date1", "date2"]
+    ... )
+    >>> print(df)
+    shape: (3, 2)
+    ┌────────────┬────────────┐
+    │ date1      ┆ date2      │
+    │ ---        ┆ ---        │
+    │ date       ┆ date       │
+    ╞════════════╪════════════╡
+    │ 2021-01-01 ┆ 2021-01-01 │
+    │ 2022-02-03 ┆ 2022-02-03 │
+    │ 2023-11-23 ┆ 2023-11-23 │
+    └────────────┴────────────┘
+    >>> cols = ["date1", "date2"]
+    >>> print(t.extract_dt_features(df, cols=cols))
+    shape: (3, 8)
+    ┌────────────┬────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
+    │ date1      ┆ date2      ┆ date1_year ┆ date2_yea ┆ date1_qua ┆ date2_qua ┆ date1_mon ┆ date2_mon │
+    │ ---        ┆ ---        ┆ ---        ┆ r         ┆ rter      ┆ rter      ┆ th        ┆ th        │
+    │ date       ┆ date       ┆ u16        ┆ ---       ┆ ---       ┆ ---       ┆ ---       ┆ ---       │
+    │            ┆            ┆            ┆ u16       ┆ u8        ┆ u8        ┆ u8        ┆ u8        │
+    ╞════════════╪════════════╪════════════╪═══════════╪═══════════╪═══════════╪═══════════╪═══════════╡
+    │ 2021-01-01 ┆ 2021-01-01 ┆ 2021       ┆ 2021      ┆ 1         ┆ 1         ┆ 1         ┆ 1         │
+    │ 2022-02-03 ┆ 2022-02-03 ┆ 2022       ┆ 2022      ┆ 1         ┆ 1         ┆ 2         ┆ 2         │
+    │ 2023-11-23 ┆ 2023-11-23 ┆ 2023       ┆ 2023      ┆ 4         ┆ 4         ┆ 11        ┆ 11        │
+    └────────────┴────────────┴────────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
+    '''
+    _ = type_checker(df, cols, "datetime", "extract_dt_features")
+    exprs = []
+    if isinstance(extract, list):
+        to_extract = extract
+    else:
+        to_extract = [extract]
+    
+    for e in to_extract:
+        if e == "month":
+            exprs.extend(pl.col(c).dt.month().cast(pl.UInt8).suffix("_month") for c in cols)
+        elif e == "year":
+            exprs.extend(pl.col(c).dt.year().cast(pl.UInt16).suffix("_year") for c in cols)
+        elif e == "quarter":
+            exprs.extend(pl.col(c).dt.quarter().cast(pl.UInt8).suffix("_quarter") for c in cols)
+        elif e == "week":
+            exprs.extend(pl.col(c).dt.week().cast(pl.UInt8).suffix("_week") for c in cols)
+        elif e == "day_of_week":
+            if sunday_first:
+                exprs.extend(((pl.col(c).dt.weekday()+1)%7).cast(pl.UInt8).suffix("_day_of_week") for c in cols)
+            else:
+                exprs.extend(pl.col(c).dt.weekday().cast(pl.UInt8).suffix("_day_of_week") for c in cols)
+        elif e == "day_of_year":
+            exprs.extend(pl.col(c).dt.ordinal_day().cast(pl.UInt8).suffix("_day_of_year") for c in cols)
+        else:
+            logger.error(f"Found {e} in extract, but is not a valid DateExtract value. Ignored.")
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)

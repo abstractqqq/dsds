@@ -12,6 +12,7 @@ from .type_alias import (
     , BinaryModels
     , CPU_COUNT
     , clean_strategy_str
+    , ClassifModel
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint
@@ -659,118 +660,111 @@ def woe_iv_cat(
     return pl.concat(results).collect()
 
 def _binary_model_init(
-    model:BinaryModels
+    model_str:BinaryModels
     , params: dict[str, Any]
-):
+) -> ClassifModel:
     if "n_jobs" not in params:
         params["n_jobs"] = -1
 
-    if model in ("logistic", "lr"):
+    if model_str in ("logistic", "lr"):
         from sklearn.linear_model import LogisticRegression
         model = LogisticRegression(**params)
-    elif model in ("rf", "random_forest"):
+    elif model_str in ("rf", "random_forest"):
         from sklearn.ensemble import RandomForestClassifier
         model = RandomForestClassifier(**params)
-    elif model in ("xgb", "xgboost"):
+    elif model_str in ("xgb", "xgboost"):
         from xgboost import XGBClassifier
         model = XGBClassifier(**params)
-    elif model in ("lgbm", "lightgbm"):
+    elif model_str in ("lgbm", "lightgbm"):
         from lightgbm import LGBMClassifier
         model = LGBMClassifier(**params)
     else:
-        raise ValueError(f"The model {model} is not available.")
+        raise ValueError(f"The model {model_str} is not available.")
     
     return model
 
-def _ebfs(
-    model:str
+def _fc_fi(
+    model_str:str
     , params:dict[str, Any]
     , target:str
-    , comb: Tuple
+    , features: Tuple | list
     , train: pl.DataFrame
-    , test:pl.DataFrame
-)-> Tuple[Tuple[Tuple, float, float, float], np.ndarray]:
-    estimator = _binary_model_init(model, params)
-    _ = estimator.fit(train.select(comb), train[target])
-    y_pred = estimator.predict_proba(test.select(comb))[:,1]
+    , test: pl.DataFrame
+)-> Tuple[Tuple[Tuple, float, float], np.ndarray]:
+    
+    estimator = _binary_model_init(model_str, params)
+    _ = estimator.fit(train.select(features), train[target])
+    y_pred = estimator.predict_proba(test.select(features))[:,1]
     y_test = test[target].to_numpy()
-    rec = (
-        comb,
+    fc_rec = (
+        features,
         logloss(y_test, y_pred, check_binary=False),
         roc_auc(y_test, y_pred, check_binary=False)
     )
-    if model in ("lr", "logistic"):
-        importances = np.abs(estimator.coef_).ravel()
+    if model_str in ("lr", "logistic"):
+        fi_rec = np.abs(estimator.coef_).ravel()
     else:
-        importances = estimator.feature_importances_
-
-    return rec, importances
+        fi_rec = estimator.feature_importances_
+    # fc_rec feature comb record, fi_rec feature importance record
+    return fc_rec, fi_rec
 
 # ebfs: stands for Exhaustive Binary Feature Selection
 def ebfs(
     df:pl.DataFrame
     , target:str
-    , model:BinaryModels
+    , model_str:BinaryModels
     , params:dict[str, Any]
     , n_comb: int = 3
     , train_frac:float = 0.75
 ) -> Tuple[pl.DataFrame, pl.DataFrame]:
-    '''Suppose we have n features and n_comb = 2. This method will select all (n choose 2) 
-    combinations of features, split dataset into a train and a test, train a model on train, 
-    and compute feature importance and roc_auc and logloss, and then finally put 
-    everything into two separate dataframes, the first of which will contain the feature
-    combinations and model performances, and the second will contain the min, avg, max and var of 
-    feature importance of each feature in all its occurences in the training rounds.
+    '''
+    Suppose we have n features and n_comb = 2. This method will select all (n choose 2) 
+    combinations of features, split dataset into a train and a test for each combination, 
+    train a model on train, and compute feature importance and roc_auc and logloss, and 
+    then finally put everything into two separate dataframes, the first of which will contain 
+    the feature combinations and model performances, and the second will contain the min, avg, 
+    max and var of feature importance of each feature in all its occurences in the training rounds.
+
+    Notice since we split data into train and test every time for a different feature combination, the 
+    average feature importance we derive naturally are `cross-validated` to a certain degree.
 
     This method will be extremely slow if (n choose n_comb) is a big number. All numerical columns 
     will be taken as potential features. Please encode the string columns if you want to use them
     as features here.
 
-    Future Improvement? Record progress and skip through results.
-
     If n_jobs is not provided in params, it will be defaulted to -1.
 
-        Arguments:
-            df: an eager Polars DataFrame
-            target: target column
-            model: one of 'logistic', 'lr', 'lightgbm', 'lgbm', 'xgboost', 'xgb', 'random_forest', 'rf'
-            params: parameters for the model.
-            n_comb: n choose n_comb
-
-        Returns:
-            a feature combination summary, a feature importance summary
+    Parameters
+    ----------
+    df
+        An eager Polars DataFrame
+    target
+        The target column
+    model_str
+        one of 'lr', 'lgbm', 'xgb', 'rf'
+    params
+        Parameters for the model
+    n_comb
+        We will run this for all n choose n_comb combinations of features
     '''
-    
     features = get_numeric_cols(df, exclude=[target])
-    train, test = train_test_split(df.select(features + [target]), train_frac)
     fi = {f:[] for f in features}
     records = []
-    pbar = tqdm(total=math.comb(len(features), n_comb), desc="Total Combinations")
-    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
-        futures = (
-            ex.submit(
-                _ebfs
-                , model
-                , params
-                , target
-                , comb
-                , train
-                , test
-            )
-            for comb in combinations(features, r=n_comb)
-        )
-        for f in as_completed(futures):
-            fc_rec, fi_rec = f.result()
-            records.append(fc_rec)
-            for f, i in zip(fc_rec[0], fi_rec):
-                fi[f].append(i)
-            pbar.update(1)
+    pbar = tqdm(total=math.comb(len(features), n_comb), desc="Tested Combinations")
+    df_keep = df.select(features + [target])
+    for comb in combinations(features, r=n_comb):
+        train, test = train_test_split(df_keep, train_frac)
+        fc_rec, fi_rec = _fc_fi(model_str, params, target, comb, train, test) 
+        records.append(fc_rec)
+        for f, i in zip(fc_rec[0], fi_rec):
+            fi[f].append(i)
+        pbar.update(1)
 
     fc_summary = pl.from_records(records, schema=["combination", "logloss", "roc_auc"])
     stats = [
         (f, len(fi[f]), np.min(fi[f]), np.mean(fi[f]), np.max(fi[f]), np.std(fi[f])) for f in fi
     ]
-    fi_summary = pl.from_records(stats, schema=["feature", "occurrences", "min", "mean", "max", "std"])
+    fi_summary = pl.from_records(stats, schema=["feature", "occurrences", "fi_min", "fi_mean", "fi_max", "fi_std"])
     pbar.close()
     return fc_summary, fi_summary
 
@@ -779,7 +773,8 @@ def ebfs_fc_filter(
     , logloss_threshold:float
     , roc_auc_threshold:float
 ) -> list[str]:
-    '''A filter method based on the feature combination result of ebfs. First, 
+    '''
+    A filter method based on the feature combination result of ebfs. First, 
 
         Arguments:
             fc: the feature combination result from ebfs
@@ -794,5 +789,65 @@ def ebfs_fc_filter(
         & pl.col("roc_auc") >= roc_auc_threshold
     ).get_column("combination").explode().unique().to_list()
 
+def _permute_importance(
+    model:ClassifModel
+    , df:pl.DataFrame
+    , y: np.ndarray
+    , features: Tuple | list
+    , index: int
+    , k: int
+) -> Tuple[float, int]:
+    test_score = 0.
+    for _ in range(k):
+        shuffled_df = df.with_columns(
+            pl.col(features[index]).shuffle(seed=42)
+        )
+        pred = model.predict_proba(shuffled_df[features])[:, -1]
+        test_score += roc_auc(y, pred)
 
+    return test_score, index
+
+# Can extend this for n_comb as well, as 
+
+def permutation_importance(
+    df:pl.DataFrame
+    , target:str
+    , model_str:BinaryModels
+    , params:dict[str, Any]
+    , k:int = 5
+) -> pl.DataFrame:
+    '''
+    Only works for classification and score = roc_auc for now.
+    '''
+
+
+    features = df.columns
+    features.remove(target)
     
+    estimator = _binary_model_init(model_str, params)
+    estimator.fit(df[features], df[target])
+    y = df[target].to_numpy()
+    pred = estimator.predict_proba(df[features])[:, -1]
+    score = roc_auc(y, pred)
+
+    pbar = tqdm(total=len(features), desc="Analyzing Features")
+    imp = np.zeros(shape=len(features))
+    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
+        futures = (
+            ex.submit(
+                _permute_importance,
+                estimator,
+                df,
+                y,
+                features, 
+                j,
+                k
+            )
+            for j in range(len(features))
+        )
+        for f in as_completed(futures):
+            test_score, i = f.result()
+            imp[i] = score - (1/k)*test_score
+            pbar.update(1)
+
+    return pl.from_records((features, imp), schema=["feature", "permutation_importance"])

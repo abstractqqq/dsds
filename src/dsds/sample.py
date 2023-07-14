@@ -57,7 +57,7 @@ def lazy_sample(
 
     if persist:
         output = output.blueprint.apply_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac
-                                                                        , "sample_amt":sample_amt,"seed":seed})
+                                                                        , "sample_amt":sample_amt, "seed":seed})
     return output
 
 def deduplicate(
