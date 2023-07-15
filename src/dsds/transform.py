@@ -740,6 +740,26 @@ def custom_binning(
         return df.with_columns(
             pl.col(c).cut(cuts).cast(pl.Utf8) for c in cols
         )
+    
+def fixed_sized_binning(
+    df:PolarsFrame
+    , cols:list[str]
+    , interval: float
+) -> PolarsFrame:
+    
+    bounds = df.lazy().select(cols).select(
+        pl.all().min().prefix("min:")
+        , pl.all().max().prefix("max:")
+    ).collect().row(0)
+    exprs = []
+    n = len(cols)
+    for i, c in enumerate(cols):
+        cut = np.arange(bounds[i], bounds[n+i] + interval, step=interval).tolist()
+        exprs.append(pl.col(c).cut(cut).cast(pl.Utf8).alias(c))
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
 
 def quantile_binning(
     df:PolarsFrame
