@@ -4,6 +4,7 @@ from .prescreen import (
     , get_numeric_cols
     , get_unique_count
     , get_string_cols
+    , type_checker
 )
 
 from .type_alias import (
@@ -503,6 +504,8 @@ def mrmr_selector(
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
 ) -> PolarsFrame:
+    '''
+    '''
 
     is_lazy = isinstance(df, pl.LazyFrame)
     if is_lazy:
@@ -591,6 +594,9 @@ def knock_out_mrmr_selector(
     , corr_threshold:float = 0.7
     , params:Optional[dict[str,Any]] = None
 ) -> PolarsFrame:
+    '''
+    Performs knock out MRMR
+    '''
 
     is_lazy = isinstance(df, pl.LazyFrame)
     if isinstance(df, pl.LazyFrame):
@@ -622,16 +628,25 @@ def woe_iv_cat(
     , check_binary:bool = True
 ) -> pl.DataFrame:
     '''
-        Arguments:
-            df: ..
-            target: ..
-            cols: a list of string or highly discrete numeric columns. Currently woe_iv for continuous values
-            is not implemenented. If not provided, it will use only string columns.
-            min_count: a regularization term that prevents ln(0). This is the same as 
-            category_encoders package's regularization parameter.
-            check_binary: whether to check if target is binary or not
+    Computes information values for categorical variables. Notice that by using binning methods provided, you can turn
+    numerical values into categorical bins.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars Dataframe
+    target
+        The target column
+    cols
+        If not provided, will use all string columns
+    min_count
+        A regularization term that prevents ln(0). This is the same as category_encoders package's 
+        regularization parameter.
+    check_binary
+        Whether to check if target is binary or not
     '''
     if isinstance(cols, list):
+        _ = type_checker(df, cols, "string", "woe_iv_cat")
         input_cols = cols
     else:
         input_cols = get_string_cols(df)
@@ -663,6 +678,9 @@ def _binary_model_init(
     model_str:BinaryModels
     , params: dict[str, Any]
 ) -> ClassifModel:
+    '''
+    Creates the binary classification model given by the model_str and the params dict
+    '''
     if "n_jobs" not in params:
         params["n_jobs"] = -1
 
@@ -774,19 +792,20 @@ def ebfs_fc_filter(
     , roc_auc_threshold:float
 ) -> list[str]:
     '''
-    A filter method based on the feature combination result of ebfs. First, 
+    A filter method based on the feature combination result of ebfs.
 
-        Arguments:
-            fc: the feature combination result from ebfs
-            logloss_threshold: the maximum logloss for the combination to be kept
-            roc_auc_threshold: the minumum roc_auc for the combination to be kept
-
-        Returns:
-            a list of string representing all features in the combinations after filtering
+    Parameters
+    ----------
+    fc
+        The feature combination result from ebfs
+    logloss_threshold
+        The maximum logloss for the combination to be kept
+    roc_auc_threshold
+        The minimum roc_auc for the combination to be kept
     '''
     return fc.filter(
-        pl.col("logloss") <= logloss_threshold
-        & pl.col("roc_auc") >= roc_auc_threshold
+        (pl.col("logloss") <= logloss_threshold)
+        & (pl.col("roc_auc") >= roc_auc_threshold)
     ).get_column("combination").explode().unique().to_list()
 
 def _permute_importance(
@@ -817,10 +836,24 @@ def permutation_importance(
     , k:int = 5
 ) -> pl.DataFrame:
     '''
-    Only works for classification and score = roc_auc for now.
+    Computes permutation importance for every non-target column in df. Please make sure all columns are properly encoded
+    or transformed before calling this.
+    
+    Only works for binary classification and score = roc_auc for now.
+
+    Parameters
+    ----------
+    df
+        An eager Polars DataFrame
+    target
+        The target column
+    model_str
+        One of 'lr', 'lgbm', 'xgb', 'rf'
+    params
+        Parameters for the model
+    k
+        Permute the same feature k times
     '''
-
-
     features = df.columns
     features.remove(target)
     
@@ -829,7 +862,6 @@ def permutation_importance(
     y = df[target].to_numpy()
     pred = estimator.predict_proba(df[features])[:, -1]
     score = roc_auc(y, pred)
-
     pbar = tqdm(total=len(features), desc="Analyzing Features")
     imp = np.zeros(shape=len(features))
     with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
