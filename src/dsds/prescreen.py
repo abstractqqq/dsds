@@ -13,7 +13,7 @@ from .sample import (
 from .blueprint import(
     Blueprint
 )
-
+import re
 import polars.selectors as cs
 import polars as pl
 import logging  
@@ -70,8 +70,28 @@ def lowercase_columns(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
     '''
     output = df.rename({c: c.lower() for c in df.columns})
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.apply_func(df, lowercase_columns, kwargs = {})
+        return output.blueprint.add_func(df, lowercase_columns, kwargs = {})
     return output
+
+def rename(df:PolarsFrame, rename_dict:dict[str, str], persist:bool=False) -> PolarsFrame:
+    '''
+    A wrapper function for df.rename() so that it works with pipeline.
+
+    Set persist = True if this needs to be remembered by the blueprint.
+    '''
+    output = df.rename(rename_dict)
+    if isinstance(df, pl.LazyFrame) and persist:
+        return output.blueprint.add_func(df, lowercase_columns, kwargs = {"rename_dict", rename_dict})
+    return output
+
+def snake_case(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
+    '''
+    Turn all camel case column names into snake case.
+
+    Set persist = True if this needs to be remembered by the blueprint.
+    '''
+    pat = re.compile(r"(?<!^)(?=[A-Z])")
+    return rename(df, {c: pat.sub('_', c).lower() for c in df.columns}, persist)
 
 def drop_nulls(
     df:PolarsFrame

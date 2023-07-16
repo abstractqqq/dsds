@@ -56,7 +56,7 @@ def lazy_sample(
         .select(df.columns)
 
     if persist:
-        output = output.blueprint.apply_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac
+        output = output.blueprint.add_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac
                                                                         , "sample_amt":sample_amt, "seed":seed})
     return output
 
@@ -84,7 +84,7 @@ def deduplicate(
     '''
     output = df.unique(subset=subset, keep = keep)
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.apply_func(df, deduplicate, kwargs = {"subset":subset,"keep":keep})
+        return output.blueprint.add_func(df, deduplicate, kwargs = {"subset":subset,"keep":keep})
     return output
 
 def simple_upsample(
@@ -202,7 +202,7 @@ def simple_upsample(
     if isinstance(df, pl.LazyFrame):
         output = pl.concat([df, sub.lazy()])
         if persist:
-            output = output.blueprint.apply_func(df, simple_upsample, kwargs = {"subgroup":subgroup,"count":count
+            output = output.blueprint.add_func(df, simple_upsample, kwargs = {"subgroup":subgroup,"count":count
                                                                                 ,"epsilon":epsilon,"include":include
                                                                                 ,"exclude":exclude,"positive":positive
                                                                                 , "seed":seed})
@@ -255,7 +255,7 @@ def simple_downsample(
 
     if isinstance(df, pl.LazyFrame):
         if persist:
-            output = output.blueprint.apply_func(df, simple_downsample
+            output = output.blueprint.add_func(df, simple_downsample
                                                 , kwargs={"subgroup":subgroup,"sample_frac":sample_frac})
         return output
     return output
@@ -305,7 +305,7 @@ def stratified_downsample(
         pl.int_range(0, pl.count(), dtype=pl.UInt64).shuffle().over(group) < rhs
     )
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.apply_func(df, stratified_downsample
+        return output.blueprint.add_func(df, stratified_downsample
                                         , kwargs={"group":group, "keep":keep, "min_keep":min_keep})
     return output
 

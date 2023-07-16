@@ -137,7 +137,7 @@ class Blueprint:
         return output
     
     # This doesn't work with the pipeline right now because it clears all steps before this.
-    def apply_func(self
+    def add_func(self
         , df:LazyFrame # The input to the function that needs to be persisted.
         , func:Callable[Concatenate[LazyFrame, P], LazyFrame]
         , kwargs:dict[str, Any]
@@ -149,29 +149,45 @@ class Blueprint:
         output = self._ldf # .lazy()
         output.blueprint.steps = df.blueprint.steps.copy() 
         output.blueprint.steps.append(
-            Step(action="apply_func", associated_data={"module":func.__module__, "name":func.__name__, "kwargs":kwargs})
+            Step(action="add_func", associated_data={"module":func.__module__, "name":func.__name__, "kwargs":kwargs})
         )
         return output
         
     def preserve(self, path:str|Path):
+        '''
+        Writes the blueprint to disk as a Python pickle file at the given path.
+        '''
         f = open(path, "wb")
         pickle.dump(self, f)
         f.close()
 
-    def apply(self, df:PolarsFrame) -> PolarsFrame:
-        for s in self.steps:
-            if s.action == "drop":
-                df = df.drop(s.associated_data)
-            elif s.action == "with_columns":
-                df = df.with_columns(s.associated_data)
-            elif s.action == "map_dict":
-                df = self._map_dict(df, s.associated_data)
-            elif s.action == "select":
-                df = df.select(s.associated_data)
-            elif s.action == "filter":
-                df = df.filter(s.associated_data)
-            elif s.action == "apply_func":
-                func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
-                df = df.pipe(func, **s.associated_data["kwargs"])
-            
+    def apply(self, df:PolarsFrame, up_to:int=-1) -> PolarsFrame:
+        '''
+        Apply all the steps to the given df. The result will be lazy if df is lazy, and eager if df is eager.
+
+        Parameters
+        ----------
+        df
+            Either an eager or lazy Polars Dataframe
+        up_to
+            If > 0, will perform the steps up to this number
+        '''
+        _up_to = len(self.steps) if up_to <=0 else min(up_to, len(self.steps))
+        for i,s in enumerate(self.steps):
+            if i < _up_to:
+                if s.action == "drop":
+                    df = df.drop(s.associated_data)
+                elif s.action == "with_columns":
+                    df = df.with_columns(s.associated_data)
+                elif s.action == "map_dict":
+                    df = self._map_dict(df, s.associated_data)
+                elif s.action == "select":
+                    df = df.select(s.associated_data)
+                elif s.action == "filter":
+                    df = df.filter(s.associated_data)
+                elif s.action == "add_func":
+                    func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
+                    df = df.pipe(func, **s.associated_data["kwargs"])
+            else:
+                break
         return df
