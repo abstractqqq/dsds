@@ -12,7 +12,7 @@ if sys.version_info >= (3, 10):
     PolarsFrame:TypeAlias = pl.DataFrame | pl.LazyFrame
     PipeFunction = Callable[Concatenate[PolarsFrame, P], PolarsFrame]
 else:
-    from type_extensions import TypeAlias
+    from typing_extensions import TypeAlias
     PolarsFrame:TypeAlias = pl.DataFrame | pl.LazyFrame
     PipeFunction = Callable
 
