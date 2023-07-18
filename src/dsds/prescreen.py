@@ -99,7 +99,7 @@ def select(
     , persist:bool=False
 ) -> PolarsFrame:
     '''
-    A select wrapper that makes it pipeline compatible
+    A select wrapper that makes it pipeline compatible.
 
     Set persist = True if this needs to be remembered by the blueprint.
     '''
@@ -619,7 +619,6 @@ def _ks_compare(
     , pair:Tuple[str, str]
     , alt:KSAlternatives="two-sided"
 ) -> Tuple[Tuple[str, str], float, float]:
-    
     res = ks_2samp(df.get_column(pair[0]), df.get_column(pair[1]), alt)
     return (pair, res.statistic, res.pvalue)
 
@@ -632,13 +631,13 @@ def ks_compare(
     , skip:int = 0
     , max_comp:int = 1000
 ) -> pl.DataFrame:
-    '''Run ks-stats on all non-discrete columns in the dataframe. If test_cols is None, it will infer non-discrete 
+    '''
+    Run ks-stats on all non-discrete columns in the dataframe. If test_cols is None, it will infer non-discrete 
     continuous columns. See docstring of discrete_inferral to see what is considered discrete. Provide the target 
     so that it will not be included in the comparisons. Since ks 2 sample comparison is relatively expensive, we will
     always sample 75% of the dataset, unless the user specifies a different sample_frac.
 
-    Note: this will only run on all 2 combinations of columns, starting from skip and end at 
-    skip + max_comp.
+    Note: this will only run on all 2 combinations of columns, starting from skip and endubg at skip + max_comp.
 
     Note: The null hypothesis is that the two columns come from the same distribution. Therefore a small p-value means
     that they do not come from the same distribution. Having p-value > threshold does not mean they have the same 
@@ -651,7 +650,7 @@ def ks_compare(
 
     if target in nums:
         nums.remove(target)
-    sorted(nums)
+    nums.sort()
     if isinstance(df, pl.LazyFrame):
         df_test = lazy_sample(df.select(nums).lazy(), sample_frac=smaple_frac).collect()
     else:
@@ -680,7 +679,8 @@ def dist_test(
     , smaple_frac:float = 0.75
     , target: Optional[str] = None
 ) -> pl.DataFrame:
-    '''Tests if the numeric columns follow the given distribution by using the KS test. If
+    '''
+    Tests if the numeric columns follow the given distribution by using the KS test. If
     target is provided it will be excluded. The null hypothesis is that the columns follow the given distribution. 
     We sample 75% of data because ks test is relatively expensive.
     '''
@@ -706,7 +706,8 @@ def suggest_normal(
     , target: Optional[str] = None
     , threshold:float = 0.05
 ) -> list[str]:
-    '''Suggests which columns are normally distributed. This takes the columns for which the null hypothesis
+    '''
+    Suggests which columns are normally distributed. This takes the columns for which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
     return dist_test(df, "norm", target=target).filter(pl.col("p-value") > threshold)\
@@ -717,7 +718,8 @@ def suggest_uniform(
     , target: Optional[str] = None
     , threshold:float = 0.05
 ) -> list[str]:
-    '''Suggests which columns are uniformly distributed. This takes the columns for which the null hypothesis
+    '''
+    Suggests which columns are uniformly distributed. This takes the columns for which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
     return dist_test(df, "uniform", target=target).filter(pl.col("p-value") > threshold)\
@@ -728,7 +730,8 @@ def suggest_lognormal(
     , target: Optional[str] = None
     , threshold:float = 0.05
 ) -> list[str]:
-    '''Suggests which columns are log-normally distributed. This takes the columns which the null hypothesis
+    '''
+    Suggests which columns are log-normally distributed. This takes the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
     return dist_test(df, "lognorm", target=target).filter(pl.col("p-value") > threshold)\
@@ -740,7 +743,8 @@ def suggest_dist(
     , threshold:float = 0.05
     , dist: CommonContinuousDist = "norm"
 ) -> list[str]:
-    '''Suggests which columns follow the given distribution. This returns the columns which the null hypothesis
+    '''
+    Suggests which columns follow the given distribution. This returns the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
     return dist_test(df, dist, target=target).filter(pl.col("p-value") > threshold)\

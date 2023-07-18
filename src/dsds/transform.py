@@ -1030,14 +1030,56 @@ def normalize(
 
     return df.with_columns(pl.col(c)/pl.col(c).sum() for c in cols)
 
+def clip(
+    df: PolarsFrame
+    , cols: list[str]
+    , min_clip: Optional[float]
+    , max_clip: Optional[float]
+) -> PolarsFrame:
+    '''
+    Clips the columns within the min and max_clip bounds. This can be used to trim out outliers. If both min_clip and
+    max_clip are provided, perform two-sided clipping. If only one bound is provided, only one side will be clipped.
+    It will throw an error if both min and max_clips are not provided.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be numeric columns
+    min_clip
+        Every value smaller than min_clip will be replaced by min_cap
+    max_clip
+        Every value bigger than max_clip will be replaced by max_cap
+    '''
+    _ = type_checker(df, cols, "numeric", "clip")
+    a:bool = min_clip is None
+    b:bool = max_clip is None
+    if a & (not b):
+        exprs = (pl.col(c).clip_max(max_clip) for c in cols)
+    elif (not a) & b:
+        exprs = (pl.col(c).clip_min(min_clip) for c in cols)
+    elif not (a | b):
+        exprs = (pl.col(c).clip(min_clip, max_clip) for c in cols)
+    else:
+        raise TypeError("Either min_cap or max_cap or both have to be provided.")
+    
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(list(exprs))
+    return df.with_columns(exprs)
+
 def log_transform(
     df: PolarsFrame
     , cols:list[str]
     , base:float = math.e
     , cast_non_positive: Optional[float] = None
+    , plus_one:bool = False
+    , suffix:str = "_log"
 ) -> PolarsFrame:
     '''
-    Performs classical log transform on the given columns
+    Performs classical log transform on the given columns, e.g. log(x). You may set plus_one to perform ln(1 + x).
 
     This will be remembered by blueprint by default.
 
@@ -1051,13 +1093,23 @@ def log_transform(
         Base of log. Default is math.e
     cast_non_positive
         How to deal with non positive values (<=0). None means turn them into null
+    plus_one
+        If plus_one is true, this will perform ln(1+x) and ignore base and cast_non_positive inputs
+    suffix
+        Choice of a suffix to the transformed columns. If this is the empty string "", then the original column
+        will be replaced
     '''
     _ = type_checker(df, cols, "numeric", "log_transform")
-    exprs = [
-        pl.when(pl.col(c) <= 0).then(cast_non_positive).otherwise(pl.col(c).log(base)).suffix("_log") for c in cols
-    ]
+    if plus_one:
+        exprs = (
+            pl.col(c).log1p().suffix(suffix) for c in cols
+        )
+    else:
+        exprs = (
+            pl.when(pl.col(c) <= 0).then(cast_non_positive).otherwise(pl.col(c).log(base)).suffix(suffix) for c in cols
+        )
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
+        return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
 
 def extract_dt_features(
@@ -1142,7 +1194,7 @@ def extract_dt_features(
         elif e == "day_of_year":
             exprs.extend(pl.col(c).dt.ordinal_day().cast(pl.UInt8).suffix("_day_of_year") for c in cols)
         else:
-            logger.error(f"Found {e} in extract, but is not a valid DateExtract value. Ignored.")
+            logger.error(f"Found {e} in extract, but it is not a valid DateExtract value. Ignored.")
 
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)

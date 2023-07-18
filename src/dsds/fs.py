@@ -5,6 +5,7 @@ from .prescreen import (
     , get_unique_count
     , get_string_cols
     , type_checker
+    , select
 )
 
 from .type_alias import (
@@ -37,6 +38,44 @@ import math
 from itertools import combinations
 
 logger = logging.getLogger(__name__)
+
+def corr_selector(
+    df: PolarsFrame
+    , target: str
+    , threshold: float
+) -> PolarsFrame:
+    '''
+    Selects features that have absolute correlation with target >= threshold.
+
+    Parameters
+    ----------
+    df
+        Either an eager or a lazy Polars DataFrame. If lazy, it will be collected
+    target
+        The target column
+    threshold
+        The threshold above which the features will be selected
+    '''
+    if isinstance(df, pl.LazyFrame):
+        input_data:pl.DataFrame = df.collect()
+    else:
+        input_data:pl.DataFrame = df
+
+    nums = get_numeric_cols(input_data, exclude=[target])
+    # Cannot compute correlation for non numerical stuff
+    complement = [f for f in input_data.columns if f not in nums]
+
+    high_corrs = (
+        df.select(pl.corr(c, "target").abs() for c in nums)
+        .transpose(include_header=True, column_names=["abs_corr"])
+        .filter(pl.col("abs_corr") >= threshold)
+        .get_column("column").to_list()
+    )
+    
+    print(f"Selected {len(high_corrs)} features. There are {len(complement)} columns the algorithm "
+          "cannot process. They are also returned.")
+
+    return select(df, high_corrs + complement, persist=True)
 
 def discrete_ig(
     df:pl.DataFrame
@@ -92,24 +131,21 @@ def discrete_ig_selector(
     , n_threads:int = CPU_COUNT
 ) -> PolarsFrame:
     
-    discrete_cols = discrete_inferral(df, exclude=[target])
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if is_lazy:
+    if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
 
+    discrete_cols = discrete_inferral(df, exclude=[target])
+    complement = [f for f in input_data.columns if f not in discrete_cols]
     ig = discrete_ig(input_data, target, discrete_cols, n_threads)\
             .top_k(by="information_gain", k = top_k)
 
-    complement = [f for f in input_data.columns if f not in discrete_cols]
     selected = ig.get_column("feature").to_list()
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
 
-    if is_lazy:
-        return df.blueprint.select(selected + complement)
-    return df.select(selected + complement)
+    return select(df, selected + complement, persist=True)
 
 def mutual_info(
     df:pl.DataFrame
@@ -210,9 +246,7 @@ def mutual_info_selector(
     This 
     
     '''
-    
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if is_lazy:
+    if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
@@ -227,9 +261,7 @@ def mutual_info_selector(
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
 
-    if is_lazy:
-        return df.blueprint.select(selected + complement)
-    return df.select(selected + complement)
+    return select(df, selected + complement, persist=True)
 
 def _f_score(
     df:pl.DataFrame
@@ -238,33 +270,37 @@ def _f_score(
 ) -> np.ndarray:
     '''Same as f_classif, but returns a numpy array of f scores only.'''
     
-    # See comments in f_classif
-    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")]
-    step_two_expr:list[pl.Expr] = []
-    step_three_expr:list[pl.Expr] = []
+    # Get average within group and sample variance within group.
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
+    step_two_expr:list[pl.Expr] = [] # Get average for each column
+    step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
+    # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
     for n in num_list:
-        n_avg:str = n + "_avg"
-        n_tavg:str = n + "_tavg"
-        n_var:str = n + "_var"
+        n_avg:str = n + "_avg" # avg within class
+        n_tavg:str = n + "_tavg" # true avg / overall average
+        n_var:str = n + "_var" # var within class
         step_one_expr.append(
             pl.col(n).mean().alias(n_avg)
         )
         step_one_expr.append(
-            pl.col(n).var(ddof=0).alias(n_var)
+            pl.col(n).var(ddof=0).alias(n_var) # ddof = 0 so that we don't need to compute pl.col("cnt") - 1
         )
-        step_two_expr.append(
+        step_two_expr.append( # True average of this column, reduce the amount of repeated computation.
+            # by using n_avg column dotted with cnt
             (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
         )
         step_three_expr.append(
+            # Between class var (without diving by df_btw_class) / Within class var (without dividng by df_in_class) 
             (pl.col(n_avg) - pl.col(n_tavg)).pow(2).dot(pl.col("cnt"))/ pl.col(n_var).dot(pl.col("cnt"))
         )
 
+    # Get in class average and var
     ref = df.groupby(target).agg(step_one_expr)
     n_samples = len(df)
     n_classes = len(ref)
     df_btw_class = n_classes - 1 
     df_in_class = n_samples - n_classes
-    # This is f-score, score in the order of num_list
+
     return ref.with_columns(step_two_expr).select(step_three_expr)\
             .to_numpy().ravel() * (df_in_class / df_btw_class)
 
@@ -293,7 +329,6 @@ def f_classif(
         nums = get_numeric_cols(df, exclude=[target])
 
     # Get average within group and sample variance within group.
-    ## Could potentially replace this with generators instead of lists. Not sure how impactful that would be... Probably no diff.
     step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
     step_two_expr:list[pl.Expr] = [] # Get average for each column
     step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
@@ -339,8 +374,7 @@ def f_score_selector(
     , top_k:int
 ) -> PolarsFrame:
     
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if is_lazy:
+    if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
@@ -358,9 +392,7 @@ def f_score_selector(
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
     "cannot process. They are also returned.")
 
-    if is_lazy:
-        return df.blueprint.select(selected + complement)
-    return df.select(selected + complement)
+    return select(df, selected + complement, persist=True)
 
 def _mrmr_underlying_score(
     df:pl.DataFrame
@@ -506,9 +538,7 @@ def mrmr_selector(
 ) -> PolarsFrame:
     '''
     '''
-
-    is_lazy = isinstance(df, pl.LazyFrame)
-    if is_lazy:
+    if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
@@ -522,9 +552,7 @@ def mrmr_selector(
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")
     
-    if is_lazy:
-        return df.blueprint.select(selected + complement)
-    return df.select(selected + complement)
+    return select(df, selected + complement, persist=True)
 
 def knock_out_mrmr(
     df:pl.DataFrame
@@ -545,7 +573,6 @@ def knock_out_mrmr(
     Inspired by the package Featurewiz and its creator.
 
 
-    
     '''
     if isinstance(num_cols, list):
         num_list = num_cols
@@ -597,8 +624,6 @@ def knock_out_mrmr_selector(
     '''
     Performs knock out MRMR
     '''
-
-    is_lazy = isinstance(df, pl.LazyFrame)
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
@@ -613,9 +638,7 @@ def knock_out_mrmr_selector(
     print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
         "cannot process. They are also returned.")
     
-    if is_lazy:
-        return df.blueprint.select(selected + complement)
-    return df.select(selected + complement)
+    return select(df, selected + complement, persist=True)
 
 # Selectors for the methods below are not yet implemented
 

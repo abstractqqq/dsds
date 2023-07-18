@@ -121,10 +121,10 @@ def simple_upsample(
         Columns to which we may add some small random noise. If provided, a random noise will be 
         added to only the columns. If not provided, all float-valued columns will be used. 
         If no float-valued columns exist, then no noise will be added.
-    positive
-        If true, then the interval for the random noise will be (0, epsilon)
     exclude
         Columns to which random noises should not be added
+    positive
+        If true, then the interval for the random noise will be (0, epsilon)
     seed
         The random seed
     persist
