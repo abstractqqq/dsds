@@ -10,17 +10,17 @@ from typing import (
     , Iterable
     , Optional
     , Callable
-    , Concatenate
-    , ParamSpec
+    # , Concatenate
+    # , ParamSpec
 )
 from polars.type_aliases import IntoExpr
 from .type_alias import (
     PolarsFrame
     , ActionType
-    # , PipeFunction
+    , PipeFunction
 )
 
-P = ParamSpec("P")
+# P = ParamSpec("P")
 
 @dataclass
 class MapDict:
@@ -140,7 +140,7 @@ class Blueprint:
     # This doesn't work with the pipeline right now because it clears all steps before this.
     def add_func(self
         , df:LazyFrame # The input to the function that needs to be persisted.
-        , func:Callable[Concatenate[LazyFrame, P], LazyFrame]
+        , func:PipeFunction 
         , kwargs:dict[str, Any]
     ) -> LazyFrame:
         # df: The input lazyframe to the function that needs to be persisted. We need this because:
