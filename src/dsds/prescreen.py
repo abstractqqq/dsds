@@ -62,7 +62,7 @@ def get_cols_regex(df:PolarsFrame, pattern:str) -> list[str]:
     '''Returns columns that have names matching the regex pattern.'''
     return df.select(cs.matches(pattern=pattern)).columns
 
-def lowercase_columns(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
+def lowercase(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
     '''
     Lowercases all column names.
 
@@ -70,7 +70,7 @@ def lowercase_columns(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
     '''
     output = df.rename({c: c.lower() for c in df.columns})
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.add_func(df, lowercase_columns, kwargs = {})
+        return output.blueprint.add_func(df, lowercase, kwargs = {})
     return output
 
 def rename(df:PolarsFrame, rename_dict:dict[str, str], persist:bool=False) -> PolarsFrame:
@@ -81,7 +81,7 @@ def rename(df:PolarsFrame, rename_dict:dict[str, str], persist:bool=False) -> Po
     '''
     output = df.rename(rename_dict)
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.add_func(df, lowercase_columns, kwargs = {"rename_dict", rename_dict})
+        return output.blueprint.add_func(df, rename, kwargs = {"rename_dict", rename_dict})
     return output
 
 def snake_case(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
@@ -92,6 +92,24 @@ def snake_case(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
     '''
     pat = re.compile(r"(?<!^)(?=[A-Z])")
     return rename(df, {c: pat.sub('_', c).lower() for c in df.columns}, persist)
+
+def select(
+    df:PolarsFrame
+    , selector: list[str] | cs._selector_proxy_
+    , persist:bool=False
+) -> PolarsFrame:
+    '''
+    A select wrapper that makes it pipeline compatible
+
+    Set persist = True if this needs to be remembered by the blueprint.
+    '''
+    if cs.is_selector(selector):
+        if isinstance(df, pl.LazyFrame) and persist:
+            return df.blueprint.select(selector)
+        else:
+            return df.select(selector)
+    else:
+        raise TypeError("The selector is not a valid selector.")
 
 def drop_nulls(
     df:PolarsFrame

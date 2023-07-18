@@ -1,6 +1,7 @@
 import pickle
 import polars as pl
 import importlib
+import polars.selectors as cs
 from pathlib import Path
 from polars import LazyFrame
 from dataclasses import dataclass
@@ -31,12 +32,12 @@ class MapDict:
 @dataclass
 class Step:
     action:ActionType
-    associated_data: Iterable[IntoExpr] | MapDict | list[str] | dict[str, Any] | pl.Expr
-    # First is everything that can be done with with_columns
-    # Second is a 1-to-1 encoder
-    # Third is a drop/select
-    # Fourth is apply_func
-    # Fifth is a filter statement
+    associated_data: Iterable[IntoExpr] | MapDict | list[str] | cs._selector_proxy_ | dict[str, Any] | pl.Expr
+    # First is everything that can be done with with_columns (Iterable[IntoExpr], but list[pl.Expr] is recommended)
+    # Second is a 1-to-1 encoder (MapDict)
+    # Third is a drop/select (list[str] and cs._selector_proxy_)
+    # Fourth is add_func (dict[str, Any])
+    # Fifth is a filter statement (pl.Expr)
 
 
 @pl.api.register_lazyframe_namespace("blueprint")

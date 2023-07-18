@@ -716,6 +716,7 @@ def custom_binning(
     df:PolarsFrame
     , cols:list[str]
     , cuts:list[float]
+    , suffix:str = ""
 ) -> PolarsFrame:
     '''
     Bins according to the cuts provided. The same cuts will be applied to all columns in cols.
@@ -727,26 +728,45 @@ def custom_binning(
     df
         Either a lazy or eager Polars DataFrame
     cols
-        Numerical columns that will be replaced by the bins
+        Numerical columns that will be binned
     cuts
         A list of floats representing break points in the intervals
+    suffix
+        If you don't want to replace the original columns, you have the option to give the binned column a suffix
     '''
     if isinstance(df, pl.LazyFrame):
         exprs = [
-            pl.col(c).cut(cuts).cast(pl.Utf8) for c in cols
+            pl.col(c).cut(cuts).cast(pl.Utf8).suffix(suffix) for c in cols
         ]
         return df.blueprint.with_columns(exprs)
     else:
         return df.with_columns(
-            pl.col(c).cut(cuts).cast(pl.Utf8) for c in cols
+            pl.col(c).cut(cuts).cast(pl.Utf8).suffix(suffix) for c in cols
         )
     
 def fixed_sized_binning(
     df:PolarsFrame
     , cols:list[str]
     , interval: float
+    , suffix:str = ""
 ) -> PolarsFrame:
-    
+    '''
+    Bins according to fixed interval size. The same cuts will be applied to all columns in cols. Bin will 
+    start from min(feature) to max(feature) + interval with step length = interval.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        Numerical columns that will be binned
+    interval
+        The fixed sized interval
+    suffix
+        If you don't want to replace the original columns, you have the option to give the binned column a suffix
+    '''
     bounds = df.lazy().select(cols).select(
         pl.all().min().prefix("min:")
         , pl.all().max().prefix("max:")
@@ -755,7 +775,7 @@ def fixed_sized_binning(
     n = len(cols)
     for i, c in enumerate(cols):
         cut = np.arange(bounds[i], bounds[n+i] + interval, step=interval).tolist()
-        exprs.append(pl.col(c).cut(cut).cast(pl.Utf8).alias(c))
+        exprs.append(pl.col(c).cut(cut).cast(pl.Utf8).suffix(suffix))
 
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
@@ -765,6 +785,7 @@ def quantile_binning(
     df:PolarsFrame
     , cols:list[str]
     , n_bins:int
+    , suffix:str = ""
 ) -> PolarsFrame:
     '''
     Bin a continuous variable into categories, based on quantile. Null values will be its own category. The same binning
@@ -784,6 +805,8 @@ def quantile_binning(
         The number of desired bins. If n_bins = 4, the quantile cuts will be [0.25,0.5,0.74], and 4 
         categories will be created, which represent values ranging from (-inf, 0.25 quantile value],
         (0.25 quantile value, 0.5 quantile value],...(0.75 quantile value, inf]
+    suffix
+        If you don't want to replace the original columns, you have the option to give the binned column a suffix
 
     Example
     -------
@@ -825,12 +848,12 @@ def quantile_binning(
             .cast(pl.Float64).sort().tail(len(qcuts))
         ).collect()
         exprs = [
-            pl.col(c).cut(cuts.drop_in_place(c).to_list()).cast(pl.Utf8) for c in cols
+            pl.col(c).cut(cuts.drop_in_place(c).to_list()).cast(pl.Utf8).suffix(suffix) for c in cols
         ]
         return df.blueprint.with_columns(exprs)
     else: # Eager frame
         return df.with_columns(
-            pl.col(c).qcut(qcuts).cast(pl.Utf8) for c in cols 
+            pl.col(c).qcut(qcuts).cast(pl.Utf8).suffix(suffix) for c in cols 
         )
 
 def woe_cat_encode(
