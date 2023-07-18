@@ -2,6 +2,7 @@ from typing import (
     Literal
     , Final
     , Tuple
+    , Union
 )
 
 import polars as pl
@@ -9,11 +10,11 @@ import sys
 if sys.version_info >= (3, 10):
     from typing import TypeAlias, Concatenate, ParamSpec, Callable
     P = ParamSpec('P')
-    PolarsFrame:TypeAlias = pl.DataFrame | pl.LazyFrame
+    PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[Concatenate[PolarsFrame, P], PolarsFrame]
 else:
     from typing_extensions import TypeAlias
-    PolarsFrame:TypeAlias = pl.DataFrame | pl.LazyFrame
+    PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable
 
 import os
@@ -48,22 +49,22 @@ def clean_strategy_str(s:str):
 class ClassifModel(ABC):
 
     @abstractmethod
-    def predict(self, X:np.ndarray|pl.DataFrame) -> np.ndarray:
+    def predict(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
         ...
 
     @abstractmethod
-    def predict_proba(self, X: np.ndarray|pl.DataFrame) -> np.ndarray:
+    def predict_proba(self, X: Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
         ...
 
     @abstractmethod
-    def fit(self, X:np.ndarray|pl.DataFrame, y:np.ndarray|pl.Series|pl.DataFrame): # Should return self
+    def fit(self, X:Union[np.ndarray,pl.DataFrame], y:Union[np.ndarray,pl.Series,pl.DataFrame]): # Should return self
         ...
     
 class RegressionModel(ABC):
     @abstractmethod
-    def predict(self, X: np.ndarray|pl.DataFrame) -> np.ndarray:
+    def predict(self, X: Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
         ...
 
     @abstractmethod
-    def fit(self, X:np.ndarray|pl.DataFrame, y:np.ndarray|pl.Series|pl.DataFrame): # Should return self
+    def fit(self, X:Union[np.ndarray,pl.DataFrame], y:Union[np.ndarray,pl.Series,pl.DataFrame]): # Should return self
         ...

@@ -7,9 +7,10 @@ from polars import LazyFrame
 from dataclasses import dataclass
 from typing import (
     Any
+    , Union
     , Iterable
     , Optional
-    , Callable
+    # , Callable
     # , Concatenate
     # , ParamSpec
 )
@@ -32,7 +33,7 @@ class MapDict:
 @dataclass
 class Step:
     action:ActionType
-    associated_data: Iterable[IntoExpr] | MapDict | list[str] | cs._selector_proxy_ | dict[str, Any] | pl.Expr
+    associated_data: Union[Iterable[IntoExpr], MapDict, list[str], cs._selector_proxy_, dict[str, Any], pl.Expr]
     # First is everything that can be done with with_columns (Iterable[IntoExpr], but list[pl.Expr] is recommended)
     # Second is a 1-to-1 encoder (MapDict)
     # Third is a drop/select (list[str] and cs._selector_proxy_)

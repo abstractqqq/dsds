@@ -1,5 +1,5 @@
 import polars as pl
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 from collections.abc import Iterator
 from .type_alias import PolarsFrame
 from polars.type_aliases import UniqueKeepStrategy
@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 def lazy_sample(
     df:pl.LazyFrame
-    , sample_frac:float | None = 0.75
-    , sample_amt: int | None = None
+    , sample_frac: Optional[float] = 0.75
+    , sample_amt: Optional[int] = None
     , seed:int=42
     , persist:bool=False
 ) -> pl.LazyFrame:
@@ -211,7 +211,7 @@ def simple_upsample(
 
 def simple_downsample(
     df: PolarsFrame
-    , subgroup: dict[str, list] | pl.Expr
+    , subgroup: Union[dict[str, list], pl.Expr]
     , sample_frac: float
     , persist: bool = False
 ) -> PolarsFrame:
@@ -264,7 +264,7 @@ def simple_downsample(
 def stratified_downsample(
     df: PolarsFrame
     , group:list[str]
-    , keep:int | float
+    , keep: Union[int, float]
     , min_keep:int = 1
     , persist: bool = False
 ) -> PolarsFrame:
@@ -349,8 +349,8 @@ def train_test_split(
 def bootstrap(
     df: PolarsFrame
     , times: int
-    , sample_frac: float | None = 0.25
-    , sample_amt: int | None = None
+    , sample_frac: Optional[float] = 0.25
+    , sample_amt: Optional[int] = None
 ) -> Iterator[PolarsFrame]:
     """
     Returns an iterator (generator) where each element is a sample from the underlying df.
@@ -383,7 +383,7 @@ def col_subsample(
     df: PolarsFrame
     , times: int
     , sample_amt: int
-    , always_keep: list[str] | None = None
+    , always_keep: Optional[list[str]] = None
 ) -> Iterator[list[str]]:
     """
     Returns an iterator (generator) where each element is a subset of column names of df.

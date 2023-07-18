@@ -27,7 +27,7 @@ from .metrics import (
 )
 import polars as pl
 import numpy as np
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Union
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -705,7 +705,7 @@ def _fc_fi(
     model_str:str
     , params:dict[str, Any]
     , target:str
-    , features: Tuple | list
+    , features: Union[Tuple,list[str]]
     , train: pl.DataFrame
     , test: pl.DataFrame
 )-> Tuple[Tuple[Tuple, float, float], np.ndarray]:
@@ -812,7 +812,7 @@ def _permute_importance(
     model:ClassifModel
     , df:pl.DataFrame
     , y: np.ndarray
-    , features: Tuple | list
+    , features: Union[Tuple, list[str]]
     , index: int
     , k: int
 ) -> Tuple[float, int]:

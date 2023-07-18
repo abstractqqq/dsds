@@ -18,7 +18,7 @@ import polars.selectors as cs
 import polars as pl
 import logging  
 from datetime import datetime 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Union
 from itertools import combinations
 from scipy.stats import (
     ks_2samp
@@ -95,7 +95,7 @@ def snake_case(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
 
 def select(
     df:PolarsFrame
-    , selector: list[str] | cs._selector_proxy_
+    , selector: Union[list[str], cs._selector_proxy_]
     , persist:bool=False
 ) -> PolarsFrame:
     '''

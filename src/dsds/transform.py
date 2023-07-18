@@ -24,7 +24,7 @@ import logging
 import math
 import numpy as np
 import polars as pl
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Union, Any
 from scipy.stats._morestats import (
     yeojohnson_normmax
     , boxcox_normmax
@@ -180,8 +180,8 @@ def missing_indicator(
 def merge_infreq_values(
     df: PolarsFrame
     , cols: list[str]
-    , min_count: int | None = 10
-    , min_frac: float | None = None
+    , min_count: Optional[int] = 10
+    , min_frac: Optional[float] = None
     , separator: str = '|'
 ) -> PolarsFrame:
     '''
@@ -516,7 +516,7 @@ def ordinal_auto_encode(
 def ordinal_encode(
     df:PolarsFrame
     , ordinal_mapping:dict[str, dict[str,int]]
-    , default:int|None=None
+    , default:Optional[int] = None
 ) -> PolarsFrame:
     '''
     Ordinal encode the columns in the ordinal_mapping dictionary. The ordinal_mapping dict should look like:
@@ -625,7 +625,7 @@ def _when_then_repl(c:str, repl_map:dict):
 
 def feature_mapping(
     df:PolarsFrame
-    , mapping: dict[str, dict[Any, Any]] | list[pl.Expr] | pl.Expr
+    , mapping: Union[dict[str, dict[Any, Any]], list[pl.Expr] , pl.Expr]
 ) -> PolarsFrame:
     '''
     Maps specific values of a feature into values provided. This is a common task when the feature columns come with 
@@ -1034,7 +1034,7 @@ def log_transform(
     df: PolarsFrame
     , cols:list[str]
     , base:float = math.e
-    , cast_non_positive: None | float = None
+    , cast_non_positive: Optional[float] = None
 ) -> PolarsFrame:
     '''
     Performs classical log transform on the given columns
@@ -1063,7 +1063,7 @@ def log_transform(
 def extract_dt_features(
     df: PolarsFrame
     , cols: list[str]
-    , extract: DateExtract | list[DateExtract] = ["year", "quarter", "month"]
+    , extract: Union[DateExtract, list[DateExtract]] = ["year", "quarter", "month"]
     , sunday_first: bool = False
 ) -> PolarsFrame:
     '''
