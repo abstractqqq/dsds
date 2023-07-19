@@ -169,9 +169,8 @@ def discrete_ig_selector(
         .top_k(by="information_gain", k = top_k)\
         .get_column("feature").to_list()
 
-    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
-
     to_select.extend(f for f in input_data.columns if f not in discrete_cols)
     return select(df, to_select, persist=True)
 
@@ -296,9 +295,8 @@ def mutual_info_selector(
                 .top_k(by="estimated_mi", k = top_k)\
                 .get_column("feature").to_list()
 
-    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
-
     to_select.extend(f for f in input_data.columns if f not in nums)
     return select(df, to_select, persist=True)
 
@@ -436,8 +434,7 @@ def f_score_selector(
         .top_k(by = "fscore", k = top_k)\
         .get_column("feature").to_list()
 
-
-    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
 
     to_select.extend(f for f in input_data.columns if f not in nums)
@@ -606,7 +603,7 @@ def mrmr_selector(
     nums = get_numeric_cols(input_data, exclude=[target])
     s = clean_strategy_str(strategy)
     to_select = mrmr(input_data, target, top_k, nums, s, params, low_memory)
-    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
     to_select.extend(f for f in input_data.columns if f not in nums)
     return select(df, to_select, persist=True)
@@ -719,15 +716,13 @@ def knock_out_mrmr_selector(
         input_data:pl.DataFrame = df
 
     num_cols = get_numeric_cols(df, exclude=[target])
-    # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in df.columns if f not in num_cols]
 
     s = clean_strategy_str(strategy)
-    selected = knock_out_mrmr(input_data, target, top_k, num_cols, s, corr_threshold, params)
-    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
-        "cannot process. They are also returned.")
-    
-    return select(df, selected + complement, persist=True)
+    to_select = knock_out_mrmr(input_data, target, top_k, num_cols, s, corr_threshold, params)
+    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
+          "algorithm cannot process. They are also returned.")
+    to_select.extend(f for f in df.columns if f not in num_cols)
+    return select(df, to_select, persist=True)
 
 # Selectors for the methods below are not yet implemented
 
