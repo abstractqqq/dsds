@@ -12,7 +12,7 @@ from .type_alias import (
     PolarsFrame
     , MRMRStrategy
     , BinaryModels
-    , CPU_COUNT
+    , CPU_M1
     , clean_strategy_str
     , ClassifModel
 )
@@ -39,43 +39,61 @@ from itertools import combinations
 
 logger = logging.getLogger(__name__)
 
+def corr(
+    df: PolarsFrame
+    , target: str
+    , cols: Optional[list[str]] = None
+) -> pl.DataFrame:
+    '''
+    Returns a dataframe with features and their correlation with target.
+
+    Parameters
+    ----------
+    df 
+        Either an eager or lazy Polars dataframe
+    target
+        The target column
+    cols
+        List of numerical columns. If not provided, will use all numerical columns
+    '''
+    if isinstance(cols, list):
+        _ = type_checker(df, cols, "numeric", "corr_filter")
+        nums = cols
+    else:
+        nums = get_numeric_cols(df)
+
+    return df.lazy().select(pl.corr(c, target).abs() for c in nums)\
+        .collect()\
+        .transpose(include_header=True, column_names=["abs_corr"])
+
 def corr_selector(
     df: PolarsFrame
     , target: str
     , threshold: float
 ) -> PolarsFrame:
     '''
-    Selects features that have absolute correlation with target >= threshold.
+    Keeps only the columns that have |correlation with target| > threshold and the ones that cannot be 
+    processed by the algorithm.
 
     Parameters
     ----------
     df
-        Either an eager or a lazy Polars DataFrame. If lazy, it will be collected
+        Either an eager or a lazy Polars DataFrame.
     target
         The target column
     threshold
         The threshold above which the features will be selected
     '''
-    if isinstance(df, pl.LazyFrame):
-        input_data:pl.DataFrame = df.collect()
-    else:
-        input_data:pl.DataFrame = df
-
-    nums = get_numeric_cols(input_data, exclude=[target])
-    # Cannot compute correlation for non numerical stuff
-    complement = [f for f in input_data.columns if f not in nums]
-
-    high_corrs = (
-        df.select(pl.corr(c, "target").abs() for c in nums)
-        .transpose(include_header=True, column_names=["abs_corr"])
-        .filter(pl.col("abs_corr") >= threshold)
-        .get_column("column").to_list()
-    )
-    
-    print(f"Selected {len(high_corrs)} features. There are {len(complement)} columns the algorithm "
+    nums = get_numeric_cols(df, exclude=[target])
+    # select high corr columns
+    to_select = corr(df, target, nums)\
+                .filter(pl.col("abs_corr") >= threshold)\
+                .get_column("column").to_list()
+    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(nums)} columns the algorithm "
           "cannot process. They are also returned.")
-
-    return select(df, high_corrs + complement, persist=True)
+    # add the complement set
+    to_select.extend(f for f in df.columns if f not in nums)
+    return select(df, to_select, persist=True)
 
 def discrete_ig(
     df:pl.DataFrame
@@ -128,24 +146,34 @@ def discrete_ig_selector(
     df:PolarsFrame
     , target:str
     , top_k:int
-    , n_threads:int = CPU_COUNT
 ) -> PolarsFrame:
-    
+    '''
+    Keeps only the top_k features in terms of discrete_ig and the ones that cannot be processed by the algorithm.
+
+    Parameters
+    ----------
+    df
+        Either an eager or lazy dataframe. If lazy, it will be collected
+    target
+        The target column
+    top_k
+        Only the top_k features in terms of discrete_ig will be selected 
+    '''
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
         input_data:pl.DataFrame = df
 
     discrete_cols = discrete_inferral(df, exclude=[target])
-    complement = [f for f in input_data.columns if f not in discrete_cols]
-    ig = discrete_ig(input_data, target, discrete_cols, n_threads)\
-            .top_k(by="information_gain", k = top_k)
+    to_select = discrete_ig(input_data, target, discrete_cols)\
+        .top_k(by="information_gain", k = top_k)\
+        .get_column("feature").to_list()
 
-    selected = ig.get_column("feature").to_list()
-    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
-        "cannot process. They are also returned.")
+    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+          "algorithm cannot process. They are also returned.")
 
-    return select(df, selected + complement, persist=True)
+    to_select.extend(f for f in input_data.columns if f not in discrete_cols)
+    return select(df, to_select, persist=True)
 
 def mutual_info(
     df:pl.DataFrame
@@ -153,7 +181,7 @@ def mutual_info(
     , conti_cols:list[str]
     , n_neighbors:int=3
     , seed:int=42
-    , n_threads:int=CPU_COUNT
+    , n_threads:int=CPU_M1
 ) -> pl.DataFrame:
     '''
     Approximates mutual information (information gain) between the continuous variables and the target. This
@@ -236,15 +264,27 @@ def mutual_info_selector(
     df:PolarsFrame
     , target:str
     , n_neighbors:int=3
-    , seed:int=42
-    , n_threads:int=CPU_COUNT
     , top_k:int = 50
+    , n_threads:int=CPU_M1
+    , seed:int=42
 ) -> PolarsFrame:
     '''
-    A selector based on the mutual_info feature selection method.
+    Keeps only the top_k features in terms of mutual_info_score and the ones that cannot be processed by the algorithm.
 
-    This 
-    
+    Parameters
+    ----------
+    df
+        Either an eager or lazy Polars dataframe. If lazy, it will be collected
+    target
+        The target column
+    n_neighbors
+        The n_neighbors parameter in the approximation method
+    top_k
+        The top_k features will ke kept
+    n_threads
+        The max number of workers for multithreading
+    seed
+        Random seed used in approximation to generate noise
     '''
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
@@ -252,16 +292,15 @@ def mutual_info_selector(
         input_data:pl.DataFrame = df
 
     nums = get_numeric_cols(input_data, exclude=[target])
-    complement = [f for f in input_data.columns if f not in nums]
+    to_select = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
+                .top_k(by="estimated_mi", k = top_k)\
+                .get_column("feature").to_list()
 
-    mi_scores = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
-                .top_k(by="estimated_mi", k = top_k)
+    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+          "algorithm cannot process. They are also returned.")
 
-    selected = mi_scores.get_column("feature").to_list()
-    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
-        "cannot process. They are also returned.")
-
-    return select(df, selected + complement, persist=True)
+    to_select.extend(f for f in input_data.columns if f not in nums)
+    return select(df, to_select, persist=True)
 
 def _f_score(
     df:pl.DataFrame
@@ -309,19 +348,18 @@ def f_classif(
     , target:str
     , cols:Optional[list[str]]=None
 ) -> pl.DataFrame:
-    '''Computes ANOVA one way test, the f value/score and the p value. 
-        Equivalent to f_classif in sklearn.feature_selection, but is more dataframe-friendly, 
-        and performs better on bigger data.
+    '''
+    Computes ANOVA one way test, the f value/score and the p value. Equivalent to f_classif in sklearn.feature_selection
+    , but is more dataframe-friendly and faster. 
 
-        Arguments:
-            df: input Polars dataframe.
-            target: the target column.
-            cols: if provided, will run the ANOVA one way test for each column in num_cols. If none,
-                will try to infer from df according to data types. Note that num_cols should be numeric!
-
-        Returns:
-            a polars dataframe with f score and p value.
-    
+    Parameters
+    ----------
+    df
+        An eager Polars DataFrame
+    target
+        The target column
+    cols
+        If not provided, will use all inferred numeric columns
     '''
     if isinstance(cols, list):
         nums = cols
@@ -373,6 +411,18 @@ def f_score_selector(
     , target:str
     , top_k:int
 ) -> PolarsFrame:
+    '''
+    Keeps only the top_k features in terms of f-score and the ones that cannot be processed by the algorithm.
+
+    Parameters
+    ----------
+    df
+        Either an eager or lazy Polars dataframe. If lazy, it will be collected
+    target
+        The target column
+    top_k
+        The top_k features will ke kept
+    '''
     
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
@@ -380,19 +430,18 @@ def f_score_selector(
         input_data:pl.DataFrame = df
 
     nums = get_numeric_cols(input_data, exclude=[target])
-    # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in input_data.columns if f not in nums]
 
     scores = _f_score(input_data, target, nums)
-    temp_df = pl.DataFrame({"feature":nums, "fscore":scores}).top_k(
-        by = "fscore", k = top_k
-    )
-    selected = temp_df.get_column("feature").to_list()
-    
-    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
-    "cannot process. They are also returned.")
+    to_select = pl.DataFrame({"feature":nums, "fscore":scores})\
+        .top_k(by = "fscore", k = top_k)\
+        .get_column("feature").to_list()
 
-    return select(df, selected + complement, persist=True)
+
+    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+          "algorithm cannot process. They are also returned.")
+
+    to_select.extend(f for f in input_data.columns if f not in nums)
+    return select(df, to_select, persist=True)
 
 def _mrmr_underlying_score(
     df:pl.DataFrame
@@ -464,11 +513,6 @@ def mrmr(
     low_memory
         Whether to do some computation all at once, which uses more memory at once, or do some 
         computation when needed, which uses less memory at any given time.
-
-    Returns
-    -------
-        A list of top k features
-    
     '''
     if isinstance(cols, list):
         nums = cols
@@ -537,6 +581,22 @@ def mrmr_selector(
     , low_memory:bool=False
 ) -> PolarsFrame:
     '''
+    Keeps only the top_k (first k) features selected by MRMR and the ones that cannot be processed by the algorithm.
+
+    Parameters
+    ----------
+    df
+        Either an eager or lazy Polars dataframe. If lazy, it will be collected
+    target
+        The target column
+    top_k
+        The top_k features will ke kept
+    strategy
+        One of 'f', 'xgb', 'rf', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
+    params
+        If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
+    low_memory
+        If true, use less memory. But the computation will take longer
     '''
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
@@ -544,23 +604,20 @@ def mrmr_selector(
         input_data:pl.DataFrame = df
 
     nums = get_numeric_cols(input_data, exclude=[target])
-    # Non-numerical columns cannot be analyzed by mrmr. So add back in the end.
-    complement = [f for f in input_data.columns if f not in nums]
     s = clean_strategy_str(strategy)
-    selected = mrmr(input_data, target, top_k, nums, s, params, low_memory)
-
-    print(f"Selected {len(selected)} features. There are {len(complement)} columns the algorithm "
-          "cannot process. They are also returned.")
-    
-    return select(df, selected + complement, persist=True)
+    to_select = mrmr(input_data, target, top_k, nums, s, params, low_memory)
+    print(f"Selected {len(to_select)} features. There are {len(input_data.columns) - len(to_select)} columns the "
+          "algorithm cannot process. They are also returned.")
+    to_select.extend(f for f in input_data.columns if f not in nums)
+    return select(df, to_select, persist=True)
 
 def knock_out_mrmr(
     df:pl.DataFrame
     , target:str
     , k:int 
     , num_cols:Optional[list[str]] = None
-    , strategy:MRMRStrategy = "fscore"
     , corr_threshold:float = 0.7
+    , strategy:MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
 ) -> list[str]:
     '''
@@ -572,7 +629,23 @@ def knock_out_mrmr(
 
     Inspired by the package Featurewiz and its creator.
 
-
+    Parameters
+    ----------
+    df
+        An eager Polars Dataframe
+    target
+        The target column
+    k
+        The top k features to return
+    num_cols
+        Numerical columns to select from. If not provided, all numeric columns will be used
+    corr_threshold
+        The threshold above which correlation is considered too high. This means if A has high correlation to B, then
+        B will not be selected if A is
+    strategy
+        One of 'f', 'xgb', 'rf', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
+    params
+        If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     '''
     if isinstance(num_cols, list):
         num_list = num_cols
@@ -617,12 +690,28 @@ def knock_out_mrmr_selector(
     df:PolarsFrame
     , target:str
     , top_k:int 
-    , strategy:MRMRStrategy = "fscore"
     , corr_threshold:float = 0.7
+    , strategy:MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
 ) -> PolarsFrame:
     '''
-    Performs knock out MRMR
+    Keeps only the top_k (first k) features selected by MRMR and the ones that cannot be processed by the algorithm.
+
+    Parameters
+    ----------
+    df
+        Either an eager or lazy Polars dataframe. If lazy, it will be collected
+    target
+        The target column
+    top_k
+        The top_k features will ke kept
+    corr_threshold
+        The threshold above which correlation is considered too high. This means if A has high correlation to B, then
+        B will not be selected if A is
+    strategy
+        One of 'f', 'xgb', 'rf', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
+    params
+        If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     '''
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
@@ -642,8 +731,7 @@ def knock_out_mrmr_selector(
 
 # Selectors for the methods below are not yet implemented
 
-# Create a numeric + string version of woe_iv in the future
-def woe_iv_cat(
+def woe_iv(
     df:PolarsFrame
     , target:str
     , cols:Optional[list[str]]=None
@@ -651,8 +739,8 @@ def woe_iv_cat(
     , check_binary:bool = True
 ) -> pl.DataFrame:
     '''
-    Computes information values for categorical variables. Notice that by using binning methods provided, you can turn
-    numerical values into categorical bins.
+    Computes information values for categorical variables. Notice that by using binning methods provided in 
+    dsds.transform, you can turn numerical values into categorical bins.
 
     Parameters
     ----------
@@ -669,7 +757,7 @@ def woe_iv_cat(
         Whether to check if target is binary or not
     '''
     if isinstance(cols, list):
-        _ = type_checker(df, cols, "string", "woe_iv_cat")
+        _ = type_checker(df, cols, "string", "woe_iv")
         input_cols = cols
     else:
         input_cols = get_string_cols(df)
@@ -702,7 +790,14 @@ def _binary_model_init(
     , params: dict[str, Any]
 ) -> ClassifModel:
     '''
-    Creates the binary classification model given by the model_str and the params dict
+    Returns a classification model. If n_job parameter is not specified, it will default to -1.
+
+    Parameters
+    ----------
+    model_str
+        One of 'lr', 'lgbm', 'xgb', 'rf'
+    params
+        The parameters for the model specified
     '''
     if "n_jobs" not in params:
         params["n_jobs"] = -1
@@ -732,7 +827,26 @@ def _fc_fi(
     , train: pl.DataFrame
     , test: pl.DataFrame
 )-> Tuple[Tuple[Tuple, float, float], np.ndarray]:
-    
+    '''
+    Creates a classification model, evaluations model with log loss and roc_auc for each feature combination
+    (fc) and feature importance (fi). It will return a tuple of the following structure: 
+    ( (feature combination, log loss, roc_auc), feature_importance array) 
+
+    Parameters
+    ----------
+    model_str
+        One of 'lr', 'lgbm', 'xgb', 'rf'
+    params
+        The parameters for the model specified
+    target
+        The target column
+    features
+        Either a tuple or a list which represents the current feature combination
+    train
+        The training dataset. Must be eager
+    test
+        The testing dataset on which log loss and roc_auc will be evaluation. Must be eager
+    '''
     estimator = _binary_model_init(model_str, params)
     _ = estimator.fit(train.select(features), train[target])
     y_pred = estimator.predict_proba(test.select(features))[:,1]
@@ -774,6 +888,8 @@ def ebfs(
     as features here.
 
     If n_jobs is not provided in params, it will be defaulted to -1.
+
+    This will return a feature combination (fc) summary and a feature importance (fi) summary. 
 
     Parameters
     ----------
@@ -833,23 +949,36 @@ def ebfs_fc_filter(
 
 def _permute_importance(
     model:ClassifModel
-    , df:pl.DataFrame
+    , X:pl.DataFrame
     , y: np.ndarray
-    , features: Union[Tuple, list[str]]
-    , index: int
+    , index:int
     , k: int
 ) -> Tuple[float, int]:
+    '''
+    Computes permutation importance for a single feature.
+
+    Parameters
+    ----------
+    model
+        A trained classification model
+    X
+        An eager dataframe on which we shuffle the column at the given index and train the model
+    y
+        The target column turned into np.ndarray
+    index
+        The index of the column in X to shuffle
+    k
+        The number of times to repeat the shuffling
+    '''
     test_score = 0.
+    c = X.columns[index] # column to shuffle
     for _ in range(k):
-        shuffled_df = df.with_columns(
-            pl.col(features[index]).shuffle(seed=42)
+        shuffled_df = X.with_columns(
+            pl.col(c).shuffle(seed=42)
         )
-        pred = model.predict_proba(shuffled_df[features])[:, -1]
-        test_score += roc_auc(y, pred)
+        test_score += roc_auc(y, model.predict_proba(shuffled_df)[:, -1])
 
     return test_score, index
-
-# Can extend this for n_comb as well, as 
 
 def permutation_importance(
     df:pl.DataFrame
@@ -879,22 +1008,21 @@ def permutation_importance(
     '''
     features = df.columns
     features.remove(target)
-    
+    _ = type_checker(df, features, "numeric", "permutation_importance")
     estimator = _binary_model_init(model_str, params)
     estimator.fit(df[features], df[target])
+    X = df[features]
     y = df[target].to_numpy()
-    pred = estimator.predict_proba(df[features])[:, -1]
-    score = roc_auc(y, pred)
+    score = roc_auc(y, estimator.predict_proba(X)[:, -1])
     pbar = tqdm(total=len(features), desc="Analyzing Features")
     imp = np.zeros(shape=len(features))
-    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
+    with ThreadPoolExecutor(max_workers=CPU_M1) as ex:
         futures = (
             ex.submit(
                 _permute_importance,
                 estimator,
-                df,
+                X,
                 y,
-                features, 
                 j,
                 k
             )
