@@ -1,6 +1,6 @@
 import numpy as np 
 import polars as pl
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 import logging
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,6 @@ def logloss(
         Minimum probability to clip so that we can prevent illegal computations like 
         log(0). If p < min_prob, log(min_prob) will be computed instead.
     '''
-
     # Takes about 1/3 time of sklearn's log_loss because we parallelized some computations
     y_a, y_p = _flatten_input(y_actual, y_predicted)
     if check_binary:
@@ -146,6 +145,56 @@ def logloss(
             * pl.col("s") 
             * (pl.col("y") * pl.col("l") + pl.col("ny") * pl.col("o")).mean()
         ).row(0)[0]
+    
+def binary_psi(
+    new_score: Union[pl.Series, np.ndarray]
+    , old_score: Union[pl.Series, np.ndarray]
+    , n_bins: int = 10
+) -> pl.DataFrame:
+    '''
+    Computes the Population Stability Index of a binary model by binning the new score into n_bins.
+
+    Parameters
+    ----------
+    new_score
+        Either a Polars Series or a NumPy array that contains the new probabilites
+    old_score
+        Either a Polars Series or a NumPy array that contains the old probabilites
+    n_bins
+        The number of bins used in the computation. By default it is 10, which means we are using deciles
+    '''
+    if isinstance(new_score, np.ndarray):
+        s1 = pl.Series(new_score)
+    else:
+        s1 = new_score
+    
+    if isinstance(old_score, np.ndarray):
+        s2 = pl.Series(old_score)
+    else:
+        s2 = old_score
+
+    qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
+    s1_cuts = s1.qcut(quantiles=qcuts)
+    s1_summary = s1_cuts.lazy().groupby(pl.col("category").cast(pl.Utf8)).agg(
+        a = pl.count()
+    )
+
+    cuts = s1_cuts.get_column("break_point").unique().sort()[:len(qcuts)]
+
+    s2_summary = s2.cut(bins = cuts, series=False).lazy().groupby(
+        pl.col("category").cast(pl.Utf8)
+    ).agg(
+        b = pl.count()
+    )
+    return s1_summary.join(s2_summary, on="category").with_columns(
+        a = pl.col("a")/len(s1),
+        b = pl.col("b")/len(s2)
+    ).with_columns(
+        a_minus_b = pl.col("a") - pl.col("b"),
+        ln_a_on_b = (pl.col("a")/pl.col("b")).log()
+    ).with_columns(
+        psi = pl.col("a_minus_b") * pl.col("ln_a_on_b")
+    ).sort("category").rename({"category":"score_range"}).collect()
 
 def l2_loss(
     y_actual:np.ndarray
