@@ -980,7 +980,7 @@ def power_transform(
             .cast(pl.Float64())
         ).select(non_null_list).collect().row(0)
         exprs.extend(
-            exprs.append(pl.col(c).log()) if lmax == 0 else (pl.col(c).pow(lmax) - 1) / lmax 
+            pl.col(c).log() if lmax == 0 else (pl.col(c).pow(lmax) - 1) / lmax 
             for c, lmax in zip(non_null_list, lmaxs)
         )
 
