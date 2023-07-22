@@ -85,15 +85,15 @@ def corr_selector(
         The threshold above which the features will be selected
     '''
     nums = get_numeric_cols(df, exclude=[target])
+    complement = [f for f in df.columns if f not in nums]
     # select high corr columns
     to_select = corr(df, target, nums)\
                 .filter(pl.col("abs_corr") >= threshold)\
                 .get_column("column").to_list()
-    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(nums)} columns the algorithm "
+    print(f"Selected {len(to_select)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")
     # add the complement set
-    to_select.extend(f for f in df.columns if f not in nums)
-    return select(df, to_select, persist=True)
+    return select(df, to_select + complement, persist=True)
 
 def discrete_ig(
     df:pl.DataFrame
@@ -165,14 +165,15 @@ def discrete_ig_selector(
         input_data:pl.DataFrame = df
 
     discrete_cols = discrete_inferral(df, exclude=[target])
+    complement = [f for f in df.columns if f not in discrete_cols]
     to_select = discrete_ig(input_data, target, discrete_cols)\
         .top_k(by="information_gain", k = top_k)\
         .get_column("feature").to_list()
 
-    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
+    print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
-    to_select.extend(f for f in input_data.columns if f not in discrete_cols)
-    return select(df, to_select, persist=True)
+
+    return select(df, to_select + complement, persist=True)
 
 def mutual_info(
     df:pl.DataFrame
@@ -290,15 +291,16 @@ def mutual_info_selector(
     else:
         input_data:pl.DataFrame = df
 
-    nums = get_numeric_cols(input_data, exclude=[target])
+    nums = get_numeric_cols(df, exclude=[target])
+    complement = [f for f in df.columns if f not in nums]
     to_select = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
                 .top_k(by="estimated_mi", k = top_k)\
                 .get_column("feature").to_list()
 
-    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
+    logger.info(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
-    to_select.extend(f for f in input_data.columns if f not in nums)
-    return select(df, to_select, persist=True)
+
+    return select(df, to_select + complement, persist=True)
 
 def _f_score(
     df:pl.DataFrame
@@ -428,22 +430,21 @@ def f_score_selector(
         input_data:pl.DataFrame = df
 
     nums = get_numeric_cols(input_data, exclude=[target])
-
+    complement = [f for f in df.columns if f not in nums]
     scores = _f_score(input_data, target, nums)
     to_select = pl.DataFrame({"feature":nums, "fscore":scores})\
         .top_k(by = "fscore", k = top_k)\
         .get_column("feature").to_list()
 
-    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
+    print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
 
-    to_select.extend(f for f in input_data.columns if f not in nums)
-    return select(df, to_select, persist=True)
+    return select(df, to_select + complement, persist=True)
 
 def _mrmr_underlying_score(
     df:pl.DataFrame
     , target:str
-    , num_list:list[str]
+    , nums:list[str]
     , strategy:MRMRStrategy
     , params:dict[str,Any]
 ) -> np.ndarray:
@@ -451,26 +452,26 @@ def _mrmr_underlying_score(
     print(f"Running {strategy} to determine feature relevance...")
     s = clean_strategy_str(strategy)
     if s in ("fscore", "f", "f_score"):
-        scores = _f_score(df, target, num_list)
+        scores = _f_score(df, target, nums)
     elif s in ("rf", "random_forest"):
         from sklearn.ensemble import RandomForestClassifier
         print("Random forest is not deterministic by default. Results may vary.")
         rf = RandomForestClassifier(**params)
-        rf.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+        rf.fit(df[nums].to_numpy(), df[target].to_numpy().ravel())
         scores = rf.feature_importances_
     elif s in ("xgb", "xgboost"):
         from xgboost import XGBClassifier
         print("XGB is not deterministic by default. Results may vary.")
         xgb = XGBClassifier(**params)
-        xgb.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+        xgb.fit(df[nums].to_numpy(), df[target].to_numpy().ravel())
         scores = xgb.feature_importances_
     elif s in ("mis", "mutual_info_score"):
-        scores = mutual_info(df, conti_cols=num_list, target=target).get_column("estimated_mi").to_numpy().ravel()
+        scores = mutual_info(df, conti_cols=nums, target=target).get_column("estimated_mi").to_numpy().ravel()
     elif s in ("lgbm", "lightgbm"):
         from lightgbm import LGBMClassifier
         print("LightGBM is not deterministic by default. Results may vary.")
         lgbm = LGBMClassifier(**params)
-        lgbm.fit(df[num_list].to_numpy(), df[target].to_numpy().ravel())
+        lgbm.fit(df[nums].to_numpy(), df[target].to_numpy().ravel())
         scores = lgbm.feature_importances_
     else: # Pythonic nonsense
         raise ValueError(f"The strategy {strategy} is not a valid MRMR Strategy.")
@@ -519,7 +520,7 @@ def mrmr(
     s = clean_strategy_str(strategy)
     scores = _mrmr_underlying_score(df
         , target = target
-        , num_list = nums
+        , nums = nums
         , strategy = s
         , params = {} if params is None else params
     )
@@ -603,16 +604,16 @@ def mrmr_selector(
     nums = get_numeric_cols(input_data, exclude=[target])
     s = clean_strategy_str(strategy)
     to_select = mrmr(input_data, target, top_k, nums, s, params, low_memory)
-    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
+    logger.info(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
-    to_select.extend(f for f in input_data.columns if f not in nums)
+    to_select.extend(f for f in df.columns if f not in nums)
     return select(df, to_select, persist=True)
 
 def knock_out_mrmr(
     df:pl.DataFrame
     , target:str
     , k:int 
-    , num_cols:Optional[list[str]] = None
+    , cols:Optional[list[str]] = None
     , corr_threshold:float = 0.7
     , strategy:MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
@@ -634,7 +635,7 @@ def knock_out_mrmr(
         The target column
     k
         The top k features to return
-    num_cols
+    cols
         Numerical columns to select from. If not provided, all numeric columns will be used
     corr_threshold
         The threshold above which correlation is considered too high. This means if A has high correlation to B, then
@@ -644,31 +645,31 @@ def knock_out_mrmr(
     params
         If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     '''
-    if isinstance(num_cols, list):
-        num_list = num_cols
+    if isinstance(cols, list):
+        nums = cols
     else:
-        num_list = get_numeric_cols(df, exclude=[target])
+        nums = get_numeric_cols(df, exclude=[target])
 
     s = clean_strategy_str(strategy)
     scores = _mrmr_underlying_score(df
         , target = target
-        , num_list = num_list
+        , nums = nums
         , strategy = s
         , params = {} if params is None else params
     )
 
     # Set up
-    low_corr = np.abs(df[num_list].corr().to_numpy()) < corr_threshold
-    surviving_indices = np.full(shape=len(num_list), fill_value=True) # an array of booleans
+    low_corr = np.abs(df[nums].corr().to_numpy()) < corr_threshold
+    surviving_indices = np.full(shape=len(nums), fill_value=True) # an array of booleans
     scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
     count = 0
-    output_size = min(k, len(num_list))
+    output_size = min(k, len(nums))
     pbar = tqdm(total=output_size)
     # Run the knock outs
     for i, _ in scores:
         if surviving_indices[i]:
-            selected.append(num_list[i])
+            selected.append(nums[i])
             surviving_indices = surviving_indices & low_corr[:,i]
             count += 1
             pbar.update(1)
@@ -715,14 +716,14 @@ def knock_out_mrmr_selector(
     else:
         input_data:pl.DataFrame = df
 
-    num_cols = get_numeric_cols(df, exclude=[target])
-
+    nums = get_numeric_cols(df, exclude=[target])
+    complement = [f for f in df.columns if f not in nums]
     s = clean_strategy_str(strategy)
-    to_select = knock_out_mrmr(input_data, target, top_k, num_cols, s, corr_threshold, params)
-    print(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
+    to_select = knock_out_mrmr(input_data, target, top_k, nums, s, corr_threshold, params)
+    print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
-    to_select.extend(f for f in df.columns if f not in num_cols)
-    return select(df, to_select, persist=True)
+    
+    return select(df, to_select + complement, persist=True)
 
 # Selectors for the methods below are not yet implemented
 

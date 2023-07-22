@@ -152,7 +152,7 @@ def binary_psi(
     , n_bins: int = 10
 ) -> pl.DataFrame:
     '''
-    Computes the Population Stability Index of a binary model by binning the new score into n_bins.
+    Computes the Population Stability Index of a binary model by binning the new score into n_bins using quantiles.
 
     Parameters
     ----------
@@ -187,8 +187,8 @@ def binary_psi(
         b = pl.count()
     )
     return s1_summary.join(s2_summary, on="category").with_columns(
-        a = pl.col("a")/len(s1),
-        b = pl.col("b")/len(s2)
+        a = pl.max(pl.col("a"), 0.00001)/len(s1),
+        b = pl.max(pl.col("b"), 0.00001)/len(s2)
     ).with_columns(
         a_minus_b = pl.col("a") - pl.col("b"),
         ln_a_on_b = (pl.col("a")/pl.col("b")).log()

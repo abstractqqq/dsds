@@ -342,7 +342,6 @@ def binary_encode(
     separator
         The separator used in the names of the new columns
     '''
-
     if cols is None:
         str_cols = get_string_cols(df)
         exclude = [] if exclude is None else exclude
@@ -418,8 +417,8 @@ def multicat_one_hot_encode(
     _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
     temp = df.lazy().select(cols).groupby(1).agg(
         pl.all().str.split(delimiter).explode().unique().sort()
-    ).select(cols) 
-    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
+    ).select(cols)
+    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     exprs = []
     start_index = int(drop_first)

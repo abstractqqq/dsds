@@ -103,13 +103,11 @@ def select(
 
     Set persist = True if this needs to be remembered by the blueprint.
     '''
-    if cs.is_selector(selector):
-        if isinstance(df, pl.LazyFrame) and persist:
-            return df.blueprint.select(selector)
-        else:
-            return df.select(selector)
+    if isinstance(df, pl.LazyFrame) and persist:
+        return df.blueprint.select(selector)
     else:
-        raise TypeError("The selector is not a valid selector.")
+        return df.select(selector)
+
 
 def drop_nulls(
     df:PolarsFrame
@@ -606,7 +604,7 @@ def constant_removal(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
 
 def remove_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
     '''Removes the given columns if they exist in the dataframe.'''
-    remove_cols = list(set(cols).intersection(set(df.columns)))
+    remove_cols = list(set(cols).intersection(df.columns))
     logger.info(f"The following columns are dropped. {remove_cols}.\nRemoved a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 

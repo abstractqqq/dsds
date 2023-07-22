@@ -27,9 +27,9 @@ CPU_M1: Final[int] = CPU_COUNT - 1
 POLARS_NUMERICAL_TYPES:Final[Tuple[pl.DataType]] = (pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)  # noqa: E501
 POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date)
 
-ActionType:TypeAlias = Literal["with_columns", "map_dict", "drop", "select", "add_func", "filter"]
+ActionType:TypeAlias = Literal["with_columns", "map_dict", "drop", "select", "add_func", "filter", "classif"]
 MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf", "random_forest", "mis"
-                       , "mutual_info_score", "lgbm", "lightgbm"]
+                                , "mutual_info_score", "lgbm", "lightgbm"]
 ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant"]
 ImputationStrategy:TypeAlias = Literal["mean", "avg", "average", "median", "const", "constant", "mode", "most_frequent"]
 PowerTransformStrategy:TypeAlias = Literal["yeo_johnson", "yeojohnson", "box_cox", "boxcox"]

@@ -3,7 +3,7 @@ import polars as pl
 import importlib
 import polars.selectors as cs
 from pathlib import Path
-from polars import LazyFrame
+from polars import LazyFrame, DataFrame
 from dataclasses import dataclass
 from typing import (
     Any
@@ -19,6 +19,8 @@ from .type_alias import (
     PolarsFrame
     , ActionType
     , PipeFunction
+    , ClassifModel
+    # , RegressionModel
 )
 
 # P = ParamSpec("P")
@@ -37,7 +39,7 @@ class Step:
     # First is everything that can be done with with_columns (Iterable[IntoExpr], but list[pl.Expr] is recommended)
     # Second is a 1-to-1 encoder (MapDict)
     # Third is a drop/select (list[str] and cs._selector_proxy_)
-    # Fourth is add_func (dict[str, Any])
+    # Fourth is add_func (dict[str, Any]), or add_classif
     # Fifth is a filter statement (pl.Expr)
 
 
@@ -45,10 +47,9 @@ class Step:
 class Blueprint:
     def __init__(self, ldf: LazyFrame):
         self._ldf = ldf
-        self.source = ldf.clone()
         self.steps:list[Step] = []
-        self.target:str = ""
-        self.model = None
+        # self.model = None
+        # self.source = ldf.clone()
 
     def __str__(self) -> str:
         output = ""
@@ -66,6 +67,14 @@ class Blueprint:
                     output += f"{k} = {v},\n"
             elif s.action == "filter":
                 output += f"By condition: {s.associated_data}\n"
+            elif s.action == "classif":
+                output += f"Classification Model: {s.associated_data['model'].__class__}\n"
+                features = s.associated_data.get('features', None)
+                if features is None:
+                    output += "Using all non-target columns as features.\n"
+                else:
+                    output += f"Using the features {s.associated_data['features']}\n"
+                output += f"Appends {s.associated_data['score_col']} to dataframe."
             else:
                 output += str(s.associated_data)
 
@@ -78,7 +87,7 @@ class Blueprint:
     @staticmethod
     def _map_dict(df:PolarsFrame, map_dict:MapDict) -> PolarsFrame:
         temp = pl.from_dict(map_dict.ref) # Always an eager read
-        if isinstance(df, pl.LazyFrame): 
+        if isinstance(df, pl.LazyFrame):
             temp = temp.lazy()
         
         if map_dict.default is None:
@@ -89,12 +98,34 @@ class Blueprint:
             return df.join(temp, on = map_dict.left_col, how = "left").with_columns(
                 pl.col(map_dict.right_col).fill_null(map_dict.default).alias(map_dict.left_col)
             ).drop(map_dict.right_col)
+        
+    @staticmethod
+    def _process_classif(
+        df: PolarsFrame
+        , model:ClassifModel
+        , target: Optional[str] = None
+        , features: Optional[list[str]] = None
+        , score_idx:int = -1 
+        , score_col:str = "model_score"
+    ) -> DataFrame:
+        
+        if features is None:
+            features = df.columns
+        if target is not None:
+            if target in features:
+                features.remove(target)
+
+        data = df.lazy().collect()
+        return data.insert_at_idx(0, pl.Series(
+            score_col, model.predict_proba(data.select(features))[:, score_idx]
+        ))
+
 
     # Feature Transformations that requires a 1-1 mapping as given by the ref dict. This will be
     # carried out using a join logic to avoid the use of Python UDF.
     def map_dict(self, left_col:str, ref:dict, right_col:str, default:Optional[Any]) -> LazyFrame:
         map_dict = MapDict(left_col = left_col, ref = ref, right_col = right_col, default = default)
-        output = self._map_dict(self._ldf, map_dict)
+        output = Blueprint._map_dict(self._ldf, map_dict)
         output.blueprint.steps = self.steps.copy() 
         output.blueprint.steps.append(
             Step(action = "map_dict", associated_data = map_dict)
@@ -139,7 +170,6 @@ class Blueprint:
         )
         return output
     
-    # This doesn't work with the pipeline right now because it clears all steps before this.
     def add_func(self
         , df:LazyFrame # The input to the function that needs to be persisted.
         , func:PipeFunction 
@@ -163,6 +193,83 @@ class Blueprint:
         f = open(path, "wb")
         pickle.dump(self, f)
         f.close()
+
+    def add_classif(self
+        , model:ClassifModel
+        , target: Optional[str] = None
+        , features: Optional[list[str]] = None
+        , score_idx:int = -1 
+        , score_col:str = "model_score"
+    ) -> LazyFrame:
+        '''
+        Appends a classification model to the end of the pipeline. This step will collect the lazy frame. All non-target
+        column will be used as features.
+
+        Parameters
+        ----------
+        model
+            The trained classification model
+        target
+            The target of the model, which will not be used in making the prediction. It is only used so that we can 
+            remove it from feature list.
+        features
+            The features the model takes. If none, will use all non-target features.
+        score_idx
+            The index of the score column in predict_proba you want to append to the dataframe. E.g. -1 will take the 
+            score of the positive class in a binary classification
+        score_col
+            The name of the score column
+        '''        
+        output = self._process_classif(self._ldf, model, target, features, score_idx, score_col).lazy()
+        output.blueprint.steps = self.steps.copy()
+        output.blueprint.steps.append(
+            Step(action = "classif", associated_data={"model":model,
+                                                      "target": target,
+                                                      "features": features,
+                                                      "score_idx": score_idx,
+                                                      "score_col":score_col})
+        )
+        return output
+
+    def insert_classif(self
+        , at: int
+        , model:ClassifModel
+        , target: Optional[str] = None
+        , features: Optional[list[str]] = None
+        , score_idx:int = -1 
+        , score_col:str = "model_score"
+    ) -> LazyFrame:
+        '''
+        Inserts a classification model at given index. This step will collect the lazy frame. All non-target
+        column will be used as features.
+
+        Parameters
+        ----------
+        at
+            Index at which to insert the model step
+        model
+            The trained classification model
+        target
+            The target of the model, which will not be used in making the prediction. It is only used so that we can 
+            remove it from feature list.
+        features
+            The features the model takes. If none, will use all non-target features.
+        score_idx
+            The index of the score column in predict_proba you want to append to the dataframe. E.g. -1 will take the 
+            score of the positive class in a binary classification
+        score_col
+            The name of the score column
+        '''        
+        output = self._process_classif(model, target, features, score_idx, score_col).lazy()
+        output.blueprint.steps = self.steps.copy()
+        output.blueprint.steps.insert(at,
+            Step(action = "classif", associated_data={"model":model,
+                                                      "target": target,
+                                                      "features": features,
+                                                      "score_idx": score_idx,
+                                                      "score_col":score_col})
+        )
+        return output   
 
     def apply(self, df:PolarsFrame, up_to:int=-1) -> PolarsFrame:
         '''
@@ -191,6 +298,11 @@ class Blueprint:
                 elif s.action == "add_func":
                     func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
                     df = df.pipe(func, **s.associated_data["kwargs"])
+                elif s.action == "classif":
+                    if isinstance(df, LazyFrame):
+                        df = df.pipe(self._process_classif, **s.associated_data).lazy()
+                    else:
+                        df = df.pipe(self._process_classif, **s.associated_data)
             else:
                 break
         return df
