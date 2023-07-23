@@ -49,9 +49,13 @@ class Blueprint:
         self._ldf = ldf
         self.steps:list[Step] = []
 
-    def __str__(self) -> str:
+    def as_str(self, n:int) -> str:
         output = ""
+        start = max(len(self.steps) + n, 0) if n < 0 else 0
+        till = len(self.steps) if n < 0 else min(n, len(self.steps))
         for k,s in enumerate(self.steps):
+            if k < start:
+                continue
             output += f"Step {k} | Action: {s.action}\n"
             if s.action == "with_columns":
                 output += "Details: \n"
@@ -75,9 +79,20 @@ class Blueprint:
                 output += f"Appends {s.associated_data['score_col']} to dataframe."
             else:
                 output += str(s.associated_data)
-
             output += "\n\n"
+            if k > till:
+                break
+
         return output
+    
+    def show(self, n:int) -> None:
+        print(self.as_str(n))
+
+    def __str__(self) -> str:
+        return self.as_str(len(self.steps))
+    
+    def __len__(self) -> int:
+        return len(self.steps)
     
     def _ipython_display_(self):
         print(self)
