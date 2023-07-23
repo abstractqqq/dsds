@@ -20,7 +20,7 @@ from .type_alias import (
     , ActionType
     , PipeFunction
     , ClassifModel
-    # , RegressionModel
+    , RegressionModel
 )
 
 # P = ParamSpec("P")
@@ -39,7 +39,7 @@ class Step:
     # First is everything that can be done with with_columns (Iterable[IntoExpr], but list[pl.Expr] is recommended)
     # Second is a 1-to-1 encoder (MapDict)
     # Third is a drop/select (list[str] and cs._selector_proxy_)
-    # Fourth is add_func (dict[str, Any]), or add_classif
+    # Fourth is add_func (dict[str, Any]), or add_classif/add_regression
     # Fifth is a filter statement (pl.Expr)
 
 
@@ -48,8 +48,6 @@ class Blueprint:
     def __init__(self, ldf: LazyFrame):
         self._ldf = ldf
         self.steps:list[Step] = []
-        # self.model = None
-        # self.source = ldf.clone()
 
     def __str__(self) -> str:
         output = ""
@@ -67,8 +65,8 @@ class Blueprint:
                     output += f"{k} = {v},\n"
             elif s.action == "filter":
                 output += f"By condition: {s.associated_data}\n"
-            elif s.action == "classif":
-                output += f"Classification Model: {s.associated_data['model'].__class__}\n"
+            elif s.action in ("classif", "regression"):
+                output += f"Model: {s.associated_data['model'].__class__}\n"
                 features = s.associated_data.get('features', None)
                 if features is None:
                     output += "Using all non-target columns as features.\n"
@@ -107,6 +105,29 @@ class Blueprint:
         , features: Optional[list[str]] = None
         , score_idx:int = -1 
         , score_col:str = "model_score"
+    ) -> PolarsFrame:
+        
+        if features is None:
+            features = df.columns
+        if target is not None:
+            if target in features:
+                features.remove(target)
+
+        data = df.lazy().collect()
+        output = data.insert_at_idx(0, pl.Series(
+            score_col, model.predict_proba(data.select(features))[:, score_idx]
+        ))
+        if isinstance(df, pl.LazyFrame):
+            return output.lazy()
+        return output
+    
+    @staticmethod
+    def _process_regression(
+        df: PolarsFrame
+        , model:RegressionModel
+        , target: Optional[str] = None
+        , features: Optional[list[str]] = None
+        , score_col:str = "model_score"
     ) -> DataFrame:
         
         if features is None:
@@ -116,9 +137,12 @@ class Blueprint:
                 features.remove(target)
 
         data = df.lazy().collect()
-        return data.insert_at_idx(0, pl.Series(
-            score_col, model.predict_proba(data.select(features))[:, score_idx]
+        output = data.insert_at_idx(0, pl.Series(
+            score_col, model.predict(data.select(features))[:, -1]
         ))
+        if isinstance(df, pl.LazyFrame):
+            return output.lazy()
+        return output
 
 
     # Feature Transformations that requires a 1-1 mapping as given by the ref dict. This will be
@@ -185,7 +209,7 @@ class Blueprint:
             Step(action="add_func", associated_data={"module":func.__module__, "name":func.__name__, "kwargs":kwargs})
         )
         return output
-        
+
     def add_classif(self
         , model:ClassifModel
         , target: Optional[str] = None
@@ -194,11 +218,13 @@ class Blueprint:
         , score_col:str = "model_score"
     ) -> LazyFrame:
         '''
-        Appends a classification model to the pipeline. This step will collect the lazy frame. All non-target
+        Appends a classification model at given index. This step will collect the lazy frame. All non-target
         column will be used as features.
 
         Parameters
         ----------
+        at
+            Index at which to insert the model step
         model
             The trained classification model
         target
@@ -211,8 +237,8 @@ class Blueprint:
             score of the positive class in a binary classification
         score_col
             The name of the score column
-        '''        
-        output = self._process_classif(self._ldf, model, target, features, score_idx, score_col).lazy()
+        '''
+        output = Blueprint._process_classif(self._ldf, model, target, features, score_idx, score_col)
         output.blueprint.steps = self.steps.copy()
         output.blueprint.steps.append(
             Step(action = "classif", associated_data={"model":model,
@@ -222,17 +248,15 @@ class Blueprint:
                                                       "score_col":score_col})
         )
         return output
-
-    def insert_classif(self
-        , at: int
-        , model:ClassifModel
+    
+    def add_regression(self
+        , model:RegressionModel
         , target: Optional[str] = None
         , features: Optional[list[str]] = None
-        , score_idx:int = -1 
         , score_col:str = "model_score"
     ) -> LazyFrame:
         '''
-        Inserts a classification model at given index. This step will collect the lazy frame. All non-target
+        Appends a classification model at given index. This step will collect the lazy frame. All non-target
         column will be used as features.
 
         Parameters
@@ -252,20 +276,24 @@ class Blueprint:
         score_col
             The name of the score column
         '''        
-        output = self._process_classif(model, target, features, score_idx, score_col).lazy()
+        output = Blueprint._process_regression(self._ldf, model, target, features, score_col)
         output.blueprint.steps = self.steps.copy()
-        output.blueprint.steps.insert(at,
+        output.blueprint.steps.append(
             Step(action = "classif", associated_data={"model":model,
                                                       "target": target,
                                                       "features": features,
-                                                      "score_idx": score_idx,
                                                       "score_col":score_col})
         )
         return output
-
+    
     def preserve(self, path:str|Path):
         '''
         Writes the blueprint to disk as a Python pickle file at the given path.
+
+        Parameters
+        ----------
+        path
+            A valid path to write to
         '''
         f = open(path, "wb")
         pickle.dump(self, f)
@@ -299,10 +327,9 @@ class Blueprint:
                     func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
                     df = df.pipe(func, **s.associated_data["kwargs"])
                 elif s.action == "classif":
-                    if isinstance(df, LazyFrame):
-                        df = df.pipe(self._process_classif, **s.associated_data).lazy()
-                    else:
-                        df = df.pipe(self._process_classif, **s.associated_data)
+                    df = df.pipe(self._process_classif, **s.associated_data)
+                elif s.action == "regression":
+                    df = df.pipe(self._process_regression, **s.associated_data)
             else:
                 break
         return df

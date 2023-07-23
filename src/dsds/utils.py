@@ -4,10 +4,10 @@ from pathlib import Path
 from .type_alias import (
     PolarsFrame
     , ClassifModel
-    # , RegressionModel
+    , RegressionModel
 )
 from typing import Optional
-from .blueprint import Blueprint, Step
+from .blueprint import Blueprint
 from dataclasses import dataclass
 
 # --------------------- Other, miscellaneous helper functions ----------------------------------------------
@@ -81,8 +81,7 @@ def append_classif_score(
     , score_col:str = "model_score"
 ) -> PolarsFrame:
     '''
-    Appends a classification model to the pipeline. This step will collect the lazy frame. All non-target
-    column will be used as features.
+    Appends a classification model to the pipeline. This step will collect the lazy frame.
 
     If input df is lazy, this step will be remembered by the pipelien by default.
 
@@ -104,5 +103,33 @@ def append_classif_score(
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.add_classif(model, target, features, score_idx, score_col)
     return Blueprint._process_classif(df, model, target, features, score_idx, score_col)
+
+def append_regression(
+    df: PolarsFrame
+    , model:RegressionModel
+    , target: Optional[str] = None
+    , features: Optional[list[str]] = None
+    , score_col:str = "model_score"
+) -> PolarsFrame:
+    '''
+    Appends a regression model to the pipeline. This step will collect the lazy frame.
+
+    If input df is lazy, this step will be remembered by the pipelien by default.
+
+    Parameters
+    ----------
+    model
+        The trained classification model
+    target
+        The target of the model, which will not be used in making the prediction. It is only used so that we can 
+        remove it from feature list.
+    features
+        The features the model takes. If none, will use all non-target features.
+    score_col
+        The name of the score column
+    '''
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.add_regression(model, target, features, score_col)
+    return Blueprint._process_regression(df, model, target, features, score_col)
     
 
