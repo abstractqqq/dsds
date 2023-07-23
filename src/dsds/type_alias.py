@@ -21,7 +21,6 @@ import os
 import numpy as np
 from abc import ABC, abstractmethod
 
-
 CPU_COUNT:Final[int] = os.cpu_count()
 CPU_M1: Final[int] = CPU_COUNT - 1
 POLARS_NUMERICAL_TYPES:Final[Tuple[pl.DataType]] = (pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)  # noqa: E501
@@ -70,29 +69,3 @@ class RegressionModel(ABC):
     @abstractmethod
     def fit(self, X:Union[np.ndarray,pl.DataFrame], y:Union[np.ndarray,pl.Series,pl.DataFrame]): # Should return self
         ...
-
-class Identity(ClassifModel, RegressionModel):
-
-    def __init__(self, col:str, idx:int=-1):
-        '''
-        A identity passthrough. When incoming data is a Polars DataFrame, please supply a column name.
-        If incoming data is a NumPy matrix, please supply a positive index for the passthrough column.
-        '''
-        self.col = col
-        self.idx = idx
-    
-    def predict(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
-        if isinstance(X, pl.DataFrame) and self.col in X.columns:
-            return X[self.col].to_numpy()
-        elif isinstance(X, np.ndarray) and self.idx > 0:
-            return X[:, self.idx]
-        raise ValueError(f"Either the column {self.col} is not in X. Or X is a NumPy matrix, but idx "
-                         "is not initialized. Cannot do a passthrough.")
-    
-    def predict_proba(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
-        if isinstance(X, pl.DataFrame) and self.col in X.columns:
-            return X[self.col].to_numpy()
-        elif isinstance(X, np.ndarray) and self.idx > 0:
-            return X[:, self.idx]
-        raise ValueError(f"Either the column {self.col} is not in X. Or X is a NumPy matrix, but idx "
-                         "is not initialized. Cannot do a passthrough.")

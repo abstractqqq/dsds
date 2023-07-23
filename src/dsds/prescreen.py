@@ -150,6 +150,23 @@ def filter(
             return df.blueprint.filter(condition)
     return df.filter(condition)
 
+def order_by(
+    df: PolarsFrame
+    , by: Union[str, list[str]]
+    , descending:bool = False
+    , nulls_last:bool = False
+    , persist: bool = False
+) -> PolarsFrame:
+    ''' 
+    A wrapper function for Polars' sort so that it can be used in pipeline.
+
+    Set persist = True if this needs to be remembered by the blueprint.
+    '''
+    output = df.sort(by=by, descending=descending, nulls_last=nulls_last)
+    if isinstance(df, pl.LazyFrame) and persist:
+        return output.blueprint.add_func(df,order_by,kwargs={"by":by,"descending":descending, "nulls_last":nulls_last})
+    return output
+
 def check_binary_target(df:PolarsFrame, target:str) -> bool:
     '''Checks if target is binary or not. Only binary targets with 0s and 1s will pass.'''
     target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)

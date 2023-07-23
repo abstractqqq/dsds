@@ -531,7 +531,6 @@ def ordinal_encode(
     default
         Default value for values not mentioned in the dict.
     '''
-
     for c in ordinal_mapping:
         if c in df.columns:
             mapping = ordinal_mapping[c]
@@ -991,10 +990,6 @@ def power_transform(
         return df.lazy().blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
-
-# Should feature engineering spin off to its own module? Or stay in transform?
-# First, I need to wait until I have more feature engineering stuff..
-
 def normalize(
     df: PolarsFrame
     , cols:list[str]
@@ -1002,7 +997,7 @@ def normalize(
     '''
     Normalize the given columns by dividing them with the respective column sum.
 
-    !!!Note this will not be remember by the pipeline!!!
+    !!!Note this will not be remembered by the blueprint!!!
 
     Parameters
     ----------
@@ -1186,4 +1181,39 @@ def extract_dt_features(
 
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
+def moving_avgs(
+    df:PolarsFrame
+    , c: str
+    , window_sizes:list[int]
+    , min_periods: Optional[int] = None,
+) -> PolarsFrame:
+    '''
+    Computes moving averages for column c with given window_sizes. Please make sure the dataframe is sorted
+    before this. For a pipeline compatible sort, see dsds.prescreen.order_by. Please use a sepearate impute
+    if you want to impute the null values.
+
+    This will be remembered by blueprint by default.
+    
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    c
+        Name of the column to compute moving averages
+    window_sizes
+        A list of positive integers > 1, representing the different moving average periods for the column c.
+        Everything <= 1 will be ignored
+    min_periods
+        The number of values in the window that should be non-null before computing a result. If None, 
+        it will be set equal to window size.
+    '''
+    exprs = (pl.col(c).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
+             for i in window_sizes if i > 1)
+    if isinstance(df, pl.LazyFrame):
+        final_exprs = list(exprs)
+        if len(final_exprs) <= 0:
+            return df
+        return df.blueprint.with_columns(final_exprs)
     return df.with_columns(exprs)
