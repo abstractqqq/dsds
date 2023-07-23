@@ -186,14 +186,6 @@ class Blueprint:
         )
         return output
         
-    def preserve(self, path:str|Path):
-        '''
-        Writes the blueprint to disk as a Python pickle file at the given path.
-        '''
-        f = open(path, "wb")
-        pickle.dump(self, f)
-        f.close()
-
     def add_classif(self
         , model:ClassifModel
         , target: Optional[str] = None
@@ -202,7 +194,7 @@ class Blueprint:
         , score_col:str = "model_score"
     ) -> LazyFrame:
         '''
-        Appends a classification model to the end of the pipeline. This step will collect the lazy frame. All non-target
+        Appends a classification model to the pipeline. This step will collect the lazy frame. All non-target
         column will be used as features.
 
         Parameters
@@ -269,7 +261,15 @@ class Blueprint:
                                                       "score_idx": score_idx,
                                                       "score_col":score_col})
         )
-        return output   
+        return output
+
+    def preserve(self, path:str|Path):
+        '''
+        Writes the blueprint to disk as a Python pickle file at the given path.
+        '''
+        f = open(path, "wb")
+        pickle.dump(self, f)
+        f.close()
 
     def apply(self, df:PolarsFrame, up_to:int=-1) -> PolarsFrame:
         '''

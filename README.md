@@ -58,7 +58,9 @@ Performance without sacrificing user experience. See ./examples/dsds_comparisons
 
 ## Dependencies
 
-Python 3.9, 3.10, 3.11+ is recommended. We are forward looking.
+Python 3.9, 3.10, 3.11+ is recommended. We are forward looking. 
+
+It should run on all versions >= 3.9. But I haven't tested 3.9 and 3.10 thoroughly.
 
 pip install polars scipy numpy
 

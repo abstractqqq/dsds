@@ -1,8 +1,13 @@
 import polars as pl
 import numpy as np
 from pathlib import Path
-from .type_alias import PolarsFrame
-from .blueprint import Blueprint  # noqa: F401
+from .type_alias import (
+    PolarsFrame
+    , ClassifModel
+    # , RegressionModel
+)
+from typing import Optional
+from .blueprint import Blueprint, Step
 from dataclasses import dataclass
 
 # --------------------- Other, miscellaneous helper functions ----------------------------------------------
@@ -67,8 +72,37 @@ def dump_blueprint(df:pl.LazyFrame, path:str|Path) -> pl.LazyFrame:
         return df
     raise TypeError("Blueprints only work with LazyFrame.")
 
-# Turns zip9 into standard 5 digit zipcodes.
-def clean_zip_codes():
-    pass
+def append_classif_score(
+    df: PolarsFrame
+    , model:ClassifModel
+    , target: Optional[str] = None
+    , features: Optional[list[str]] = None
+    , score_idx:int = -1 
+    , score_col:str = "model_score"
+) -> PolarsFrame:
+    '''
+    Appends a classification model to the pipeline. This step will collect the lazy frame. All non-target
+    column will be used as features.
 
+    If input df is lazy, this step will be remembered by the pipelien by default.
+
+    Parameters
+    ----------
+    model
+        The trained classification model
+    target
+        The target of the model, which will not be used in making the prediction. It is only used so that we can 
+        remove it from feature list.
+    features
+        The features the model takes. If none, will use all non-target features.
+    score_idx
+        The index of the score column in predict_proba you want to append to the dataframe. E.g. -1 will take the 
+        score of the positive class in a binary classification
+    score_col
+        The name of the score column
+    '''
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.add_classif(model, target, features, score_idx, score_col)
+    return Blueprint._process_classif(df, model, target, features, score_idx, score_col)
+    
 
