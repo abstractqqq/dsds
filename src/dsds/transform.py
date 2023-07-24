@@ -591,7 +591,7 @@ def smooth_target_encode(
             raise ValueError("Target is not binary or not properly encoded.")
 
     # probability of target = 1
-    p = df.lazy().select(pl.col(target).mean()).collect().row(0)[0]
+    p = df.lazy().select(pl.col(target).mean()).collect().item(0,0)
     is_lazy = isinstance(df, pl.LazyFrame)
     # If c has null, null will become a group when we group by.
     for c in str_cols:
@@ -954,7 +954,7 @@ def power_transform(
         lmaxs = df.lazy().select(non_null_list).groupby(1).agg(
             pl.all()
             .apply(lambda x: yeojohnson_normmax(x))
-            .cast(pl.Float64())
+            .cast(pl.Float64)
         ).select(non_null_list).collect().row(0)
         for c, lmax in zip(non_null_list, lmaxs):
             if lmax == 0: # log(x + 1)
@@ -975,13 +975,12 @@ def power_transform(
         lmaxs = df.lazy().select(non_null_list).groupby(1).agg(
             pl.all()
             .apply(lambda x: boxcox_normmax(x, method="mle"))
-            .cast(pl.Float64())
+            .cast(pl.Float64)
         ).select(non_null_list).collect().row(0)
         exprs.extend(
             pl.col(c).log() if lmax == 0 else (pl.col(c).pow(lmax) - 1) / lmax 
             for c, lmax in zip(non_null_list, lmaxs)
         )
-
     else:
         raise TypeError(f"The input strategy {strategy} is not a valid strategy. Valid strategies are: yeo_johnson "
                         "or box_cox")
