@@ -20,15 +20,15 @@ from .prescreen import (
 from .blueprint import( # Need this for Polars extension to work
     Blueprint
 )
-import logging
-import math
-import numpy as np
-import polars as pl
 from typing import Optional, Union, Any
 from scipy.stats import (
     yeojohnson_normmax
     , boxcox_normmax
 )
+import logging
+import math
+import numpy as np
+import polars as pl
 
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
@@ -1046,7 +1046,7 @@ def clip(
     elif not (a | b):
         exprs = (pl.col(c).clip(min_clip, max_clip) for c in cols)
     else:
-        raise TypeError("Either min_cap or max_cap or both have to be provided.")
+        raise TypeError("At least one of min_cap and max_cap should be provided.")
     
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(list(exprs))

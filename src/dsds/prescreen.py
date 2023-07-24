@@ -13,10 +13,6 @@ from .sample import (
 from .blueprint import(
     Blueprint
 )
-import re
-import polars.selectors as cs
-import polars as pl
-import logging  
 from datetime import datetime 
 from typing import Any, Optional, Tuple, Union
 from itertools import combinations
@@ -27,6 +23,10 @@ from scipy.stats import (
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 from math import comb
+import re
+import polars.selectors as cs
+import polars as pl
+import logging  
 
 logger = logging.getLogger(__name__)
 

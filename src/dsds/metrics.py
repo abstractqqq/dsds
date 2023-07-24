@@ -1,7 +1,7 @@
 import numpy as np 
 import polars as pl
-from typing import Tuple, Optional, Union
 import logging
+from typing import Tuple, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -174,14 +174,15 @@ def binary_psi(
         s2 = old_score
 
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
-    s1_cuts = s1.qcut(quantiles=qcuts)
+    s1_cuts:pl.DataFrame = s1.qcut(quantiles=qcuts, series=False)
     s1_summary = s1_cuts.lazy().groupby(pl.col("category").cast(pl.Utf8)).agg(
         a = pl.count()
     )
 
-    cuts = s1_cuts.get_column("break_point").unique().sort()[:len(qcuts)]
+    s2_base:pl.DataFrame = s2.cut(bins = s1_cuts.get_column("break_point").unique().sort().head(len(qcuts)), 
+                                  series = False)
 
-    s2_summary = s2.cut(bins = cuts, series=False).lazy().groupby(
+    s2_summary:pl.DataFrame = s2_base.lazy().groupby(
         pl.col("category").cast(pl.Utf8)
     ).agg(
         b = pl.count()
@@ -196,7 +197,7 @@ def binary_psi(
         psi = pl.col("a_minus_b") * pl.col("ln_a_on_b")
     ).sort("category").rename({"category":"score_range"}).collect()
 
-def l2_loss(
+def mse(
     y_actual:np.ndarray
     , y_predicted:np.ndarray
     , sample_weights:Optional[np.ndarray]=None
@@ -219,9 +220,10 @@ def l2_loss(
     else:
         return (sample_weights/(len(diff))).dot(diff.dot(diff))
     
-mse = l2_loss
+l2_loss = mse
+brier_loss = mse
 
-def l1_loss(
+def mae(
     y_actual:np.ndarray
     , y_predicted:np.ndarray
     , sample_weights:Optional[np.ndarray]=None
@@ -244,7 +246,7 @@ def l1_loss(
     else:
         return (sample_weights/(len(diff))).dot(diff)
 
-mae = l1_loss 
+l1_loss = mae
 
 def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     '''

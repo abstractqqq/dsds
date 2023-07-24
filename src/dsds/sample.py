@@ -1,8 +1,9 @@
-import polars as pl
 from typing import Tuple, Optional, Union
 from collections.abc import Iterator
 from .type_alias import PolarsFrame
 from polars.type_aliases import UniqueKeepStrategy
+from itertools import product
+import polars as pl
 import polars.selectors as cs
 import numpy as np
 import random
@@ -351,9 +352,10 @@ def bootstrap(
     , times: int
     , sample_frac: Optional[float] = 0.25
     , sample_amt: Optional[int] = None
-) -> Iterator[PolarsFrame]:
+) -> Iterator[pl.DataFrame]:
     """
-    Returns an iterator (generator) where each element is a sample from the underlying df.
+    Returns an iterator (generator) where each element is a sample from the underlying df. The dataframes in
+    the iterator will be eager.
 
     Parameters
     ----------
@@ -370,7 +372,7 @@ def bootstrap(
     start = random.randint(0, 100_000)
     if isinstance(df, pl.LazyFrame):
         return (
-            lazy_sample(df, sample_frac=sample_frac, sample_amt = sample_amt, seed=i)
+            lazy_sample(df, sample_frac=sample_frac, sample_amt = sample_amt, seed=i).collect()
             for i in range(start, start + times)
         )
     else:
@@ -410,3 +412,99 @@ def col_subsample(
     for _ in range(times):
         random.shuffle(to_sample)
         yield to_sample[:sample_amt] + keep
+
+def segmentation(
+    df: PolarsFrame
+    , segments: list[list[str]]
+) -> Iterator[Tuple[str, pl.DataFrame]]:
+    '''
+    Returns an iterator of (segment name, eager sub-dataframes).
+
+    Parameters
+    ----------
+    df
+        Either a lazy or an eager Polars dataframe
+    segments
+        A list of lists, where each element list represents the columns which you want to use as segments
+    
+    Example
+    -------
+    >>> import dsds.sample as sa
+    ... import polars as pl
+    ... df = pl.DataFrame({
+    ...     "group":[1,1,2,2],
+    ...     "state": ["TX","TX","TX","NY",],
+    ...     "id": [1,2,3,4],
+    ...     "value": [100,200,300,-50]
+    ... })
+    ... segments = [["group"],["group", "state"]]
+    ... for segment, sub_df in sa.segmentation(df, segments=segments):
+    ...     print(segment)
+    >>>     print(sub_df)
+    INFO:dsds.sample:The segment group == 1,state == NY has no record. Skipped.
+    group==1 
+    shape: (2, 4)
+    ┌───────┬───────┬─────┬───────┐
+    │ group ┆ state ┆ id  ┆ value │
+    │ ---   ┆ ---   ┆ --- ┆ ---   │
+    │ i64   ┆ str   ┆ i64 ┆ i64   │
+    ╞═══════╪═══════╪═════╪═══════╡
+    │ 1     ┆ TX    ┆ 1   ┆ 100   │
+    │ 1     ┆ TX    ┆ 2   ┆ 200   │
+    └───────┴───────┴─────┴───────┘
+    group==2 
+    shape: (2, 4)
+    ┌───────┬───────┬─────┬───────┐
+    │ group ┆ state ┆ id  ┆ value │
+    │ ---   ┆ ---   ┆ --- ┆ ---   │
+    │ i64   ┆ str   ┆ i64 ┆ i64   │
+    ╞═══════╪═══════╪═════╪═══════╡
+    │ 2     ┆ TX    ┆ 3   ┆ 300   │
+    │ 2     ┆ NY    ┆ 4   ┆ -50   │
+    └───────┴───────┴─────┴───────┘
+    group==1, state==TX 
+    shape: (2, 4)
+    ┌───────┬───────┬─────┬───────┐
+    │ group ┆ state ┆ id  ┆ value │
+    │ ---   ┆ ---   ┆ --- ┆ ---   │
+    │ i64   ┆ str   ┆ i64 ┆ i64   │
+    ╞═══════╪═══════╪═════╪═══════╡
+    │ 1     ┆ TX    ┆ 1   ┆ 100   │
+    │ 1     ┆ TX    ┆ 2   ┆ 200   │
+    └───────┴───────┴─────┴───────┘
+    group==2, state==NY 
+    shape: (1, 4)
+    ┌───────┬───────┬─────┬───────┐
+    │ group ┆ state ┆ id  ┆ value │
+    │ ---   ┆ ---   ┆ --- ┆ ---   │
+    │ i64   ┆ str   ┆ i64 ┆ i64   │
+    ╞═══════╪═══════╪═════╪═══════╡
+    │ 2     ┆ NY    ┆ 4   ┆ -50   │
+    └───────┴───────┴─────┴───────┘
+    group==2, state==TX 
+    shape: (1, 4)
+    ┌───────┬───────┬─────┬───────┐
+    │ group ┆ state ┆ id  ┆ value │
+    │ ---   ┆ ---   ┆ --- ┆ ---   │
+    │ i64   ┆ str   ┆ i64 ┆ i64   │
+    ╞═══════╪═══════╪═════╪═══════╡
+    │ 2     ┆ TX    ┆ 3   ┆ 300   │
+    └───────┴───────┴─────┴───────┘
+    '''
+    for seg in segments:
+        temp = df.lazy().select(seg).groupby(1).agg(
+            pl.all().unique().sort()
+        ).select(seg)
+        for comb in product(*temp.collect().row(0)):
+            expr = pl.lit(True)
+            to_str = []
+            for se, v in zip(seg, comb):
+                expr = expr & pl.col(se).eq(v)
+                to_str.append(f"{se}=={v}")
+            output = df.lazy().filter(expr).collect()
+            seg_name = ", ".join(to_str)
+            if len(output) > 0:
+                yield seg_name, output
+            else:
+                logger.info(f"The segment {seg_name} has no record. Skipped.")
+    
