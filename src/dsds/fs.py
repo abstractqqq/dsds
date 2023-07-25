@@ -303,48 +303,49 @@ def mutual_info_selector(
     return select(df, to_select + complement, persist=True)
 
 def _f_score(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , num_list:list[str]
 ) -> np.ndarray:
-    '''Same as f_classif, but returns a numpy array of f scores only.'''
+    '''
+    This is the same as what is in f_classif to compute f_score. Except that this only 
+    returns a numpy array of f scores and this does not error check.
+    '''
     
-    # Get average within group and sample variance within group.
-    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
-    step_two_expr:list[pl.Expr] = [] # Get average for each column
-    step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
-    # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] 
+    step_two_expr:list[pl.Expr] = []
     for n in num_list:
-        n_avg:str = n + "_avg" # avg within class
-        n_tavg:str = n + "_tavg" # true avg / overall average
+        n_sum:str = n + "_sum" # sum of class
         n_var:str = n + "_var" # var within class
         step_one_expr.append(
-            pl.col(n).mean().alias(n_avg)
+            pl.col(n).sum().alias(n_sum)
         )
         step_one_expr.append(
-            pl.col(n).var(ddof=0).alias(n_var) # ddof = 0 so that we don't need to compute pl.col("cnt") - 1
+            pl.col(n).var(ddof=0).alias(n_var) 
         )
-        step_two_expr.append( # True average of this column, reduce the amount of repeated computation.
-            # by using n_avg column dotted with cnt
-            (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
-        )
-        step_three_expr.append(
-            # Between class var (without diving by df_btw_class) / Within class var (without dividng by df_in_class) 
-            (pl.col(n_avg) - pl.col(n_tavg)).pow(2).dot(pl.col("cnt"))/ pl.col(n_var).dot(pl.col("cnt"))
+        step_two_expr.append(
+            (pl.col(n_sum)/pl.col("cnt") - pl.col(n_sum).sum()/pl.col("cnt").sum()).pow(2).dot(pl.col("cnt")) 
+            / pl.col(n_var).dot(pl.col("cnt"))
         )
 
-    # Get in class average and var
-    ref = df.groupby(target).agg(step_one_expr)
-    n_samples = len(df)
-    n_classes = len(ref)
+    ref = (
+        df.lazy().groupby(target).agg(step_one_expr)
+        .select(
+            pl.col("cnt").sum().alias("n_samples")
+            , pl.col(target).len().alias("n_classes")
+            , *step_two_expr
+        ).collect()
+    )
+    
+    n_samples = ref.drop_in_place("n_samples")[0]
+    n_classes = ref.drop_in_place("n_classes")[0]
     df_btw_class = n_classes - 1 
     df_in_class = n_samples - n_classes
 
-    return ref.with_columns(step_two_expr).select(step_three_expr)\
-            .to_numpy().ravel() * (df_in_class / df_btw_class)
+    return ref.to_numpy().ravel() * (df_in_class / df_btw_class)
 
 def f_classif(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , cols:Optional[list[str]]=None
 ) -> pl.DataFrame:
@@ -355,7 +356,7 @@ def f_classif(
     Parameters
     ----------
     df
-        An eager Polars DataFrame
+        Either a lazy or an eager Polars DataFrame
     target
         The target column
     cols
@@ -366,39 +367,39 @@ def f_classif(
     else:
         nums = get_numeric_cols(df, exclude=[target])
 
-    # Get average within group and sample variance within group.
-    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] # get cnt, and avg within classes
-    step_two_expr:list[pl.Expr] = [] # Get average for each column
-    step_three_expr:list[pl.Expr] = [] # Get "f score" (without some normalizer, see below)
-    # Minimize the amount of looping and str concating in Python. Use Exprs as much as possible.
+    step_one_expr:list[pl.Expr] = [pl.count().alias("cnt")] 
+    step_two_expr:list[pl.Expr] = []
     for n in nums:
-        n_avg:str = n + "_avg" # avg within class
-        n_tavg:str = n + "_tavg" # true avg / overall average
+        n_sum:str = n + "_sum" # sum of class
         n_var:str = n + "_var" # var within class
         step_one_expr.append(
-            pl.col(n).mean().alias(n_avg)
+            pl.col(n).sum().alias(n_sum)
         )
         step_one_expr.append(
-            pl.col(n).var(ddof=0).alias(n_var) # ddof = 0 so that we don't need to compute pl.col("cnt") - 1
+            pl.col(n).var(ddof=0).alias(n_var) 
         )
-        step_two_expr.append( # True average of this column, reduce the amount of repeated computation.
-            # by using n_avg column dotted with cnt
-            (pl.col(n_avg).dot(pl.col("cnt")) / len(df)).alias(n_tavg)
-        )
-        step_three_expr.append(
-            # Between class var (without diving by df_btw_class) / Within class var (without dividng by df_in_class) 
-            (pl.col(n_avg) - pl.col(n_tavg)).pow(2).dot(pl.col("cnt"))/ pl.col(n_var).dot(pl.col("cnt"))
+        step_two_expr.append(
+            (pl.col(n_sum)/pl.col("cnt") - pl.col(n_sum).sum()/pl.col("cnt").sum()).pow(2).dot(pl.col("cnt")) 
+            / pl.col(n_var).dot(pl.col("cnt"))
         )
 
-    # Get in class average and var
-    ref = df.groupby(target).agg(step_one_expr)
-    n_samples = len(df)
-    n_classes = len(ref)
+    ref = (
+        df.lazy().groupby(target).agg(step_one_expr)
+        .select(
+            pl.col("cnt").sum().alias("n_samples")
+            , pl.col(target).len().alias("n_classes")
+            , *step_two_expr
+        ).collect()
+    )
+    n_samples = ref.drop_in_place("n_samples")[0]
+    n_classes = ref.drop_in_place("n_classes")[0]
     df_btw_class = n_classes - 1 
     df_in_class = n_samples - n_classes
+
+    if df_btw_class == 0:
+        raise ZeroDivisionError("Target has only one class.")
     
-    f_values = ref.with_columns(step_two_expr).select(step_three_expr)\
-            .to_numpy().ravel() * (df_in_class / df_btw_class)
+    f_values = ref.to_numpy().ravel() * (df_in_class / df_btw_class)
     # We should scale this by (df_in_class / df_btw_class) because we did not do this earlier
     # At this point, f_values should be a pretty small dataframe. 
     # Cast to numpy, so that fdtrc can process it properly.

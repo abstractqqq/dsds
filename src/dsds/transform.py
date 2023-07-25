@@ -1076,13 +1076,15 @@ def log_transform(
     cast_non_positive
         How to deal with non positive values (<=0). None means turn them into null
     plus_one
-        If plus_one is true, this will perform ln(1+x) and ignore base and cast_non_positive inputs
+        If plus_one is true, this will perform ln(1+x) and ignore base and cast_non_positive arguments
     suffix
         Choice of a suffix to the transformed columns. If this is the empty string "", then the original column
-        will be replaced
+        will be replaced. If plus_one = True and suffix == "_log", then suffix will be replaced by "_log1p".
     '''
     _ = type_checker(df, cols, "numeric", "log_transform")
     if plus_one:
+        if suffix == "_log":
+            suffix += "1p"
         exprs = (
             pl.col(c).log1p().suffix(suffix) for c in cols
         )
@@ -1144,8 +1146,8 @@ def extract_dt_features(
     ┌────────────┬────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
     │ date1      ┆ date2      ┆ date1_year ┆ date2_yea ┆ date1_qua ┆ date2_qua ┆ date1_mon ┆ date2_mon │
     │ ---        ┆ ---        ┆ ---        ┆ r         ┆ rter      ┆ rter      ┆ th        ┆ th        │
-    │ date       ┆ date       ┆ u16        ┆ ---       ┆ ---       ┆ ---       ┆ ---       ┆ ---       │
-    │            ┆            ┆            ┆ u16       ┆ u8        ┆ u8        ┆ u8        ┆ u8        │
+    │ date       ┆ date       ┆ u32        ┆ ---       ┆ ---       ┆ ---       ┆ ---       ┆ ---       │
+    │            ┆            ┆            ┆ u32       ┆ u32       ┆ u32       ┆ u32       ┆ u32       │
     ╞════════════╪════════════╪════════════╪═══════════╪═══════════╪═══════════╪═══════════╪═══════════╡
     │ 2021-01-01 ┆ 2021-01-01 ┆ 2021       ┆ 2021      ┆ 1         ┆ 1         ┆ 1         ┆ 1         │
     │ 2022-02-03 ┆ 2022-02-03 ┆ 2022       ┆ 2022      ┆ 1         ┆ 1         ┆ 2         ┆ 2         │
@@ -1161,20 +1163,20 @@ def extract_dt_features(
     
     for e in to_extract:
         if e == "month":
-            exprs.extend(pl.col(c).dt.month().cast(pl.UInt8).suffix("_month") for c in cols)
+            exprs.extend(pl.col(c).dt.month().suffix("_month") for c in cols)
         elif e == "year":
-            exprs.extend(pl.col(c).dt.year().cast(pl.UInt16).suffix("_year") for c in cols)
+            exprs.extend(pl.col(c).dt.year().suffix("_year") for c in cols)
         elif e == "quarter":
-            exprs.extend(pl.col(c).dt.quarter().cast(pl.UInt8).suffix("_quarter") for c in cols)
+            exprs.extend(pl.col(c).dt.quarter().suffix("_quarter") for c in cols)
         elif e == "week":
-            exprs.extend(pl.col(c).dt.week().cast(pl.UInt8).suffix("_week") for c in cols)
+            exprs.extend(pl.col(c).dt.week().suffix("_week") for c in cols)
         elif e == "day_of_week":
             if sunday_first:
-                exprs.extend(((pl.col(c).dt.weekday()+1)%7).cast(pl.UInt8).suffix("_day_of_week") for c in cols)
+                exprs.extend(((pl.col(c).dt.weekday()+1)%7).suffix("_day_of_week") for c in cols)
             else:
-                exprs.extend(pl.col(c).dt.weekday().cast(pl.UInt8).suffix("_day_of_week") for c in cols)
+                exprs.extend(pl.col(c).dt.weekday().suffix("_day_of_week") for c in cols)
         elif e == "day_of_year":
-            exprs.extend(pl.col(c).dt.ordinal_day().cast(pl.UInt8).suffix("_day_of_year") for c in cols)
+            exprs.extend(pl.col(c).dt.ordinal_day().suffix("_day_of_year") for c in cols)
         else:
             logger.error(f"Found {e} in extract, but it is not a valid DateExtract value. Ignored.")
 
