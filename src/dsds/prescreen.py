@@ -11,7 +11,7 @@ from .sample import (
     lazy_sample
 )
 from .blueprint import(
-    Blueprint
+    Blueprint  # noqa: F401
 )
 from datetime import datetime 
 from typing import Any, Optional, Tuple, Union
@@ -178,9 +178,17 @@ def check_binary_target(df:PolarsFrame, target:str) -> bool:
         return False
     return True
     
-def check_target_cardinality(df:PolarsFrame, target:str) -> pl.DataFrame:
-    '''Returns a dataframe showing the cardinality of different target values.'''
-    return df.lazy().groupby(target).count().sort(target).collect()
+def check_target_cardinality(df:PolarsFrame, target:str, raise_null:bool=True) -> pl.DataFrame:
+    '''
+    Returns a dataframe showing the cardinality of different target values. If raise_null = True, raise 
+    an exception if target column has any null values.
+    '''
+    output = df.lazy().groupby(target).count().sort(target).with_columns(
+        pct = pl.col("count")/pl.col("count").sum()
+    ).collect()
+    if raise_null and output.get_column(target).null_count() > 0:
+        raise ValueError("Target contains null.")
+    return output
 
 def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
     '''Returns the unique types of given columns in a single string. If multiple types are present
@@ -190,13 +198,13 @@ def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
     else:
         check_cols:list[str] = cols 
 
-    types = set(dtype_mapping(t) for t in df.select(check_cols).dtypes)
-    return "|".join(types) if len(types) > 0 else "unknown"
+    types = sorted(set(dtype_mapping(t) for t in df.select(check_cols).dtypes))
+    return "|".join(types) if len(types) > 0 else "other/unknown"
 
 def type_checker(df:PolarsFrame, cols:list[str], expected_type:SimpleDtypes, caller_name:str) -> bool:
     types = check_columns_types(df, cols)
     if types != expected_type:
-        raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")    
+        raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
     return True
 
 # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
@@ -626,7 +634,7 @@ def remove_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
     return drop(df, remove_cols)
 
 #----------------------------------------------------------------------------------------------#
-# More advanced Methods
+# More statistical Methods
 #----------------------------------------------------------------------------------------------#
 
 def _ks_compare(
@@ -665,6 +673,7 @@ def ks_compare(
 
     if target in nums:
         nums.remove(target)
+
     nums.sort()
     if isinstance(df, pl.LazyFrame):
         df_test = lazy_sample(df.select(nums).lazy(), sample_frac=smaple_frac).collect()

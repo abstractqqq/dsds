@@ -100,10 +100,10 @@ def logloss(
     , y_predicted:np.ndarray
     , sample_weights:Optional[np.ndarray]=None
     , min_prob:float = 1e-12
-    , check_binary:bool = True
+    , check_binary:bool = False
 ) -> float:
     '''
-    Return the logloss of the binary classification.
+    Return the logloss of the binary classification. This only works for binary target.
 
     Parameters
     ----------
@@ -132,8 +132,9 @@ def logloss(
             o = (1- pl.col("p")).clip_min(min_prob).log(),
             ny = 1 - pl.col("y")
         ).select(
-            pl.lit(-1, dtype=pl.Float64) * (pl.col("y") * pl.col("l") + pl.col("ny") * pl.col("o")).mean()
-        ).row(0)[0]
+            pl.lit(-1, dtype=pl.Float64) 
+            * (pl.col("y").dot(pl.col("l")) + pl.col("ny").dot(pl.col("o"))) / len(y_a)
+        ).item(0,0)
     else:
         s = sample_weights.ravel()
         return pl.from_records((y_a, y_p, s), schema=["y", "p", "s"]).with_columns(
@@ -142,9 +143,8 @@ def logloss(
             ny = 1 - pl.col("y")
         ).select(
             pl.lit(-1, dtype=pl.Float64)
-            * pl.col("s") 
-            * (pl.col("y") * pl.col("l") + pl.col("ny") * pl.col("o")).mean()
-        ).row(0)[0]
+            * (pl.col("s") * (pl.col("y") * pl.col("l") + pl.col("ny") * pl.col("o"))).mean()
+        ).item(0,0)
     
 def binary_psi(
     new_score: Union[pl.Series, np.ndarray]

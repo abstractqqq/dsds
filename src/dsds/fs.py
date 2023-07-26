@@ -450,7 +450,7 @@ def _mrmr_underlying_score(
     , params:dict[str,Any]
 ) -> np.ndarray:
     
-    print(f"Running {strategy} to determine feature relevance...")
+    logger.info(f"Running {strategy} to determine feature relevance...")
     s = clean_strategy_str(strategy)
     if s in ("fscore", "f", "f_score"):
         scores = _f_score(df, target, nums)
