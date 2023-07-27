@@ -1,5 +1,7 @@
-import polars as pl
-import numpy as np
+from scipy.special import expit
+from typing import Optional, Union
+from .blueprint import Blueprint
+from dataclasses import dataclass
 from pathlib import Path
 from .type_alias import (
     PolarsFrame
@@ -7,9 +9,8 @@ from .type_alias import (
     , RegressionModel
 )
 import gc
-from typing import Optional, Union
-from .blueprint import Blueprint
-from dataclasses import dataclass
+import polars as pl
+import numpy as np
 
 # --------------------- Other, miscellaneous helper functions ----------------------------------------------
 @dataclass
@@ -169,10 +170,11 @@ def append_classif_score(
     model
         The trained classification model
     target
-        The target of the model, which will not be used in making the prediction. It is only used so that we can 
-        remove it from feature list.
+        The target of the model, which will not be used in making the prediction. It is only here so that 
+        we can remove it from feature list if it is in features by mistake.
     features
-        The features the model takes. If none, will use all non-target features.
+        The features the model takes. If none, will use all non-target features. If target not provided, it will use all
+        columns
     score_idx
         The index of the score column in predict_proba you want to append to the dataframe. E.g. -1 will take the 
         score of the positive class in a binary classification
@@ -200,10 +202,11 @@ def append_regression(
     model
         The trained classification model
     target
-        The target of the model, which will not be used in making the prediction. It is only used so that we can 
-        remove it from feature list.
+        The target of the model, which will not be used in making the prediction. It is only here so that we can 
+        remove it from feature list if it is in features by mistake.
     features
-        The features the model takes. If none, will use all non-target features.
+        The features the model takes. If none, will use all non-target features. If target not provided, it will use all
+        columns
     score_col
         The name of the score column
     '''
@@ -217,17 +220,13 @@ class Identity(ClassifModel, RegressionModel):
         '''
         A identity passthrough. When incoming data is a Polars DataFrame, please supply a column name.
         If incoming data is a NumPy matrix, please supply a positive index for the passthrough column.
+        This is built for use in Polars pipelines. But NumPy compatibility is also considered.
         '''
         self.col = col
         self.idx = idx
     
-    def predict(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
-        if isinstance(X, pl.DataFrame) and self.col in X.columns:
-            return X[self.col].to_numpy()
-        elif isinstance(X, np.ndarray) and self.idx > 0:
-            return X[:, self.idx]
-        raise ValueError(f"Either the column {self.col} is not in X. Or X is a NumPy matrix, but idx "
-                         "is not initialized. Cannot do a passthrough.")
+    def fit(self, _:Union[np.ndarray,pl.DataFrame]):
+        return
     
     def predict_proba(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
         if isinstance(X, pl.DataFrame) and self.col in X.columns:
@@ -236,3 +235,169 @@ class Identity(ClassifModel, RegressionModel):
             return X[:, self.idx]
         raise ValueError(f"Either the column {self.col} is not in X. Or X is a NumPy matrix, but idx "
                          "is not initialized. Cannot do a passthrough.")
+    
+    # They are the same in the identity case
+    def predict(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
+        return self.predict_proba(X)
+
+def id_passthrough(
+    df: PolarsFrame
+    , col: str
+    , as_reg: bool = True
+    , score_col:str = "score"
+) -> PolarsFrame:
+    '''
+    Appends an identity passthrough to the pipeline. This step will collect the lazy frame. 
+
+    If input df is lazy, this step will be remembered by the pipelien by default.
+
+    Parameters
+    ----------
+    df
+        Either an eager or a lazy Polars DataFrame
+    col
+        The col that will be used as x in the linear function
+    as_reg
+        If true, treat this identity as a regression. Otherwise, treat it as a classification.
+    score_col
+        The name of the score column
+    '''
+    model = Identity(col=col)
+    if isinstance(df, pl.LazyFrame):
+        if as_reg:
+            return df.blueprint.add_regression(model, None, None, -1, score_col)
+        else:
+            return df.blueprint.add_classif(model, None, None, -1, score_col)
+    else:
+        if as_reg:
+            return Blueprint._process_regression(df, model, None, None, -1, score_col)
+        else:
+            return Blueprint._process_classif(df, model, None, None, -1, score_col)
+
+class Logistic(ClassifModel):
+
+    def __init__(self, col:str="", idx:int=-1, coeff:float = 1.0, const:float=0., k:float=1.0):
+        '''
+        A logistic passthrough. When incoming data is a Polars DataFrame, please supply a column name.
+        If incoming data is a NumPy matrix, please supply a positive index for the passthrough column.
+        This is built for use in Polars pipelines. But NumPy compatibility is also considered.
+
+        The formula used is 1/(1 + exp(-k(coeff*x + const)))
+        '''
+        self.col = col
+        self.idx = idx
+        self.coeff = coeff
+        self.const = const
+        self.k = k
+
+    def fit(self, _:Union[np.ndarray,pl.DataFrame]):
+        return 
+    
+    def predict_proba(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
+        if isinstance(X, pl.DataFrame) and self.col in X.columns:
+            x = X.select(self.col).to_numpy()
+        elif isinstance(X, np.ndarray) and self.idx > 0:
+            x = X[:, self.idx].reshape((-1, 1))
+        else:
+            raise ValueError(f"Either the column {self.col} is not in X. Or X is a NumPy matrix, but idx "
+                            "is not initialized. Cannot do a passthrough.")
+        
+        return expit(self.k * (self.coeff * x + self.const))
+    
+    def predict(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
+        '''Predict using 0.5 as threshold.'''
+        return np.round(self.predict_proba(X)).astype(np.int8)
+
+def logistic_passthrough(
+    df: PolarsFrame
+    , col: str
+    , coeff: float = 1.
+    , const: float = 0.
+    , k: float = 1.
+    , score_col:str = "logistic_score"
+) -> PolarsFrame:
+    '''
+    Appends a linear model to the pipeline. This step will collect the lazy frame. 
+    
+    The formula used is 1/(1 + exp(-k(coeff*x + const)))
+
+    If input df is lazy, this step will be remembered by the pipelien by default.
+
+    Parameters
+    ----------
+    df
+        Either an eager or a lazy Polars DataFrame
+    col
+        The col that will be used as x in the logistic function
+    k
+        The logistic scaling term
+    midpoint
+        The midpoint of the logistic function
+    score_col
+        The name of the score column
+    '''
+    model = Logistic(col=col, coeff=coeff, const=const, k=k)
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.add_classif(model, None, None, -1, score_col)
+    return Blueprint._process_classif(df, model, None, None, -1, score_col)
+
+class Linear(RegressionModel):
+
+    def __init__(self, col:str="", idx:int=-1, coeff:float=1.0, const:float=0.):
+        '''
+        A linear passthrough. When incoming data is a Polars DataFrame, please supply a column name.
+        If incoming data is a NumPy matrix, please supply a positive index for the passthrough column.
+        This is built for use in Polars pipelines. But NumPy compatibility is also considered.
+
+        The formula is coeff * x + const
+        '''
+        self.col = col
+        self.idx = idx
+        self.coeff = coeff
+        self.const = const
+
+    def fit(self, _:Union[np.ndarray,pl.DataFrame]):
+        return
+    
+    def predict(self, X:Union[np.ndarray,pl.DataFrame]) -> np.ndarray:
+        if isinstance(X, pl.DataFrame) and self.col in X.columns:
+            x = X.select(self.col).to_numpy()
+        elif isinstance(X, np.ndarray) and self.idx > 0:
+            x = X[:, self.idx].reshape((-1, 1))
+        else:
+            raise ValueError(f"Either the column {self.col} is not in X. Or X is a NumPy matrix, but idx "
+                            "is not initialized. Cannot do a passthrough.")
+        
+        return self.coeff * x + self.const
+
+def linear_passthrough(
+    df: PolarsFrame
+    , col: str
+    , coeff: float = 1.
+    , const: float = 0.
+    , score_col:str = "linear_score"
+) -> PolarsFrame:
+    '''
+    Appends a linear model to the pipeline. This step will collect the lazy frame. 
+    
+    The formula is coeff * x + const
+
+    If input df is lazy, this step will be remembered by the pipelien by default.
+
+    Parameters
+    ----------
+    df
+        Either an eager or a lazy Polars DataFrame
+    col
+        The col that will be used as x in the linear function
+    coeff
+        The coefficient of the linear function
+    const
+        The constant term of the linear function
+    score_col
+        The name of the score column
+    '''
+    model = Linear(col=col, coeff=coeff, const=const)
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.add_regression(model, None, None, -1, score_col)
+    return Blueprint._process_regression(df, model, None, None, -1, score_col)

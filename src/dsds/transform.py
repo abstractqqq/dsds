@@ -6,8 +6,8 @@ from .type_alias import (
     , ScalingStrategy
     , PowerTransformStrategy
     , DateExtract
+    , ListExtract
     , clean_strategy_str
-    , CPU_COUNT
 )
 from .prescreen import (
     get_bool_cols
@@ -291,7 +291,6 @@ def one_hot_encode(
         say 'A', 'B', 'C', then only two binary indicators 'D_B' and 'D_C' will be created. This is useful for
         reducing dimensions and also good for optimization methods that require data to be non-degenerate.
     '''
-    
     if isinstance(cols, list):
         _ = type_checker(df, cols, "string", "one_hot_encode")
         str_cols = cols
@@ -362,7 +361,7 @@ def multicat_one_hot_encode(
 ) -> PolarsFrame:
     '''
     Expands multicategorical columns into several one-hot-encoded columns respectively. A multicategorical column is a 
-    column with strings like `aaa|bbb|ccc`, where it means this row belongs to categories aaa, bbb, and ccc. Typically, 
+    column with strings like `aaa|bbb|ccc`, which means this row belongs to categories aaa, bbb, and ccc. Typically, 
     such a column will contain strings separated by a delimiter. This method will collect all unique strings separated 
     by the delimiter and one hot encode the corresponding column.
 
@@ -377,13 +376,7 @@ def multicat_one_hot_encode(
     separator
         The separator used in the names of the new columns
     drop_first
-        If true, the first category in the each column will be dropped. E.g. if column "D" has 3 distinct values, 
-        say 'A', 'B', 'C', then only two binary indicators 'D_B' and 'D_C' will be created. This is useful for
-        reducing dimensions and also good for optimization methods that require data to be non-degenerate.
-
-    Returns
-    -------
-        A lazy/eager dataframe with multicategorical columns one-hot-encoded
+        If true, the first category in the each column will be dropped.
 
     Example
     -------
@@ -473,7 +466,8 @@ def ordinal_auto_encode(
 ) -> PolarsFrame:
     '''
     Automatically applies ordinal encoding to the provided columns by the order of the elements. This method is 
-    great for string columns like age ranges, with values like ["10-20", "20-30"], etc.
+    great for string columns like age ranges, with values like ["10-20", "20-30"], etc. (Beware of string lengths,
+    e.g. if "100-110" exists in age range, then it may mess up the natural order.)
 
     This will be remembered by blueprint by default.
         
@@ -494,14 +488,13 @@ def ordinal_auto_encode(
     else:
         ordinal_list = get_string_cols(df, exclude=exclude)
 
-    temp = df.lazy().groupby(1).agg(
-        pl.col(c).unique().sort(descending=descending) for c in ordinal_list
+    temp = df.lazy().select(ordinal_list).groupby(1).agg(
+        pl.all().unique().sort(descending=descending) 
     ).select(ordinal_list)
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]
-        mapping = {t.name: uniques, "to": list(range(len(uniques)))} 
+        mapping = {t.name: uniques, "to": list(range(len(uniques)))}
         if isinstance(df, pl.LazyFrame):
-            # Use a list here because Python cannot pickle a generator
             df = df.blueprint.map_dict(t.name, mapping, "to", None)
         else:
             map_tb = pl.DataFrame(mapping)
@@ -516,9 +509,7 @@ def ordinal_encode(
     , default:Optional[int] = None
 ) -> PolarsFrame:
     '''
-    Ordinal encode the columns in the ordinal_mapping dictionary. The ordinal_mapping dict should look like:
-    {"a":{"a1":1, "a2":2}, ...}, which means for column a, a1 should be mapped to 1, a2 mapped to 2. Values 
-    not mentioned in the dict will be mapped to default.
+    Ordinal encode the columns in the ordinal_mapping dictionary.
 
     This will be remembered by blueprint by default.
         
@@ -529,7 +520,7 @@ def ordinal_encode(
     ordinal_mapping
         A dictionary that looks like {"a":{"a1":1, "a2":2}, ...}
     default
-        Default value for values not mentioned in the dict.
+        Default value for values not mentioned in the ordinal_mapping dict.
     '''
     for c in ordinal_mapping:
         if c in df.columns:
@@ -545,7 +536,6 @@ def ordinal_encode(
                 ).drop("to")
         else:
             logger.warning(f"Found that column {c} is not in df. Skipped.")
-
     return df
 
 def smooth_target_encode(
@@ -601,7 +591,7 @@ def smooth_target_encode(
         ).with_columns(
             (1./(1. + ((-(pl.col("cnt").cast(pl.Float64) - min_samples_leaf))/smoothing).exp())).alias("alpha")
         ).select(
-            pl.col(c).alias(c),
+            pl.col(c),
             to = pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)
         ) # If df is lazy, ref is lazy. If df is eager, ref is eager
         if is_lazy:
@@ -1062,6 +1052,8 @@ def log_transform(
 ) -> PolarsFrame:
     '''
     Performs classical log transform on the given columns, e.g. log(x). You may set plus_one to perform ln(1 + x).
+    If you want to replace the original column, simply set suffix = "". If you intend to drop original columns, please
+    insert a `dsds.prescreen.drop` step in the pipeline.
 
     This will be remembered by blueprint by default.
 
@@ -1079,14 +1071,12 @@ def log_transform(
         If plus_one is true, this will perform ln(1+x) and ignore base and cast_non_positive arguments
     suffix
         Choice of a suffix to the transformed columns. If this is the empty string "", then the original column
-        will be replaced. If plus_one = True and suffix == "_log", then suffix will be replaced by "_log1p".
+        will be replaced. If plus_one = True, then suffix will always be "_log1p".
     '''
     _ = type_checker(df, cols, "numeric", "log_transform")
     if plus_one:
-        if suffix == "_log":
-            suffix += "1p"
         exprs = (
-            pl.col(c).log1p().suffix(suffix) for c in cols
+            pl.col(c).log1p().suffix("_log1p") for c in cols
         )
     else:
         exprs = (
@@ -1101,6 +1091,7 @@ def extract_dt_features(
     , cols: list[str]
     , extract: Union[DateExtract, list[DateExtract]] = ["year", "quarter", "month"]
     , sunday_first: bool = False
+    , drop_original: bool = True
 ) -> PolarsFrame:
     '''
     Extracts additional date related features from existing date/datetime columns.
@@ -1119,6 +1110,8 @@ def extract_dt_features(
     sunday_first
         For day_of_week, by default, Monday maps to 1, and so on. If sunday_first = True, then Sunday will be
         mapped to 1 and so on
+    drop_original
+        Whether to drop the original cols as in cols
 
     Example
     -------
@@ -1141,7 +1134,7 @@ def extract_dt_features(
     │ 2023-11-23 ┆ 2023-11-23 │
     └────────────┴────────────┘
     >>> cols = ["date1", "date2"]
-    >>> print(t.extract_dt_features(df, cols=cols))
+    >>> print(t.extract_dt_features(df, cols=cols, drop_original=False))
     shape: (3, 8)
     ┌────────────┬────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
     │ date1      ┆ date2      ┆ date1_year ┆ date2_yea ┆ date1_qua ┆ date2_qua ┆ date1_mon ┆ date2_mon │
@@ -1181,8 +1174,90 @@ def extract_dt_features(
             logger.error(f"Found {e} in extract, but it is not a valid DateExtract value. Ignored.")
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+        if drop_original:
+            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
+        else:
+            return df.blueprint.with_columns(exprs)
+    if drop_original:
+        return df.with_columns(exprs).drop(cols)
+    else:
+        return df.with_columns(exprs)
+
+def extract_list_features(
+    df: PolarsFrame
+    , cols: list[str]
+    , extract: Union[ListExtract, list[ListExtract]] = ["min", "max"]
+    , drop_original: bool = True
+) -> PolarsFrame:
+    '''
+    Extract data from columns that contains lists.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be date/datetime columns
+    extract
+        One of "min", "max", "mean", "len", "first", "last" or a list of these values such as ["min", "max"], 
+        which means extract min and max from all the columns provided. Notice if mean is provided, then the 
+        column must be list of numbers.
+    drop_original
+        Whether to drop the original cols as in cols
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "a":[["a"],["b"], ["c"]],
+    ...     "b":[[1,2], [3,3], [4,5,6]]
+    ... })
+    >>> t.extract_list_features(df, ["a","b"], extract=["min", "max", "len"])
+    shape: (3, 6)
+    ┌───────┬───────┬───────┬───────┬───────┬───────┐
+    │ a_min ┆ b_min ┆ a_max ┆ b_max ┆ a_len ┆ b_len │
+    │ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   ┆ ---   │
+    │ str   ┆ i64   ┆ str   ┆ i64   ┆ u32   ┆ u32   │
+    ╞═══════╪═══════╪═══════╪═══════╪═══════╪═══════╡
+    │ a     ┆ 1     ┆ a     ┆ 2     ┆ 1     ┆ 2     │
+    │ b     ┆ 3     ┆ b     ┆ 3     ┆ 1     ┆ 2     │
+    │ c     ┆ 4     ┆ c     ┆ 6     ┆ 1     ┆ 3     │
+    └───────┴───────┴───────┴───────┴───────┴───────┘
+    '''
+    _ = type_checker(df, cols, "list", "extract_list_features")
+    exprs = []
+    if isinstance(extract, list):
+        to_extract = extract
+    else:
+        to_extract = [extract]
+    
+    for e in to_extract:
+        if e == "min":
+            exprs.extend(pl.col(c).list.min().suffix("_min") for c in cols)
+        elif e == "max":
+            exprs.extend(pl.col(c).list.max().suffix("_max") for c in cols)
+        elif e in ("mean", "avg"):
+            exprs.extend(pl.col(c).list.mean().suffix("_mean") for c in cols)
+        elif e == "len":
+            exprs.extend(pl.col(c).list.lengths().suffix("_len") for c in cols)
+        elif e == "first":
+            exprs.extend(pl.col(c).list.first().suffix("_first") for c in cols)
+        elif e == "last":
+            exprs.extend(pl.col(c).list.last().suffix("_last") for c in cols)
+        else:
+            logger.error(f"Found {e} in extract, but it is not a valid ListExtract value. Ignored.")
+
+    if isinstance(df, pl.LazyFrame):
+        if drop_original:
+            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
+        else:
+            return df.blueprint.with_columns(exprs)
+    if drop_original:
+        return df.with_columns(exprs).drop(cols)
+    else:
+        return df.with_columns(exprs)
 
 def moving_avgs(
     df:PolarsFrame
@@ -1213,8 +1288,5 @@ def moving_avgs(
     exprs = (pl.col(c).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
              for i in window_sizes if i > 1)
     if isinstance(df, pl.LazyFrame):
-        final_exprs = list(exprs)
-        if len(final_exprs) <= 0:
-            return df
-        return df.blueprint.with_columns(final_exprs)
+        return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)

@@ -35,13 +35,14 @@ class MapDict:
 @dataclass
 class Step:
     action:ActionType
-    associated_data: Union[Iterable[IntoExpr], MapDict, list[str], cs._selector_proxy_, dict[str, Any], pl.Expr]
-    # First is everything that can be done with with_columns (Iterable[IntoExpr], but list[pl.Expr] is recommended)
+    associated_data: Union[list[pl.Expr], MapDict, list[str], cs._selector_proxy_, dict[str, Any], pl.Expr]
+    # First is everything that can be done with with_columns
     # Second is a 1-to-1 encoder (MapDict)
     # Third is a drop/select (list[str] and cs._selector_proxy_)
     # Fourth is add_func (dict[str, Any]), or add_classif/add_regression
     # Fifth is a filter statement (pl.Expr)
 
+# Break associated_data into parts?
 
 @pl.api.register_lazyframe_namespace("blueprint")
 class Blueprint:
@@ -301,7 +302,7 @@ class Blueprint:
         )
         return output
     
-    def preserve(self, path:str|Path):
+    def preserve(self, path:str|Path) -> None:
         '''
         Writes the blueprint to disk as a Python pickle file at the given path.
 
@@ -310,9 +311,8 @@ class Blueprint:
         path
             A valid path to write to
         '''
-        f = open(path, "wb")
-        pickle.dump(self, f)
-        f.close()
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
 
     def apply(self, df:PolarsFrame, up_to:int=-1) -> PolarsFrame:
         '''
@@ -342,9 +342,19 @@ class Blueprint:
                     func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
                     df = df.pipe(func, **s.associated_data["kwargs"])
                 elif s.action == "classif":
-                    df = df.pipe(self._process_classif, **s.associated_data)
+                    df = df.pipe(Blueprint._process_classif, **s.associated_data)
                 elif s.action == "regression":
-                    df = df.pipe(self._process_regression, **s.associated_data)
+                    df = df.pipe(Blueprint._process_regression, **s.associated_data)
             else:
                 break
         return df
+
+def from_pkl(path: str|Path) -> Blueprint:
+    with open(path, "rb") as f:
+        obj = pickle.loads(f.read())
+        if isinstance(obj, Blueprint):
+            return obj
+        else:
+            raise ValueError("The pickled object is not a blueprint.")
+
+

@@ -196,7 +196,7 @@ def simple_upsample(
             noise = rng.random(size=(len(sub),)) * epsilon
         else:
             noise = rng.random(size=(len(sub),)) * 2 * epsilon - epsilon
-        # NaN occurs when we add null with a number. Leave it null.
+        # NaN occurs in the to_numpy() step. So the series might contain NaN. Replace them with Null.
         new_c = pl.Series(c, sub[c].to_numpy() + noise).fill_nan(None) 
         sub = sub.replace_at_idx(sub.find_idx_by_name(c), new_c)
 
@@ -204,9 +204,9 @@ def simple_upsample(
         output = pl.concat([df, sub.lazy()])
         if persist:
             output = output.blueprint.add_func(df, simple_upsample, kwargs = {"subgroup":subgroup,"count":count
-                                                                                ,"epsilon":epsilon,"include":include
-                                                                                ,"exclude":exclude,"positive":positive
-                                                                                , "seed":seed})
+                                                                            ,"epsilon":epsilon,"include":include
+                                                                            ,"exclude":exclude,"positive":positive
+                                                                            ,"seed":seed})
         return output
     return pl.concat([df, sub])
 
