@@ -548,15 +548,83 @@ def date_removal(df:PolarsFrame) -> PolarsFrame:
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
+def invalid_inferral(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> list[str]:
+    '''
+    Infers numeric columns that have more than threshold pct of invalid (NaN) values.
+    
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    threshold
+        Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
+    include_null
+        If true, then null values will also be counted as invalid.
+    '''
+    
+    nums = get_numeric_cols(df)
+    df_local = df.lazy().select(nums).with_row_count().set_sorted("row_nr")
+    if include_null:
+        expr = (pl.all().is_nan().sum() + pl.all().is_null().sum())/pl.col("row_nr").max()
+    else:
+        expr = pl.all().is_nan().sum()/pl.col("row_nr").max()
+    
+    return (
+        df_local.select(
+            expr
+        ).select(~cs.by_name(["row_nr"]))
+        .collect()
+        .transpose(include_header=True, column_names=["nan_pct"])
+        .filter(pl.col("nan_pct") >= threshold)
+        .get_column("column")
+        .to_list()
+    )
+
+def invalid_removal(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> PolarsFrame:
+    '''
+    Removes numeric columns that have more than threshold pct of invalid (NaN) values.
+    
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    threshold
+        Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
+    include_null
+        If true, then null values will also be counted as invalid.
+    '''
+    remove_cols = invalid_inferral(df, threshold, include_null) 
+    logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
+                f" not valid values. {remove_cols}.\n"
+                f"Removed a total of {len(remove_cols)} columns.")
+    return drop(df, remove_cols)
+
 def null_inferral(df:PolarsFrame, threshold:float=0.5) -> list[str]:
-    '''Infers columns that have more than threshold pct of null values. Threshold should be between 0 and 1.'''
+    '''
+    Infers columns that have more than threshold pct of null values.
+    
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    threshold
+        Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
+    '''
     return (df.lazy().null_count().collect()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
                     .filter(pl.col("null_pct") >= threshold)\
                     .get_column("column").to_list()
 
 def null_removal(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
-    '''Removes columns with more than threshold pct of null values. Threshold should be between 0 and 1.'''
+    '''
+    Removes columns with more than threshold pct of null values.
 
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    threshold
+        Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
+    '''
     remove_cols = null_inferral(df, threshold) 
     logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
                 f" null values. {remove_cols}.\n"
@@ -642,11 +710,11 @@ def unique_inferral(df:PolarsFrame, threshold:float=0.9) -> list[str]:
     '''
     clipped_threshold = min(0.99, max(threshold, 0.01))
     temp = get_unique_count(df.with_row_count())
-    len_df:int = temp.filter(pl.col("column") == "row_nr").item(0,0)
+    len_df:int = temp.filter(pl.col("column") == "row_nr").item(0,1)
     return (
         temp.with_columns(
             (pl.col("n_unique")/len_df).alias("unique_pct")
-        ).filter((pl.col("unique_pct") >= clipped_threshold & pl.col("column") != "row_nr"))\
+        ).filter((pl.col("unique_pct") >= clipped_threshold) & (pl.col("column") != "row_nr"))\
         .get_column("column")
         .to_list()
     )
@@ -694,7 +762,7 @@ def discrete_inferral(df:PolarsFrame
     '''
     exclude_list = [] if exclude is None else exclude
     exclude_list.append("row_nr")
-    temp = get_unique_count(df.with_row_count())
+    temp = get_unique_count(df.with_row_count().set_sorted("row_nr"))
     len_df = temp.filter(pl.col("column") == "row_nr").item(0,0)
     return temp.filter(
         ((pl.col("n_unique") < max_n_unique) | (pl.col("n_unique")/len_df < threshold)) 

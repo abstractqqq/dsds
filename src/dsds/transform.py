@@ -9,12 +9,9 @@ from .type_alias import (
     , ListExtract
     , clean_strategy_str
 )
-from .prescreen import (
-    check_columns_types
-    , type_checker
-)
+from .prescreen import type_checker
 from .blueprint import( # Need this for Polars extension to work
-    Blueprint
+    Blueprint  # noqa: F401
 )
 from typing import Optional, Union
 from scipy.stats import (
@@ -28,8 +25,6 @@ import polars as pl
 
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
-
-# Should I separate encoders into their own module?
 
 logger = logging.getLogger(__name__)
 
@@ -303,18 +298,14 @@ def normalize(
     cols
         Must be explicitly provided and should all be numeric columns
     '''
-    
-    types = check_columns_types(df, cols)
-    if types != "numeric":
-        raise ValueError(f"normalize can only be used on numeric columns, not {types} types.")
-
+    _ = type_checker(df, cols, "numeric", "normalize")
     return df.with_columns(pl.col(c)/pl.col(c).sum() for c in cols)
 
 def clip(
     df: PolarsFrame
     , cols: list[str]
-    , min_clip: Optional[float]
-    , max_clip: Optional[float]
+    , min_clip: Optional[float] = None
+    , max_clip: Optional[float] = None
 ) -> PolarsFrame:
     '''
     Clips the columns within the min and max_clip bounds. This can be used to trim out outliers. If both min_clip and
@@ -579,8 +570,7 @@ def moving_avgs(
 ) -> PolarsFrame:
     '''
     Computes moving averages for column c with given window_sizes. Please make sure the dataframe is sorted
-    before this. For a pipeline compatible sort, see dsds.prescreen.order_by. Please use a sepearate impute
-    if you want to impute the null values.
+    before this. For a pipeline compatible sort, see `dsds.prescreen.order_by`.
 
     This will be remembered by blueprint by default.
     

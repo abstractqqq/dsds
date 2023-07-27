@@ -45,16 +45,18 @@ def lazy_sample(
             frac = sample_frac
 
         output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
-        .filter(pl.col("row_nr") < pl.col("row_nr").max() * frac)\
-        .select(df.columns)
+            .set_sorted("row_nr")\
+            .filter(pl.col("row_nr") < pl.col("row_nr").max() * frac)\
+            .select(df.columns)
 
     else:
         if sample_amt <= 0:
             raise ValueError("Sample amount must be > 0.")
         
         output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
-        .filter(pl.col("row_nr") < sample_amt)\
-        .select(df.columns)
+            .set_sorted("row_nr")\
+            .filter(pl.col("row_nr") < sample_amt)\
+            .select(df.columns)
 
     if persist:
         output = output.blueprint.add_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac
@@ -333,7 +335,9 @@ def train_test_split(
     if isinstance(df, pl.DataFrame):
         # Eager group by is iterable
         p1, p2 = df.with_columns(pl.all().shuffle(seed=seed))\
-                    .with_row_count().groupby(
+                    .with_row_count()\
+                    .set_sorted("row_nr")\
+                    .groupby(
                         pl.col("row_nr") >= len(df) * train_frac
                     )
         # I am not sure if False group is always returned first...
@@ -342,7 +346,7 @@ def train_test_split(
             return p1[1].select(keep), p2[1].select(keep) # Make sure train comes first
         return p2[1].select(keep), p1[1].select(keep)
     else: # Lazy case.
-        df = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count()
+        df = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count().set_sorted("row_nr")
         df_train = df.filter(pl.col("row_nr") < pl.col("row_nr").max() * train_frac)
         df_test = df.filter(pl.col("row_nr") >= pl.col("row_nr").max() * train_frac)
         return df_train.select(keep), df_test.select(keep)

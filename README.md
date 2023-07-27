@@ -1,6 +1,6 @@
 # Welcome to the Dark Side of Data Science (DSDS)
 
-This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package.
+This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package. Also see disclaimer in the end.
 
 Welcome to DSDS, a data science package that aims to be an improvement over a subset of sklearn's functionality, primarily in the following areas:
 
@@ -91,5 +91,24 @@ You are right in the sense that this package does its best to separate itself fr
 # Why not write more functionalities in Rust?
 
 Yes. I will. I am not confident enough with my Rust skill at the moment. I am slowly learning more Rust and hopefully we can delegate more heavy work to Rust. The immediate benefit of using more Rust will be (1) slightly more memory efficient, and (2) slightly faster. I do not expect huge speed boost because most code are written in Polars already. There are some cases when a lot of Python stuff is added (lists and for loops, etc.). But we definitely need to evaluate the gain by using Rust more carefully in the future.
+
+# Disclaimer
+
+I do not claim dsds is a superior package to any other traditional machine learning libraries. In fact no one can make this claim. Each package has their own flavor, and there are things that people can disagree with. Disagreements do not translate to contempt or hatred. I primarily set out to make this project because:
+
+1. I want to learn more about machine learning engineering
+2. I want to improve my coding skill
+3. I see opportunies to make things run faster using Polars without relying on bigger machines on the cloud. I want to make this happen for everybody.
+4. I don't think OOP is right for scientific computing.
+
+Everyone has their own bias. I believe in the functional style for scientific computing. I don't like the OOP style adopted by so many other packages, especially the one used in Sklearn pipelines. If you want to discuss, please kindly send me a message on discord. Please do not cherry pick points and claim that my code is **** just because you have never seen functional codebase or projects done in this style. I do not claim to have the best style of code either. OOP elements are still used in this project because it is inevitable in Python.
+
+That said, since performance and functional design are the two major pillars of this project, I will include a lot of benchmarks and code that showcase the style differences. A lot of benchmarks will be done vs. Scikit-learn because Scikit-learn is the de facto "standard" in the tranditional machine learning space. I do this not because I want to prove dsds is superior, but because I want to show the improvement and show people that dsds achieves what it aims to achieve, an improvement over a subset of Scikit-learn's functionalities (in the areas that I set out to improve on, e.g. performance and 'style').
+
+Every few days there is a new javascript framework. Why can't data scientists challenge the design of Scikit-learn? I started learning using Scikit-learn, like 90% of all the data scientists out there. I am free to express my opinions and criticisms. 
+
+No package is perfect and you are free to like/hate it. Just don't be complaining online without ever thinking deeply about machine learning infra and bottlenecks in machine learning pipelines. Don't hate on things because they are different.
+
+# Contribution
 
 See CONTRIBUTING.md for my contact info.
