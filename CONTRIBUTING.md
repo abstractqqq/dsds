@@ -63,3 +63,4 @@ There are some abandoned effort due to scope and limited time:
 
 There are some interesting ideas:
 1. Add a trading/time series module. Polars make technical indicators easy and fast to compute!!!
+2. Add a dataframe comparison module. This is part of prescreen, but I think the content deserve its own module. This will be hard.

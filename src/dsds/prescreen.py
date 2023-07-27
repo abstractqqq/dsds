@@ -190,8 +190,10 @@ def check_target_cardinality(df:PolarsFrame, target:str, raise_null:bool=True) -
     return output
 
 def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
-    '''Returns the unique types of given columns in a single string. If multiple types are present
-    they are joined by a |. If cols is not given, automatically uses all columns.'''
+    '''
+    Returns the unique types of given columns in a single string. If multiple types are present
+    they are joined by a |. If cols is not given, automatically uses all columns.
+    '''
     if cols is None:
         check_cols:list[str] = df.columns
     else:
