@@ -278,7 +278,7 @@ def combine_zero_ones(
                     pl.lit(0, dtype=pl.UInt8)
                 ).alias(new_name)
     else:
-        raise TypeError(f"`{rule}` is not a valid ZeroOneCombineRule.")
+        raise TypeError(f"The input `{rule}` is not a valid ZeroOneCombineRule.")
 
     if isinstance(df, pl.LazyFrame):
         if drop_original:
@@ -360,7 +360,7 @@ def power_transform(
                         "or box_cox")
     
     if isinstance(df, pl.LazyFrame):
-        return df.lazy().blueprint.with_columns(exprs)
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def normalize(
@@ -560,12 +560,10 @@ def extract_dt_features(
     if isinstance(df, pl.LazyFrame):
         if drop_original:
             return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        else:
-            return df.blueprint.with_columns(exprs)
+        return df.blueprint.with_columns(exprs)
     if drop_original:
         return df.with_columns(exprs).drop(cols)
-    else:
-        return df.with_columns(exprs)
+    return df.with_columns(exprs)
     
 def extract_horizontally(
     df:PolarsFrame
@@ -633,12 +631,10 @@ def extract_horizontally(
     if isinstance(df, pl.LazyFrame):
         if drop_original:
             return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        else:
-            return df.blueprint.with_columns(exprs)
+        return df.blueprint.with_columns(exprs)
     if drop_original:
         return df.with_columns(exprs).drop(cols)
-    else:
-        return df.with_columns(exprs)
+    return df.with_columns(exprs)
 
 def extract_list_features(
     df: PolarsFrame
@@ -709,12 +705,10 @@ def extract_list_features(
     if isinstance(df, pl.LazyFrame):
         if drop_original:
             return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        else:
-            return df.blueprint.with_columns(exprs)
+        return df.blueprint.with_columns(exprs)
     if drop_original:
         return df.with_columns(exprs).drop(cols)
-    else:
-        return df.with_columns(exprs)
+    return df.with_columns(exprs)
 
 def moving_avgs(
     df:PolarsFrame

@@ -1,7 +1,7 @@
 from .type_alias import (
     PolarsFrame
     , Alternatives
-    , CommonContinuousDist
+    , CommonContiDist
     , SimpleDtypes
     , CPU_COUNT
     , POLARS_DATETIME_TYPES
@@ -311,7 +311,6 @@ def describe_str(
     Computes some statistics about the string columns. Optionally you may pass a list
     of strings to compute the total occurrences of each of the words in the string columns. If input is a LazyFrame, 
     a sample of sample_pct will be used, and sample_pct will only be used in the lazy case. 
-
     '''
     strs = get_string_cols(df)
     df_str = df.select(strs)
@@ -561,9 +560,8 @@ def invalid_inferral(df:PolarsFrame, threshold:float=0.5, include_null:bool=Fals
     include_null
         If true, then null values will also be counted as invalid.
     '''
-    
     nums = get_numeric_cols(df)
-    df_local = df.lazy().select(nums).with_row_count().set_sorted("row_nr")
+    df_local = df.lazy().select(nums).with_row_count(offset=1).set_sorted("row_nr")
     if include_null:
         expr = (pl.all().is_nan().sum() + pl.all().is_null().sum())/pl.col("row_nr").max()
     else:
@@ -674,7 +672,8 @@ def regex_removal(df:PolarsFrame, pattern:str, lowercase:bool=False) -> PolarsFr
 def get_unique_count(df:PolarsFrame, include_null_count:bool=False) -> pl.DataFrame:
     '''
     Gets unique counts for columns and returns a dataframe with schema = ["column", "n_unique"]. Null count
-    is useful in knowing if null is one of the unique values and thus is included as an option.
+    is useful in knowing if null is one of the unique values and thus is included as an option. Note that
+    null != NaN.
 
     Parameters
     ----------
@@ -709,7 +708,7 @@ def unique_inferral(df:PolarsFrame, threshold:float=0.9) -> list[str]:
         threshold will be clipped between 0.01 and 0.99.
     '''
     clipped_threshold = min(0.99, max(threshold, 0.01))
-    temp = get_unique_count(df.with_row_count())
+    temp = get_unique_count(df.with_row_count(offset=1))
     len_df:int = temp.filter(pl.col("column") == "row_nr").item(0,1)
     return (
         temp.with_columns(
@@ -762,8 +761,8 @@ def discrete_inferral(df:PolarsFrame
     '''
     exclude_list = [] if exclude is None else exclude
     exclude_list.append("row_nr")
-    temp = get_unique_count(df.with_row_count().set_sorted("row_nr"))
-    len_df = temp.filter(pl.col("column") == "row_nr").item(0,0)
+    temp = get_unique_count(df.with_row_count(offset=1).set_sorted("row_nr"))
+    len_df = temp.filter(pl.col("column") == "row_nr").item(0,1)
     return temp.filter(
         ((pl.col("n_unique") < max_n_unique) | (pl.col("n_unique")/len_df < threshold)) 
         & (~pl.col("column").is_in(exclude_list)) # is not in
@@ -896,13 +895,13 @@ def ks_compare(
     pbar.close()
     return pl.from_records(results, schema=["combination", "ks-stats", "p-value"])
 
-def _dist_inferral(df:pl.DataFrame, c:str, dist:CommonContinuousDist) -> Tuple[str, float, float]:
+def _dist_inferral(df:pl.DataFrame, c:str, dist:CommonContiDist) -> Tuple[str, float, float]:
     res = kstest(df[c], dist)
     return (c, res.statistic, res.pvalue)
 
 def dist_test(
     df: PolarsFrame
-    , which_dist:CommonContinuousDist
+    , which_dist:CommonContiDist
     , smaple_frac:float = 0.75
     , target: Optional[str] = None
 ) -> pl.DataFrame:
@@ -967,7 +966,7 @@ def suggest_dist(
     df:PolarsFrame
     , target: Optional[str] = None
     , threshold:float = 0.05
-    , dist: CommonContinuousDist = "norm"
+    , dist: CommonContiDist = "norm"
 ) -> list[str]:
     '''
     Suggests which columns follow the given distribution. This returns the columns which the null hypothesis
