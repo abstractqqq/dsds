@@ -92,7 +92,7 @@ def deduplicate(
 
 def simple_upsample(
     df: PolarsFrame
-    , subgroup: dict[str, list] | pl.Expr
+    , subgroup: Union[dict[str, list], pl.Expr]
     , count:int
     , epsilon: float = 1e-2
     , include: Optional[list[str]] = None

@@ -3,16 +3,17 @@ from typing import (
     , Final
     , Tuple
     , Union
+    , Callable
 )
 from abc import ABC, abstractmethod
 import polars as pl
 import sys
 if sys.version_info >= (3, 10):
-    from typing import TypeAlias, Concatenate, ParamSpec, Callable
+    from typing import TypeAlias, Concatenate, ParamSpec
     P = ParamSpec('P')
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[Concatenate[PolarsFrame, P], PolarsFrame]
-else:
+else: # 3.9
     from typing_extensions import TypeAlias
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable

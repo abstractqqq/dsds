@@ -10,9 +10,6 @@ from typing import (
     , Union
     , Iterable
     , Optional
-    # , Callable
-    # , Concatenate
-    # , ParamSpec
 )
 from polars.type_aliases import IntoExpr
 from .type_alias import (
@@ -302,7 +299,7 @@ class Blueprint:
         )
         return output
     
-    def preserve(self, path:str|Path) -> None:
+    def preserve(self, path:Union[str,Path]) -> None:
         '''
         Writes the blueprint to disk as a Python pickle file at the given path.
 
@@ -349,7 +346,7 @@ class Blueprint:
                 break
         return df
 
-def from_pkl(path: str|Path) -> Blueprint:
+def from_pkl(path: Union[str,Path]) -> Blueprint:
     with open(path, "rb") as f:
         obj = pickle.loads(f.read())
         if isinstance(obj, Blueprint):
