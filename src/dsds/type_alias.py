@@ -35,11 +35,12 @@ ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant"]
 ImputationStrategy:TypeAlias = Literal["mean", "avg", "average", "median", "const", "constant", "mode", "most_frequent"]
 PowerTransformStrategy:TypeAlias = Literal["yeo_johnson", "yeojohnson", "box_cox", "boxcox"]
 Alternatives = Literal["two-sided", "greater", "less"]
-
+ZeroOneCombineRules = Literal["union", "intersection", "same"]
 SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "string", "other/unknown"]
 BinaryModels:TypeAlias = Literal["logistic", "lr", "lightgbm", "lgbm", "xgboost", "xgb", "random_forest", "rf"]
 DateExtract:TypeAlias = Literal["year", "quarter", "month", "week", "day_of_week", "day_of_year"]
 ListExtract:TypeAlias = Literal["min", "max", "mean", "len", "first", "last"]
+HorizontalExtract:TypeAlias = Literal["min", "max", "sum", "any", "all"]
 
 # This is just a subset of Scipy.stats's distributions which can be named by strings. All scipy.stats's string-name-able
 # distributions should work when the arguments asks for a CommonContinuousDist.

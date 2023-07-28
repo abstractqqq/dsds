@@ -7,6 +7,8 @@ from .type_alias import (
     , PowerTransformStrategy
     , DateExtract
     , ListExtract
+    , HorizontalExtract
+    , ZeroOneCombineRules
     , clean_strategy_str
 )
 from .prescreen import type_checker
@@ -207,6 +209,85 @@ def merge_infreq_values(
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
+def combine_zero_ones(
+    df: PolarsFrame
+    , cols: list[str]
+    , new_name: str
+    , rule: ZeroOneCombineRules = "union"
+    , drop_original:bool = True
+) -> PolarsFrame:
+    '''
+    Take columns that are all binary 0, 1 columns, combine them according to the rule. Please make sure 
+    the columns only contain binary 0s and 1s. Depending on the rule, this can be used, for example, to 
+    quickly combine many one hot encoded columns into one, or reducing the same binary columns into one.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        List of binary 0, 1 columns to combine
+    new_name
+        Name for the combined column
+    rule
+        One of 'union', 'intersection', 'same'.
+    drop_original
+        If true, drop column in cols
+
+    Examples
+    --------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "a": [1, 1, 0],
+    ...     "b":[1, 0, 1],
+    ...     "c":[1, 1, 1]
+    ... })
+    >>> t.combine_zero_ones(df, cols=["a", "b", "c"], new_name="abc", rule="same")
+    shape: (3, 1)
+    ┌─────┐
+    │ abc │
+    │ --- │
+    │ u8  │
+    ╞═════╡
+    │ 1   │
+    │ 0   │
+    │ 0   │
+    └─────┘
+    >>> t.combine_zero_ones(df, cols=["a", "b", "c"], new_name="abc", rule="union")
+    shape: (3, 1)
+    ┌─────┐
+    │ abc │
+    │ --- │
+    │ u8  │
+    ╞═════╡
+    │ 1   │
+    │ 1   │
+    │ 1   │
+    └─────┘
+    '''
+    if rule == "union":
+        expr = pl.max_horizontal([pl.col(c) for c in cols]).cast(pl.UInt8).alias(new_name)
+    elif rule == "intersection":
+        expr = pl.min_horizontal([pl.col(c) for c in cols]).cast(pl.UInt8).alias(new_name)
+    elif rule == "same":
+        expr = pl.when(sum(pl.col(c) for c in cols).is_in((0, len(cols)))).then(
+                    pl.lit(1, dtype=pl.UInt8)
+                ).otherwise(
+                    pl.lit(0, dtype=pl.UInt8)
+                ).alias(new_name)
+    else:
+        raise TypeError(f"`{rule}` is not a valid ZeroOneCombineRule.")
+
+    if isinstance(df, pl.LazyFrame):
+        if drop_original:
+            return df.blueprint.with_columns(expr).blueprint.drop(cols)
+        return df.blueprint.with_columns(expr)
+    if drop_original:
+        return df.with_columns(expr).drop(cols)
+    return df.with_columns(expr)
+
 def power_transform(
     df: PolarsFrame
     , cols: list[str]
@@ -289,7 +370,7 @@ def normalize(
     '''
     Normalize the given columns by dividing them with the respective column sum.
 
-    !!! Note this will not be remembered by the blueprint !!!
+    !!! Note this will NOT be remembered by the blueprint !!!
 
     Parameters
     ----------
@@ -308,7 +389,7 @@ def clip(
     , max_clip: Optional[float] = None
 ) -> PolarsFrame:
     '''
-    Clips the columns within the min and max_clip bounds. This can be used to trim out outliers. If both min_clip and
+    Clips the columns within the min and max_clip bounds. This can be used to control outliers. If both min_clip and
     max_clip are provided, perform two-sided clipping. If only one bound is provided, only one side will be clipped.
     It will throw an error if both min and max_clips are not provided.
 
@@ -335,7 +416,7 @@ def clip(
     elif not (a | b):
         exprs = (pl.col(c).clip(min_clip, max_clip) for c in cols)
     else:
-        raise TypeError("At least one of min_cap and max_cap should be provided.")
+        raise ValueError("At least one of min_cap and max_cap should be provided.")
     
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(list(exprs))
@@ -410,7 +491,7 @@ def extract_dt_features(
         For day_of_week, by default, Monday maps to 1, and so on. If sunday_first = True, then Sunday will be
         mapped to 1 and so on
     drop_original
-        Whether to drop the original cols as in cols
+        Whether to drop columns in cols
 
     Example
     -------
@@ -485,6 +566,79 @@ def extract_dt_features(
         return df.with_columns(exprs).drop(cols)
     else:
         return df.with_columns(exprs)
+    
+def extract_horizontally(
+    df:PolarsFrame
+    , cols: list[str]
+    , extract: Union[HorizontalExtract, list[HorizontalExtract]] = ["min", "max"]
+    , drop_original: bool = True
+) -> PolarsFrame:
+    '''
+    Extract features horizontally across a few columns.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        List of columns to extract feature from
+    extract
+        One of "min", "max", "sum", "any", "all". Note that "any" and "all" only make practical sense when 
+        all of cols are boolean columns, but they work even when cols are numbers.
+    drop_original
+        Whether to drop columns in cols
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "a":[1, 2, 3],
+    ...     "b":[1, 2, 3],
+    ...     "c":[1, 2, 3]
+    ... })
+    >>> t.extract_horizontally(df, cols=["a", "b", "c"], extract=["min", "max", "sum"])
+    shape: (3, 3)
+    ┌────────────┬────────────┬────────────┐
+    │ min(a,b,c) ┆ max(a,b,c) ┆ sum(a,b,c) │
+    │ ---        ┆ ---        ┆ ---        │
+    │ i64        ┆ i64        ┆ i64        │
+    ╞════════════╪════════════╪════════════╡
+    │ 1          ┆ 1          ┆ 3          │
+    │ 2          ┆ 2          ┆ 6          │
+    │ 3          ┆ 3          ┆ 9          │
+    └────────────┴────────────┴────────────┘
+    '''
+    if isinstance(extract, list):
+        to_extract = extract
+    else:
+        to_extract = [extract]
+    
+    exprs = []
+    for e in to_extract:
+        if e == "min":
+            exprs.append(pl.min_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+        elif e == "max":
+            exprs.append(pl.max_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+        elif e == "sum":
+            exprs.append(pl.sum_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+        elif e == "any":
+            exprs.append(pl.any_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+        elif e == "all":
+            exprs.append(pl.all_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+        else:
+            logger.info(f"Found {e} in extract, but it is not a valid HorizontalExtract value. Ignored.")
+
+    if isinstance(df, pl.LazyFrame):
+        if drop_original:
+            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
+        else:
+            return df.blueprint.with_columns(exprs)
+    if drop_original:
+        return df.with_columns(exprs).drop(cols)
+    else:
+        return df.with_columns(exprs)
 
 def extract_list_features(
     df: PolarsFrame
@@ -508,7 +662,7 @@ def extract_list_features(
         which means extract min and max from all the columns provided. Notice if mean is provided, then the 
         column must be list of numbers.
     drop_original
-        Whether to drop the original cols as in cols
+        Whether to drop columns in cols
 
     Example
     -------
