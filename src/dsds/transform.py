@@ -21,6 +21,7 @@ from scipy.stats import (
     yeojohnson_normmax
     , boxcox_normmax
 )
+from functools import partial
 import logging
 import math
 # import numpy as np
@@ -296,7 +297,8 @@ def power_transform(
     # , lmbda: Optional[float] = None
 ) -> PolarsFrame:
     '''
-    Performs power transform on the numerical columns.
+    Performs power transform on the numerical columns. This will skip null values in the columns. If strategy is
+    box_cox, all values in cols must be positive.
 
     This will be remembered by blueprint by default.
 
@@ -312,26 +314,16 @@ def power_transform(
     _ = type_checker(df, cols, "numeric", "power_transform")
     s = clean_strategy_str(strategy)
     exprs:list[pl.Expr] = []
-    # Ensure columns do not have missing values
-    non_null_list = []
-    with_null_list = []
-    for c, count in zip(cols, df.lazy().select(cols).null_count().collect().row(0)):
-        if count > 0:
-            with_null_list.append(c)
-        else:
-            non_null_list.append(c)
 
-    if len(with_null_list) > 0:
-        logger.info("The following columns will not be processed by power_transform because they contain missing "
-                    f"values. Please impute them:\n{with_null_list}")
-        
+    # Ensure columns do not have missing values
+ 
     if s in ("yeo_johnson", "yeojohnson"):
-        lmaxs = df.lazy().select(non_null_list).groupby(1).agg(
-            pl.all()
-            .apply(lambda x: yeojohnson_normmax(x))
-            .cast(pl.Float64)
-        ).select(non_null_list).collect().row(0)
-        for c, lmax in zip(non_null_list, lmaxs):
+        lmaxs = df.lazy().select(cols).groupby(pl.lit(1)).agg(
+            pl.col(c)
+            .apply(yeojohnson_normmax, strategy="threading", return_dtype=pl.Float64).alias(c)
+            for c in cols
+        ).select(cols).collect().row(0)
+        for c, lmax in zip(cols, lmaxs):
             if lmax == 0: # log(x + 1)
                 x_ge_0_sub_expr = (pl.col(c).add(1)).log()
             else: # ((x + 1)**lmbda - 1) / lmbda
@@ -347,14 +339,15 @@ def power_transform(
                 pl.when(pl.col(c).ge(0)).then(x_ge_0_sub_expr).otherwise(x_lt_0_sub_expr).alias(c)
             )
     elif s in ("box_cox", "boxcox"):
-        lmaxs = df.lazy().select(non_null_list).groupby(1).agg(
-            pl.all()
-            .apply(lambda x: boxcox_normmax(x, method="mle"))
-            .cast(pl.Float64)
-        ).select(non_null_list).collect().row(0)
+        bc_normmax = partial(boxcox_normmax, method="mle")
+        lmaxs = df.lazy().select(cols).groupby(pl.lit(1)).agg(
+            pl.col(c)
+            .apply(bc_normmax, strategy="threading", return_dtype=pl.Float64).alias(c)
+            for c in cols
+        ).select(cols).collect().row(0)
         exprs.extend(
             pl.col(c).log() if lmax == 0 else (pl.col(c).pow(lmax) - 1) / lmax 
-            for c, lmax in zip(non_null_list, lmaxs)
+            for c, lmax in zip(cols, lmaxs)
         )
     else:
         raise TypeError(f"The input strategy {strategy} is not a valid strategy. Valid strategies are: yeo_johnson "

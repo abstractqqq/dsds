@@ -12,7 +12,7 @@ authors = [
 ]
 license = {file = "LICENSE"}
 dependencies = [
-    "polars >= 0.18.7",
+    "polars >= 0.18.9",
     "scipy >= 1.11.1",
     "numpy",
     "tqdm",
