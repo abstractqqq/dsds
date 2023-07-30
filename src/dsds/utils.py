@@ -1,13 +1,13 @@
-from scipy.special import expit
 from typing import Optional, Union
 from .blueprint import Blueprint
-from dataclasses import dataclass
 from pathlib import Path
 from .type_alias import (
     PolarsFrame
     , ClassifModel
     , RegressionModel
 )
+from dataclasses import dataclass
+from scipy.special import expit
 import gc
 import polars as pl
 import numpy as np
@@ -15,10 +15,10 @@ import numpy as np
 # --------------------- Other, miscellaneous helper functions ----------------------------------------------
 @dataclass
 class NumPyDataCube:
-    X: np.ndarray
-    y: np.ndarray
-    features: list[str]
-    target: str
+    X:np.ndarray
+    y:np.ndarray
+    features:list[str]
+    target:str
 
     def to_df(self) -> pl.DataFrame:
         if self.X.shape[0] != len(self.y.ravel()):
@@ -69,7 +69,7 @@ def get_numpy(
     df = df.clear() # Reset to empty.
     return NumPyDataCube(X, y, features, target)
 
-def dump_blueprint(df:pl.LazyFrame, path:str|Path) -> pl.LazyFrame:
+def dump_blueprint(df:pl.LazyFrame, path:Union[str,Path]) -> pl.LazyFrame:
     if isinstance(df, pl.LazyFrame):
         df.blueprint.preserve(path)
         return df
@@ -77,7 +77,7 @@ def dump_blueprint(df:pl.LazyFrame, path:str|Path) -> pl.LazyFrame:
 
 def checkpoint(
     df:PolarsFrame
-    , temp_file_path:str|Path
+    , temp_file_path:Union[str,Path]
     , limit:int = -1
     , **kwargs) -> PolarsFrame:
     '''
@@ -116,7 +116,7 @@ def checkpoint(
 
 def sink_parquet(
     df: pl.LazyFrame
-    , path: str | Path
+    , path: Union[str,Path]
     , **kwargs
 ) -> pl.LazyFrame:
     '''
@@ -127,7 +127,7 @@ def sink_parquet(
 
 def sink_ipc(
     df: pl.LazyFrame
-    , path: str | Path
+    , path: Union[str,Path]
     , **kwargs
 ) -> pl.LazyFrame:
     '''
@@ -155,26 +155,25 @@ def garbage_collect(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
 def append_classif_score(
     df: PolarsFrame
     , model:ClassifModel
+    , features: list[str]
     , target: Optional[str] = None
-    , features: Optional[list[str]] = None
     , score_idx:int = -1 
     , score_col:str = "model_score"
 ) -> PolarsFrame:
     '''
     Appends a classification model to the pipeline. This step will collect the lazy frame.
 
-    If input df is lazy, this step will be remembered by the pipelien by default.
+    If input df is lazy, this step will be remembered by the blueprint by default.
 
     Parameters
     ----------
     model
         The trained classification model
+    features
+        The features the model takes
     target
         The target of the model, which will not be used in making the prediction. It is only here so that 
         we can remove it from feature list if it is in features by mistake.
-    features
-        The features the model takes. If none, will use all non-target features. If target not provided, it will use all
-        columns
     score_idx
         The index of the score column in predict_proba you want to append to the dataframe. E.g. -1 will take the 
         score of the positive class in a binary classification
@@ -182,37 +181,36 @@ def append_classif_score(
         The name of the score column
     '''
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.add_classif(model, target, features, score_idx, score_col)
-    return Blueprint._process_classif(df, model, target, features, score_idx, score_col)
+        return df.blueprint.add_classif(model, features, target, score_idx, score_col)
+    return Blueprint._process_classif(df, model, features, target, score_idx, score_col)
 
 def append_regression(
     df: PolarsFrame
     , model:RegressionModel
+    , features: list[str]
     , target: Optional[str] = None
-    , features: Optional[list[str]] = None
     , score_col:str = "model_score"
 ) -> PolarsFrame:
     '''
     Appends a regression model to the pipeline. This step will collect the lazy frame.
 
-    If input df is lazy, this step will be remembered by the pipelien by default.
+    If input df is lazy, this step will be remembered by the blueprint by default.
 
     Parameters
     ----------
     model
         The trained classification model
+    features
+        The features the model takes
     target
         The target of the model, which will not be used in making the prediction. It is only here so that we can 
         remove it from feature list if it is in features by mistake.
-    features
-        The features the model takes. If none, will use all non-target features. If target not provided, it will use all
-        columns
     score_col
         The name of the score column
     '''
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.add_regression(model, target, features, score_col)
-    return Blueprint._process_regression(df, model, target, features, score_col)
+        return df.blueprint.add_regression(model, features, target, score_col)
+    return Blueprint._process_regression(df, model, features, target, score_col)
     
 class Identity(ClassifModel, RegressionModel):
 
@@ -242,14 +240,14 @@ class Identity(ClassifModel, RegressionModel):
 
 def id_passthrough(
     df: PolarsFrame
-    , col: str
-    , as_reg: bool = True
+    , col:str
+    , as_reg: bool = False
     , score_col:str = "score"
 ) -> PolarsFrame:
     '''
     Appends an identity passthrough to the pipeline. This step will collect the lazy frame. 
 
-    If input df is lazy, this step will be remembered by the pipelien by default.
+    If input df is lazy, this step will be remembered by the blueprint by default.
 
     Parameters
     ----------
@@ -265,14 +263,14 @@ def id_passthrough(
     model = Identity(col=col)
     if isinstance(df, pl.LazyFrame):
         if as_reg:
-            return df.blueprint.add_regression(model, None, None, -1, score_col)
+            return df.blueprint.add_regression(model, [col], None, score_col)
         else:
-            return df.blueprint.add_classif(model, None, None, -1, score_col)
+            return df.blueprint.add_classif(model, [col], None, -1, score_col)
     else:
         if as_reg:
-            return Blueprint._process_regression(df, model, None, None, -1, score_col)
+            return Blueprint._process_regression(df, model, [col], None, score_col)
         else:
-            return Blueprint._process_classif(df, model, None, None, -1, score_col)
+            return Blueprint._process_classif(df, model, [col], None, -1, score_col)
 
 class Logistic(ClassifModel):
 
@@ -317,11 +315,11 @@ def logistic_passthrough(
     , score_col:str = "logistic_score"
 ) -> PolarsFrame:
     '''
-    Appends a linear model to the pipeline. This step will collect the lazy frame. 
+    Appends a linear model to the pipeline. This step will collect the lazy frame.
     
     The formula used is 1/(1 + exp(-k(coeff*x + const)))
 
-    If input df is lazy, this step will be remembered by the pipelien by default.
+    If input df is lazy, this step will be remembered by the blueprint by default.
 
     Parameters
     ----------
@@ -338,8 +336,8 @@ def logistic_passthrough(
     '''
     model = Logistic(col=col, coeff=coeff, const=const, k=k)
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.add_classif(model, None, None, -1, score_col)
-    return Blueprint._process_classif(df, model, None, None, -1, score_col)
+        return df.blueprint.add_classif(model, [col], None, -1, score_col)
+    return Blueprint._process_classif(df, model, [col], None, -1, score_col)
 
 class Linear(RegressionModel):
 
@@ -382,7 +380,7 @@ def linear_passthrough(
     
     The formula is coeff * x + const
 
-    If input df is lazy, this step will be remembered by the pipelien by default.
+    If input df is lazy, this step will be remembered by the blueprint by default.
 
     Parameters
     ----------
@@ -399,5 +397,5 @@ def linear_passthrough(
     '''
     model = Linear(col=col, coeff=coeff, const=const)
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.add_regression(model, None, None, -1, score_col)
-    return Blueprint._process_regression(df, model, None, None, -1, score_col)
+        return df.blueprint.add_regression(model, [col], None, score_col)
+    return Blueprint._process_regression(df, model, [col], None, score_col)

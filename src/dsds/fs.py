@@ -95,6 +95,7 @@ def corr_selector(
     # add the complement set
     return select(df, to_select + complement, persist=True)
 
+
 def discrete_ig(
     df:pl.DataFrame
     , target:str
@@ -130,7 +131,7 @@ def discrete_ig(
         for pred in discretes
     )
 
-    return pl.concat(conditional_entropy)\
+    return pl.concat(pl.collect_all(conditional_entropy))\
         .with_columns(
             target_entropy = pl.lit(target_entropy),
             information_gain = pl.max(pl.lit(target_entropy) - pl.col("conditional_entropy"), 0)
@@ -138,7 +139,7 @@ def discrete_ig(
         .select("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain")\
         .with_columns(
             weighted_information_gain = (1 - pl.col("unique_pct")) * pl.col("information_gain")
-        ).collect()
+        )
 
 discrete_mi = discrete_ig
 
@@ -780,7 +781,7 @@ def woe_iv(
         )
         for s in input_cols
     )
-    return pl.concat(results).collect()
+    return pl.concat(pl.collect_all(results))
 
 def _binary_model_init(
     model_str:BinaryModels

@@ -42,6 +42,7 @@ BinaryModels:TypeAlias = Literal["logistic", "lr", "lightgbm", "lgbm", "xgboost"
 DateExtract:TypeAlias = Literal["year", "quarter", "month", "week", "day_of_week", "day_of_year"]
 ListExtract:TypeAlias = Literal["min", "max", "mean", "len", "first", "last"]
 HorizontalExtract:TypeAlias = Literal["min", "max", "sum", "any", "all"]
+StrExtract: TypeAlias = Literal["count", "len", "contains", "starts_with", "ends_with"]
 
 # --- Stats Related ---
 Alternatives = Literal["two-sided", "greater", "less"]
@@ -53,7 +54,8 @@ CommonContiDist:TypeAlias = Literal["norm", "lognorm", "truncnorm", "uniform", "
 # --- Other ---
 ZeroOneCombineRules = Literal["union", "intersection", "same"]
 SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "string", "other/unknown"]
-ActionType:TypeAlias = Literal["with_columns", "map_dict", "drop", "select", "add_func", "filter", "classif"
+
+ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "add_func", "filter", "classif"
                                , "regression"]
 
 # --- Utils ---

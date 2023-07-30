@@ -50,9 +50,6 @@ def lazy_sample(
             .select(df.columns)
 
     else:
-        if sample_amt <= 0:
-            raise ValueError("Sample amount must be > 0.")
-        
         output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
             .set_sorted("row_nr")\
             .filter(pl.col("row_nr") < sample_amt)\
@@ -60,7 +57,8 @@ def lazy_sample(
 
     if persist:
         output = output.blueprint.add_func(df, lazy_sample, kwargs = {"sample_frac":sample_frac
-                                                                        , "sample_amt":sample_amt, "seed":seed})
+                                                                    , "sample_amt":sample_amt
+                                                                    , "seed":seed})
     return output
 
 def deduplicate(
@@ -262,7 +260,6 @@ def simple_downsample(
                                                 , kwargs={"subgroup":subgroup,"sample_frac":sample_frac})
         return output
     return output
-
 
 def stratified_downsample(
     df: PolarsFrame
@@ -496,10 +493,8 @@ def segmentation(
     └───────┴───────┴─────┴───────┘
     '''
     for seg in segments:
-        temp = df.lazy().select(seg).groupby(1).agg(
-            pl.all().unique().sort()
-        ).select(seg)
-        for comb in product(*temp.collect().row(0)):
+        temp = df.lazy().unique(subset=seg).select(seg)
+        for comb in product(*temp.collect().get_columns()):
             expr = pl.lit(True)
             to_str = []
             for se, v in zip(seg, comb):

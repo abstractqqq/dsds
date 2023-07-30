@@ -14,9 +14,9 @@ from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
 from typing import Optional, Union, Any
-import logging
 import numpy as np
 import polars as pl
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def one_hot_encode(
     if isinstance(df, pl.LazyFrame):
         temp = df.lazy().select(str_cols).groupby(1).agg(
             pl.all().unique().sort()
-        ).select(str_cols)
+        ).select(str_cols) # Do this to minimize the number of collects
         exprs:list[pl.Expr] = []
         start_index = int(drop_first)
         one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 

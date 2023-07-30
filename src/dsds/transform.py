@@ -7,6 +7,7 @@ from .type_alias import (
     , PowerTransformStrategy
     , DateExtract
     , ListExtract
+    , StrExtract
     , HorizontalExtract
     , ZeroOneCombineRules
     , clean_strategy_str
@@ -426,14 +427,15 @@ def log_transform(
     df: PolarsFrame
     , cols:list[str]
     , base:float = math.e
-    , cast_non_positive: Optional[float] = None
     , plus_one:bool = False
     , suffix:str = "_log"
 ) -> PolarsFrame:
     '''
-    Performs classical log transform on the given columns, e.g. log(x). You may set plus_one to perform ln(1 + x).
-    If you want to replace the original column, simply set suffix = "". If you intend to drop original columns, please
-    insert a `dsds.prescreen.drop` step in the pipeline.
+    Performs classical log transform on the given columns, e.g. log(x), or if plus_one = True, ln(1 + x).
+    
+    Important: If input to log is <= 0, (in the case plus_one = True, if 1 + x <= 0), then result will be NaN. 
+    Some algorithms may break if there exists NaN in the columns. Users should perform their due diligence before 
+    calling the log transform.
 
     This will be remembered by blueprint by default.
 
@@ -445,23 +447,18 @@ def log_transform(
         Must be explicitly provided and should all be numeric columns
     base
         Base of log. Default is math.e
-    cast_non_positive
-        How to deal with non positive values (<=0). None means turn them into null
     plus_one
-        If plus_one is true, this will perform ln(1+x) and ignore base and cast_non_positive arguments
+        If plus_one is true, this will perform ln(1+x) and ignore the `base` input.
     suffix
         Choice of a suffix to the transformed columns. If this is the empty string "", then the original column
-        will be replaced. If plus_one = True, then suffix will always be "_log1p".
+        will be replaced, except when plus_one = True, in which case the suffix will always be "_log1p". In that
+        case, please use a `dsds.prescreen.drop` step if you want the original columns to be dropped.
     '''
     _ = type_checker(df, cols, "numeric", "log_transform")
     if plus_one:
-        exprs = (
-            pl.col(c).log1p().suffix("_log1p") for c in cols
-        )
+        exprs = (pl.col(c).log1p().suffix("_log1p") for c in cols)
     else:
-        exprs = (
-            pl.when(pl.col(c) <= 0).then(cast_non_positive).otherwise(pl.col(c).log(base)).suffix(suffix) for c in cols
-        )
+        exprs = (pl.col(c).log(base).suffix(suffix) for c in cols)
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(list(exprs))
     return df.with_columns(exprs)
@@ -615,18 +612,214 @@ def extract_horizontally(
     
     exprs = []
     for e in to_extract:
+        alias = f"{e}({','.join(cols)})"
         if e == "min":
-            exprs.append(pl.min_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+            exprs.append(pl.min_horizontal([pl.col(c) for c in cols]).alias(alias))
         elif e == "max":
-            exprs.append(pl.max_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+            exprs.append(pl.max_horizontal([pl.col(c) for c in cols]).alias(alias))
         elif e == "sum":
-            exprs.append(pl.sum_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+            exprs.append(pl.sum_horizontal([pl.col(c) for c in cols]).alias(alias))
         elif e == "any":
-            exprs.append(pl.any_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+            exprs.append(pl.any_horizontal([pl.col(c) for c in cols]).alias(alias))
         elif e == "all":
-            exprs.append(pl.all_horizontal([pl.col(c) for c in cols]).alias(f"{e}({','.join(cols)})"))
+            exprs.append(pl.all_horizontal([pl.col(c) for c in cols]).alias(alias))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid HorizontalExtract value. Ignored.")
+
+    if isinstance(df, pl.LazyFrame):
+        if drop_original:
+            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
+        return df.blueprint.with_columns(exprs)
+    if drop_original:
+        return df.with_columns(exprs).drop(cols)
+    return df.with_columns(exprs)
+
+def clean_str_cols(
+    df: PolarsFrame
+    , cols: Union[str, list[str]]
+    , pattern: str
+    , value: str = ""
+) -> PolarsFrame:
+    '''
+    Clean the strings in the given columns by replacing the pattern with the value.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Either a string representing a name of a column, or a list of column names
+    pattern
+        The regex pattern to replace
+    value
+        The value to replace with
+    '''
+    if isinstance(cols, str):
+        str_cols = [cols]
+    else:
+        str_cols = cols
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns([pl.col(c).str.replace_all(pattern, value) for c in str_cols])
+    return df.with_columns(pl.col(c).str.replace_all(pattern, value) for c in str_cols)
+
+def extract_word_count(
+    df: PolarsFrame
+    , cols: Union[str, list[str]]
+    , words: list[str]
+    , lower: bool = True
+    , drop_original: bool = True
+) -> PolarsFrame:
+    '''
+    Extract word counts from the cols.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Either a string representing a name of a column, or a list of column names.
+    words
+        Words/Patterns to count for each record in the columns
+    lower
+        Whether a lowercase() step should be done before the count match
+    drop_original
+        Whether to drop columns in cols
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "test_str": ["hello world hello", "hello Tom", "test", "world hello"],
+    ...     "test_str2": ["hello world hello", "hello Tom", "test", "world hello"]
+    ... })
+    >>> t.extract_word_count(df, cols=["test_str", "test_str2"], words=["hello", "world"])
+    shape: (4, 4)
+    ┌──────────────────────┬──────────────────────┬───────────────────────┬───────────────────────┐
+    │ test_str_count_hello ┆ test_str_count_world ┆ test_str2_count_hello ┆ test_str2_count_world │
+    │ ---                  ┆ ---                  ┆ ---                   ┆ ---                   │
+    │ u32                  ┆ u32                  ┆ u32                   ┆ u32                   │
+    ╞══════════════════════╪══════════════════════╪═══════════════════════╪═══════════════════════╡
+    │ 2                    ┆ 1                    ┆ 2                     ┆ 1                     │
+    │ 1                    ┆ 0                    ┆ 1                     ┆ 0                     │
+    │ 0                    ┆ 0                    ┆ 0                     ┆ 0                     │
+    │ 1                    ┆ 1                    ┆ 1                     ┆ 1                     │
+    └──────────────────────┴──────────────────────┴───────────────────────┴───────────────────────┘
+    '''
+    if isinstance(cols, str):
+        str_cols = [cols]
+    else:
+        str_cols = cols
+
+    _ = type_checker(df, str_cols, "string", "extract_word_count")
+    exprs = []
+    if lower:
+        for c in str_cols:
+            exprs.extend(pl.col(c).str.to_lowercase().str.count_match(w).suffix(f"_count_{w}") for w in words)
+    else:
+        for c in str_cols:
+            exprs.extend(pl.col(c).str.count_match(w).suffix(f"_count_{w}") for w in words)
+
+    if isinstance(df, pl.LazyFrame):
+        if drop_original:
+            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
+        return df.blueprint.with_columns(exprs)
+    if drop_original:
+        return df.with_columns(exprs).drop(cols)
+    return df.with_columns(exprs)
+
+def extract_from_str(
+    df: PolarsFrame
+    , cols: list[str]
+    , extract: Union[StrExtract, list[StrExtract]]
+    , pattern: Optional[str] = None
+    , use_bool: bool = False
+    , drop_original: bool = True
+) -> PolarsFrame:
+    '''
+    Extract data from string columns. For multiple word counts on the same column, see extract_word_count.
+    Note that for 'starts_with' and 'ends_with', pattern will be used as a substring instead of a regex pattern.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be string columns
+    extract
+        One of "count", "len", "contains", "starts_with", "ends_with" or a list of these values such as 
+        ["len", "starts_with"]. If non-"len" extract type is provided, pattern must not be None.
+    pattern
+        The pattern for every non-"len" extract.
+    use_bool
+        If true, results of "starts_with", "ends_with", and "contains" will be boolean columns instead of binary
+        0s and 1s.
+    drop_original
+        Whether to drop columns in cols
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "test_str": ["a_1", "x_2", "c_3", "x_22"]
+    ... })
+    >>> t.extract_from_str(df, cols=["test_str"], extract=["len", "contains"], pattern="^(a_|x_)")
+    shape: (4, 2)
+    ┌──────────────┬───────────────────────────┐
+    │ test_str_len ┆ test_str_contains_(a_|x_) │
+    │ ---          ┆ ---                       │
+    │ u32          ┆ u8                        │
+    ╞══════════════╪═══════════════════════════╡
+    │ 3            ┆ 1                         │
+    │ 3            ┆ 1                         │
+    │ 3            ┆ 0                         │
+    │ 4            ┆ 1                         │
+    └──────────────┴───────────────────────────┘
+    '''    
+    _ = type_checker(df, cols, "string", "extract_from_str")
+    if isinstance(extract, list):
+        to_extract = extract
+    else:
+        to_extract = [extract]
+    
+    if (len(to_extract) > 1 or (len(to_extract) == 1 and to_extract[0] != 'len')) and pattern is None:
+        raise ValueError("The argument `pattern` has to be supplied when extract contains non-'len' types.")
+    
+    exprs = []
+    for e in to_extract:
+        if e == "len":
+            exprs.extend(pl.col(c).str.lengths().suffix("_len") for c in cols)
+        elif e == "starts_with":
+            if use_bool:
+                exprs.extend(pl.col(c).str.starts_with(pattern).suffix(f"_starts_with_{pattern}") 
+                            for c in cols)
+            else:
+                exprs.extend(pl.col(c).str.starts_with(pattern).cast(pl.UInt8).suffix(f"_starts_with_{pattern}") 
+                            for c in cols)
+        elif e == "ends_with":
+            if use_bool:
+                exprs.extend(pl.col(c).str.ends_with(pattern).suffix(f"_ends_with_{pattern}")
+                            for c in cols)
+            else:
+                exprs.extend(pl.col(c).str.ends_with(pattern).cast(pl.UInt8).suffix(f"_ends_with_{pattern}") 
+                            for c in cols)
+        elif e == "count":
+            exprs.extend(pl.col(c).str.count_match(pattern).suffix(f"_{pattern}_count") for c in cols)
+        elif e == "contains":
+            if use_bool:
+                exprs.extend(pl.col(c).str.contains(pattern).suffix(f"_contains_{pattern}") 
+                            for c in cols)
+            else:
+                exprs.extend(pl.col(c).str.contains(pattern).cast(pl.UInt8).suffix(f"_contains_{pattern}") 
+                            for c in cols)
+        else:
+            logger.info(f"Found {e} in extract, but it is not a valid StrExtract value. Ignored.")
 
     if isinstance(df, pl.LazyFrame):
         if drop_original:

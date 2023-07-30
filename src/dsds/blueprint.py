@@ -1,17 +1,12 @@
-import pickle
-import polars as pl
-import importlib
-import polars.selectors as cs
 from pathlib import Path
 from polars import LazyFrame, DataFrame
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import (
     Any
     , Union
-    , Iterable
     , Optional
 )
-from polars.type_aliases import IntoExpr
+
 from .type_alias import (
     PolarsFrame
     , ActionType
@@ -19,6 +14,12 @@ from .type_alias import (
     , ClassifModel
     , RegressionModel
 )
+import pickle
+import polars as pl
+import importlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 # P = ParamSpec("P")
 
@@ -29,15 +30,43 @@ class MapDict:
     right_col: str
     default: Optional[Any]
 
+# action + the only non-None field name is a unique identifier for this Step (fully classifies all steps)
 @dataclass
 class Step:
     action:ActionType
-    associated_data: Union[list[pl.Expr], MapDict, list[str], cs._selector_proxy_, dict[str, Any], pl.Expr]
-    # First is everything that can be done with with_columns
-    # Second is a 1-to-1 encoder (MapDict)
-    # Third is a drop/select (list[str] and cs._selector_proxy_)
-    # Fourth is add_func (dict[str, Any]), or add_classif/add_regression
-    # Fifth is a filter statement (pl.Expr)
+    with_columns: Optional[list[pl.Expr]] = None
+    map_dict: Optional[MapDict] = None
+    add_func: Optional[dict[str, Any]] = None
+    filter: Optional[pl.Expr] = None 
+    select_or_drop: Optional[list[str]] = None
+    model_step: Optional[dict[str, Any]] = None
+
+    def validate(self) -> bool:
+        not_nones:list[str] = []
+        for field in fields(self):
+            if field.name in ["with_columns", "map_dict", "select_or_drop", "add_func", "filter", "model_step"]:
+                if getattr(self, field.name) is not None:
+                    not_nones.append(field.name)
+            elif field.name == "action":
+                continue
+            else:
+                logger.warning(f"Found unknown action: {field.name}")
+                return False
+
+        if len(not_nones) == 1:
+            return True
+        elif len(not_nones) == 0:
+            logger.warning(f"The Step {self.action} does not have any action value associated with it.")
+            return False
+        else:
+            logger.warning(f"The step {self.action} has two action values associated with it: {not_nones}")
+            return False
+        
+    def get_action_value(self) -> Any:
+        for field in fields(self):
+            value = getattr(self, field.name)
+            if field.name != "action" and value is not None:
+                return value
 
 # Break associated_data into parts?
 
@@ -57,26 +86,26 @@ class Blueprint:
             output += f"Step {k} | Action: {s.action}\n"
             if s.action == "with_columns":
                 output += "Details: \n"
-                for i,expr in enumerate(s.associated_data):
+                for i,expr in enumerate(s.with_columns):
                     output += f"({i+1}) {expr}\n"
-            elif s.action == "apply_func":
-                d:dict = s.associated_data
+            elif s.action == "add_func":
+                d:dict = s.add_func
                 output += f"Function Module: {d['module']}, Function Name: {d['name']}\n"
                 output += "Parameters:\n"
-                for k,v in d["kwargs"].items():
-                    output += f"{k} = {v},\n"
+                for key,value in d["kwargs"].items():
+                    output += f"{key} = {value},\n"
             elif s.action == "filter":
-                output += f"By condition: {s.associated_data}\n"
+                output += f"By condition: {s.filter}\n"
             elif s.action in ("classif", "regression"):
-                output += f"Model: {s.associated_data['model'].__class__}\n"
-                features = s.associated_data.get('features', None)
+                output += f"Model: {s.model_step['model'].__class__}\n"
+                features = s.model_step.get('features', None)
                 if features is None:
                     output += "Using all non-target columns as features.\n"
                 else:
-                    output += f"Using the features {s.associated_data['features']}\n"
-                output += f"Appends {s.associated_data['score_col']} to dataframe."
+                    output += f"Using the features {features}\n"
+                output += f"Appends {s.model_step['score_col']} to dataframe."
             else:
-                output += str(s.associated_data)
+                output += str(s.get_action_value())
             output += "\n\n"
             if k > till:
                 break
@@ -114,22 +143,21 @@ class Blueprint:
     def _process_classif(
         df: PolarsFrame
         , model:ClassifModel
+        , features: list[str]
         , target: Optional[str] = None
-        , features: Optional[list[str]] = None
         , score_idx:int = -1 
         , score_col:str = "model_score"
     ) -> PolarsFrame:
         
-        if features is None:
-            features = df.columns
         if target is not None:
             if target in features:
                 features.remove(target)
 
         data = df.lazy().collect()
-        output = data.insert_at_idx(0, pl.Series(
-            score_col, model.predict_proba(data.select(features))[:, score_idx]
-        ))
+        score = pl.DataFrame({
+            score_col: model.predict_proba(data.select(features))[:, score_idx]
+        })
+        output = pl.concat([data, score], how="horizontal")
         if isinstance(df, pl.LazyFrame):
             return output.lazy()
         return output
@@ -138,25 +166,23 @@ class Blueprint:
     def _process_regression(
         df: PolarsFrame
         , model:RegressionModel
+        , features: list[str]
         , target: Optional[str] = None
-        , features: Optional[list[str]] = None
         , score_col:str = "model_score"
     ) -> DataFrame:
         
-        if features is None:
-            features = df.columns
         if target is not None:
             if target in features:
                 features.remove(target)
 
         data = df.lazy().collect()
-        output = data.insert_at_idx(0, pl.Series(
-            score_col, model.predict(data.select(features))[:, -1]
-        ))
+        score = pl.DataFrame({
+            score_col: model.predict(data.select(features)).ravel()
+        })
+        output = pl.concat([data, score], how="horizontal")
         if isinstance(df, pl.LazyFrame):
             return output.lazy()
         return output
-
 
     # Feature Transformations that requires a 1-1 mapping as given by the ref dict. This will be
     # carried out using a join logic to avoid the use of Python UDF.
@@ -165,7 +191,7 @@ class Blueprint:
         output = Blueprint._map_dict(self._ldf, map_dict)
         output.blueprint.steps = self.steps.copy() 
         output.blueprint.steps.append(
-            Step(action = "map_dict", associated_data = map_dict)
+            Step(action = "map_dict", map_dict = map_dict)
         )
         return output
     
@@ -173,11 +199,11 @@ class Blueprint:
     # Just make sure exprs are not lazy structures like generators
     
     # Transformations are just with_columns(exprs)
-    def with_columns(self, exprs:Iterable[IntoExpr]) -> LazyFrame:
+    def with_columns(self, exprs:list[pl.Expr]) -> LazyFrame:
         output = self._ldf.with_columns(exprs)
         output.blueprint.steps = self.steps.copy() # Shallow copy should work
         output.blueprint.steps.append(
-            Step(action = "with_columns", associated_data = exprs)
+            Step(action = "with_columns", with_columns = exprs)
         )
         return output
     
@@ -185,16 +211,16 @@ class Blueprint:
         output = self._ldf.filter(expr)
         output.blueprint.steps = self.steps.copy() # Shallow copy should work
         output.blueprint.steps.append(
-            Step(action = "filter", associated_data = expr)
+            Step(action = "filter", filter = expr)
         )
         return output
     
     # Transformations are just select, used mostly in selector functions
-    def select(self, to_select:list[str]) -> LazyFrame:
-        output = self._ldf.select(to_select)
+    def select(self, select_cols:list[str]) -> LazyFrame:
+        output = self._ldf.select(select_cols)
         output.blueprint.steps = self.steps.copy() 
         output.blueprint.steps.append(
-            Step(action = "select", associated_data = to_select)
+            Step(action = "select", select_or_drop = select_cols)
         )
         return output
     
@@ -203,7 +229,7 @@ class Blueprint:
         output = self._ldf.drop(drop_cols)
         output.blueprint.steps = self.steps.copy() 
         output.blueprint.steps.append(
-            Step(action = "drop", associated_data = drop_cols)
+            Step(action = "drop", select_or_drop = drop_cols)
         )
         return output
     
@@ -219,14 +245,14 @@ class Blueprint:
         output = self._ldf # .lazy()
         output.blueprint.steps = df.blueprint.steps.copy() 
         output.blueprint.steps.append(
-            Step(action="add_func", associated_data={"module":func.__module__, "name":func.__name__, "kwargs":kwargs})
+            Step(action="add_func", add_func={"module":func.__module__, "name":func.__name__, "kwargs":kwargs})
         )
         return output
 
     def add_classif(self
         , model:ClassifModel
+        , features: list[str]
         , target: Optional[str] = None
-        , features: Optional[list[str]] = None
         , score_idx:int = -1 
         , score_col:str = "model_score"
     ) -> LazyFrame:
@@ -251,21 +277,21 @@ class Blueprint:
         score_col
             The name of the score column
         '''
-        output = Blueprint._process_classif(self._ldf, model, target, features, score_idx, score_col)
+        output = Blueprint._process_classif(self._ldf, model, features, target, score_idx, score_col)
         output.blueprint.steps = self.steps.copy()
         output.blueprint.steps.append(
-            Step(action = "classif", associated_data={"model":model,
-                                                      "target": target,
-                                                      "features": features,
-                                                      "score_idx": score_idx,
-                                                      "score_col":score_col})
+            Step(action = "classif", model_step = {"model":model,
+                                                    "target": target,
+                                                    "features": features,
+                                                    "score_idx": score_idx,
+                                                    "score_col":score_col})
         )
         return output
     
     def add_regression(self
         , model:RegressionModel
+        , features: list[str]
         , target: Optional[str] = None
-        , features: Optional[list[str]] = None
         , score_col:str = "model_score"
     ) -> LazyFrame:
         '''
@@ -289,13 +315,13 @@ class Blueprint:
         score_col
             The name of the score column
         '''        
-        output = Blueprint._process_regression(self._ldf, model, target, features, score_col)
+        output = Blueprint._process_regression(self._ldf, model, features, target, score_col)
         output.blueprint.steps = self.steps.copy()
         output.blueprint.steps.append(
-            Step(action = "classif", associated_data={"model":model,
-                                                      "target": target,
-                                                      "features": features,
-                                                      "score_col":score_col})
+            Step(action = "regression", model_step = {"model":model,
+                                                        "target": target,
+                                                        "features": features,
+                                                        "score_col":score_col})
         )
         return output
     
@@ -311,7 +337,7 @@ class Blueprint:
         with open(path, "wb") as f:
             pickle.dump(self, f)
 
-    def apply(self, df:PolarsFrame, up_to:int=-1) -> PolarsFrame:
+    def apply(self, df:PolarsFrame, up_to:int=-1, collect:bool=False) -> PolarsFrame:
         '''
         Apply all the steps to the given df. The result will be lazy if df is lazy, and eager if df is eager.
 
@@ -321,29 +347,36 @@ class Blueprint:
             Either an eager or lazy Polars Dataframe
         up_to
             If > 0, will perform the steps up to this number
+        collect
+            If input is lazy and collect = True, then this will collect the result at the end. If streaming
+            collect is desired, please set this to False and collect manually.
         '''
         _up_to = len(self.steps) if up_to <=0 else min(up_to, len(self.steps))
         for i,s in enumerate(self.steps):
             if i < _up_to:
                 if s.action == "drop":
-                    df = df.drop(s.associated_data)
+                    df = df.drop(s.select_or_drop)
                 elif s.action == "with_columns":
-                    df = df.with_columns(s.associated_data)
+                    df = df.with_columns(s.with_columns)
                 elif s.action == "map_dict":
-                    df = self._map_dict(df, s.associated_data)
+                    df = self._map_dict(df, s.map_dict)
                 elif s.action == "select":
-                    df = df.select(s.associated_data)
+                    df = df.select(s.select_or_drop)
                 elif s.action == "filter":
-                    df = df.filter(s.associated_data)
+                    df = df.filter(s.filter)
                 elif s.action == "add_func":
-                    func = getattr(importlib.import_module(s.associated_data["module"]), s.associated_data["name"])
-                    df = df.pipe(func, **s.associated_data["kwargs"])
+                    module, name = s.add_func["module"], s.add_func["name"]
+                    func = getattr(importlib.import_module(module), name)
+                    df = df.pipe(func, **s.add_func["kwargs"])
                 elif s.action == "classif":
-                    df = df.pipe(Blueprint._process_classif, **s.associated_data)
+                    df = df.pipe(Blueprint._process_classif, **s.model_step)
                 elif s.action == "regression":
-                    df = df.pipe(Blueprint._process_regression, **s.associated_data)
+                    df = df.pipe(Blueprint._process_regression, **s.model_step)
             else:
                 break
+
+        if isinstance(df, pl.LazyFrame) and collect:
+            return df.collect()
         return df
 
 def from_pkl(path: Union[str,Path]) -> Blueprint:
@@ -352,6 +385,6 @@ def from_pkl(path: Union[str,Path]) -> Blueprint:
         if isinstance(obj, Blueprint):
             return obj
         else:
-            raise ValueError("The pickled object is not a blueprint.")
+            raise ValueError("The object in the pickled file is not a Blueprint object.")
 
 
