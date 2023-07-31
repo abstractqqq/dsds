@@ -9,8 +9,7 @@ from .type_alias import (
     , ListExtract
     , StrExtract
     , HorizontalExtract
-    , ZeroOneCombineRules
-    , clean_strategy_str
+    , ZeroOneCombineStrategy
 )
 from .prescreen import type_checker
 from .blueprint import( # Need this for Polars extension to work
@@ -53,18 +52,17 @@ def impute(
         One of 'median', 'mean', 'const' or 'mode'. If 'const', the const argument should be provided. Note that
         if strategy is mode and if two values occur the same number of times, a random one will be picked.
     const
-        The constant value to impute by if strategy = 'const'    
+        The constant value to impute by if strategy = 'const'
     '''
-    s = clean_strategy_str(strategy)
-    if s == "median":
+    if strategy == "median":
         all_medians = df.lazy().select(cols).median().collect().row(0)
         exprs = (pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols))
-    elif s in ("mean", "avg", "average"):
+    elif strategy in ("mean", "avg", "average"):
         all_means = df.lazy().select(cols).mean().collect().row(0)
         exprs = (pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols))
-    elif s in ("const", "constant"):
+    elif strategy in ("const", "constant"):
         exprs = (pl.col(c).fill_null(const) for c in cols)
-    elif s in ("mode", "most_frequent"):
+    elif strategy in ("mode", "most_frequent"):
         all_modes = df.lazy().select(cols).select(pl.all().mode().first()).collect().row(0)
         exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols))
     else:
@@ -97,20 +95,19 @@ def scale(
         The constant value to scale by if strategy = 'const'    
     '''
     _ = type_checker(df, cols, "numeric", "scale")
-    s = clean_strategy_str(strategy)
-    if s == "standard":
+    if strategy == "standard":
         mean_std = df.lazy().select(cols).select(
-            pl.all().mean().prefix("mean:")
-            , pl.all().std().prefix("std:")
+            pl.all().mean().prefix("mean:"),
+            pl.all().std().prefix("std:")
         ).collect().row(0)
-        exprs = ( (pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols) )
-    elif s == "min_max":
+        exprs = ((pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols))
+    elif strategy == "min_max":
         min_max = df.lazy().select(cols).select(
             pl.all().min().prefix("min:"),
             pl.all().max().prefix("max:")
         ).collect().row(0) # All mins come first, then maxs
-        exprs = ( (pl.col(c) - min_max[i])/((min_max[i + len(cols)] - min_max[i])) for i,c in enumerate(cols) )
-    elif s in ("const", "constant"):
+        exprs = ((pl.col(c) - min_max[i])/((min_max[i + len(cols)] - min_max[i])) for i,c in enumerate(cols))
+    elif strategy in ("const", "constant"):
         exprs = (pl.col(c)/const for c in cols)
     else:
         raise TypeError(f"Unknown scaling strategy: {strategy}")
@@ -215,7 +212,7 @@ def combine_zero_ones(
     df: PolarsFrame
     , cols: list[str]
     , new_name: str
-    , rule: ZeroOneCombineRules = "union"
+    , rule: ZeroOneCombineStrategy = "union"
     , drop_original:bool = True
 ) -> PolarsFrame:
     '''
@@ -280,7 +277,7 @@ def combine_zero_ones(
                     pl.lit(0, dtype=pl.UInt8)
                 ).alias(new_name)
     else:
-        raise TypeError(f"The input `{rule}` is not a valid ZeroOneCombineRule.")
+        raise TypeError(f"The input `{rule}` is not a valid ZeroOneCombineStrategy.")
 
     if isinstance(df, pl.LazyFrame):
         if drop_original:
@@ -312,12 +309,8 @@ def power_transform(
         Either 'yeo_johnson' or 'box_cox'
     '''
     _ = type_checker(df, cols, "numeric", "power_transform")
-    s = clean_strategy_str(strategy)
     exprs:list[pl.Expr] = []
-
-    # Ensure columns do not have missing values
- 
-    if s in ("yeo_johnson", "yeojohnson"):
+    if strategy in ("yeo_johnson", "yeojohnson"):
         lmaxs = df.lazy().select(cols).groupby(pl.lit(1)).agg(
             pl.col(c)
             .apply(yeojohnson_normmax, strategy="threading", return_dtype=pl.Float64).alias(c)
@@ -338,7 +331,7 @@ def power_transform(
             exprs.append(
                 pl.when(pl.col(c).ge(0)).then(x_ge_0_sub_expr).otherwise(x_lt_0_sub_expr).alias(c)
             )
-    elif s in ("box_cox", "boxcox"):
+    elif strategy in ("box_cox", "boxcox"):
         bc_normmax = partial(boxcox_normmax, method="mle")
         lmaxs = df.lazy().select(cols).groupby(pl.lit(1)).agg(
             pl.col(c)

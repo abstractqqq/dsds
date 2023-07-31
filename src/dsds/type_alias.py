@@ -35,6 +35,7 @@ ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant"]
 ImputationStrategy:TypeAlias = Literal["mean", "avg", "average", "median", "const", "constant", "mode", "most_frequent"]
 PowerTransformStrategy:TypeAlias = Literal["yeo_johnson", "yeojohnson", "box_cox", "boxcox"]
 WeightStrategy: TypeAlias = Literal["none", "balanced", "custom"]
+ZeroOneCombineStrategy = Literal["union", "intersection", "same"]
 
 # --- Models ---
 BinaryModels:TypeAlias = Literal["logistic", "lr", "lightgbm", "lgbm", "xgboost", "xgb", "random_forest", "rf"]
@@ -52,12 +53,12 @@ Alternatives = Literal["two-sided", "greater", "less"]
 # for a CommonContinuousDist.
 CommonContiDist:TypeAlias = Literal["norm", "lognorm", "truncnorm", "uniform", "t", "beta", "cauchy", "expon", "gamma"]
 
-# --- Other ---
-ZeroOneCombineRules = Literal["union", "intersection", "same"]
-SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "list", "string", "other/unknown"]
-
+# --- Blueprint ---
 ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "add_func", "filter", "classif"
                                , "regression"]
+# --- Other ---
+SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "list", "string", "other/unknown"]
+
 
 # --- Utils ---
 def clean_strategy_str(s:str):

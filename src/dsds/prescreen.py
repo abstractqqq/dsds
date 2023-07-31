@@ -501,8 +501,9 @@ def describe_str(
 
     if isinstance(words_to_count, list):
         for w in words_to_count:
-            t = df_str.select(pl.all().str.count_match(w).sum().prefix("wc:")).row(0)
-            output["total_"+ w + "_count"] = t
+            output["total_"+ w + "_count"] = df_str.select(
+                                                pl.all().str.count_match(w).sum().prefix("wc:")
+                                            ).row(0)
 
     return pl.from_dict(output)
 

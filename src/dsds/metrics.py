@@ -43,6 +43,10 @@ def get_sample_weight(
     elif strategy == "custom":
         if weight_dict is None:
             raise ValueError("If strategy == 'custom', then weight_dict must be provided.")
+        if len(weight_dict) != np.unique(y_actual).size:
+            raise ValueError("The input `weight_dict` must provide the weights for all class, with keys "
+                    "ranging from 0 to n_classes-1.")
+        
         for i in range(len(weight_dict)):
             w = weight_dict.get(i, None)
             if w is None:

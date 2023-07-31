@@ -349,8 +349,8 @@ def smooth_target_encode(
     df:PolarsFrame
     , target:str
     , cols:list[str]
-    , min_samples_leaf:int
-    , smoothing:float
+    , min_samples_leaf:int = 20
+    , smoothing:float = 10.
     , check_binary:bool=True
 ) -> PolarsFrame:
     '''

@@ -1,4 +1,8 @@
-from typing import Tuple, Optional, Union
+from typing import (
+    Tuple
+    , Optional
+    , Union
+)
 from collections.abc import Iterator
 from .type_alias import PolarsFrame
 from polars.type_aliases import UniqueKeepStrategy
@@ -337,8 +341,7 @@ def train_test_split(
                     .groupby(
                         pl.col("row_nr") >= len(df) * train_frac
                     )
-        # I am not sure if False group is always returned first...
-        # p1 is a 2-tuple of (True/False, the corresponding group)
+        # Sometimes p1 is true, p2 is false, sometimes otherwise
         if p2[0]: # if p2[0] == True, then p1[1] is train, p2[1] is test
             return p1[1].select(keep), p2[1].select(keep) # Make sure train comes first
         return p2[1].select(keep), p1[1].select(keep)
@@ -347,6 +350,217 @@ def train_test_split(
         df_train = df.filter(pl.col("row_nr") < pl.col("row_nr").max() * train_frac)
         df_test = df.filter(pl.col("row_nr") >= pl.col("row_nr").max() * train_frac)
         return df_train.select(keep), df_test.select(keep)
+
+# Make a monthly split for monthly progression instead of this.
+def time_series_split(
+    df: PolarsFrame
+    , n_splits: int = 5
+    , test_size: Optional[int] = None
+    , sort_col: Optional[str] = None
+    , offset: int = 0
+    , gap: int = 0
+) -> Iterator[Tuple[pl.DataFrame, pl.DataFrame]]:
+    '''
+    Creates time series validator as an iterator of (train, test) eager frames.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager dataframe to split
+    n_splits
+        The number of splits to make
+    test_size
+        If not provided, will default to len(df)//(n_splits+1). Raise error if < 1.
+    sort_col
+        Whether to sort df by the given column. If none, don't sort
+    offset
+        For example, if set to 100, then first 100 rows will always be part of train.
+    gap
+        Gap between train and test.
+
+    Example
+    -------
+    >>> X = np.array([[1, 2], [3, 4], [1, 2], [3, 4], [1, 2], [3, 4]])
+    >>> y = np.array([1, 2, 3, 4, 5, 6])
+    >>> df = pl.from_numpy(X).insert_at_idx(2, pl.Series("y",y))
+    >>> print(df)
+    shape: (6, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    │ 3        ┆ 4        ┆ 2   │
+    │ 1        ┆ 2        ┆ 3   │
+    │ 3        ┆ 4        ┆ 4   │
+    │ 1        ┆ 2        ┆ 5   │
+    │ 3        ┆ 4        ┆ 6   │
+    └──────────┴──────────┴─────┘
+    >>> for train, test in sa.time_series_split(df, n_splits=3, test_size=2): # only 2 folds will be generated
+    >>>     print("train:", train)
+    >>>     print("test:", test)
+    WARNING:dsds.sample:Fold 0 is empty because of constraints imposed by input parameters. Skipped.
+    train: shape: (2, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    │ 3        ┆ 4        ┆ 2   │
+    └──────────┴──────────┴─────┘
+    test: shape: (2, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 3   │
+    │ 3        ┆ 4        ┆ 4   │
+    └──────────┴──────────┴─────┘
+    train: shape: (4, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    │ 3        ┆ 4        ┆ 2   │
+    │ 1        ┆ 2        ┆ 3   │
+    │ 3        ┆ 4        ┆ 4   │
+    └──────────┴──────────┴─────┘
+    test: shape: (2, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 5   │
+    │ 3        ┆ 4        ┆ 6   │
+    └──────────┴──────────┴─────┘
+    >>> for train, test in sa.time_series_split(df, n_splits=5):
+    >>>     print("train:", train)
+    >>>     print("test:", test)
+    train: shape: (1, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    └──────────┴──────────┴─────┘
+    test: shape: (1, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 3        ┆ 4        ┆ 2   │
+    └──────────┴──────────┴─────┘
+    train: shape: (2, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    │ 3        ┆ 4        ┆ 2   │
+    └──────────┴──────────┴─────┘
+    test: shape: (1, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 3   │
+    └──────────┴──────────┴─────┘
+    train: shape: (3, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    │ 3        ┆ 4        ┆ 2   │
+    │ 1        ┆ 2        ┆ 3   │
+    └──────────┴──────────┴─────┘
+    test: shape: (1, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 3        ┆ 4        ┆ 4   │
+    └──────────┴──────────┴─────┘
+    train: shape: (4, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    │ 3        ┆ 4        ┆ 2   │
+    │ 1        ┆ 2        ┆ 3   │
+    │ 3        ┆ 4        ┆ 4   │
+    └──────────┴──────────┴─────┘
+    test: shape: (1, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 5   │
+    └──────────┴──────────┴─────┘
+    train: shape: (5, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 1        ┆ 2        ┆ 1   │
+    │ 3        ┆ 4        ┆ 2   │
+    │ 1        ┆ 2        ┆ 3   │
+    │ 3        ┆ 4        ┆ 4   │
+    │ 1        ┆ 2        ┆ 5   │
+    └──────────┴──────────┴─────┘
+    test: shape: (1, 3)
+    ┌──────────┬──────────┬─────┐
+    │ column_0 ┆ column_1 ┆ y   │
+    │ ---      ┆ ---      ┆ --- │
+    │ i32      ┆ i32      ┆ i32 │
+    ╞══════════╪══════════╪═════╡
+    │ 3        ┆ 4        ┆ 6   │
+    └──────────┴──────────┴─────┘
+    '''
+    if n_splits < 2:
+        raise ValueError("Input `n_splits` must be >= 2.")
+    
+    keep = df.columns
+    if sort_col is None:
+        df_local = df.with_row_count(offset=1).set_sorted("row_nr")
+    else:
+        df_local = df.sort(by=sort_col).with_row_count(offset=1).set_sorted("row_nr")
+
+    if test_size is None:
+        if isinstance(df, pl.LazyFrame):
+            test_size = pl.col("row_nr").max().floordiv(n_splits + 1)
+        else:
+            test_size = len(df)//(n_splits + 1)
+    elif test_size < 1:
+        raise ValueError(f"Input `test_size` must be >= 1, not {test_size}.")
+    
+    for i, j in enumerate(range(n_splits, 0, -1)):
+        rhs = offset + pl.col("row_nr").max() - j * test_size + 1
+        train = df_local.lazy().filter(pl.col("row_nr") < rhs).select(keep).collect()
+        test = df_local.lazy().filter(
+                pl.col("row_nr").is_between(rhs + gap, rhs + gap + test_size, closed="left")
+            ).select(keep).collect()
+        
+        if len(train) == 0 or len(test) == 0:
+            logger.warn(f"Fold {i} is empty because of constraints imposed by input parameters. Skipped.")
+        else:
+            yield train, test
     
 def bootstrap(
     df: PolarsFrame
@@ -369,7 +583,6 @@ def bootstrap(
         sample_amt
             If set, sample this amount instead of fraction
     """
-    
     start = random.randint(0, 100_000)
     if isinstance(df, pl.LazyFrame):
         return (
