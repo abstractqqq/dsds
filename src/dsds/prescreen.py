@@ -23,6 +23,7 @@ from scipy.stats import (
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 from math import comb
+import numpy as np
 import re
 import polars.selectors as cs
 import polars as pl
@@ -33,6 +34,11 @@ logger = logging.getLogger(__name__)
 #----------------------------------------------------------------------------------------------#
 # Generic columns checks | Only works with Polars because Pandas's data types suck!            #
 #----------------------------------------------------------------------------------------------#
+def type_checker(df:PolarsFrame, cols:list[str], expected_type:SimpleDtypes, caller_name:str) -> bool:
+    types = check_columns_types(df, cols)
+    if types != expected_type:
+        raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
+    return True
 
 def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
     '''Returns numerical columns except those in exclude.'''
@@ -104,7 +110,7 @@ def snake_case(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
 def select(
     df:PolarsFrame
     , selector: Union[list[str], cs._selector_proxy_]
-    , persist:bool=False
+    , persist: bool = True
 ) -> PolarsFrame:
     '''
     A select wrapper that makes it pipeline compatible.
@@ -115,25 +121,36 @@ def select(
         return df.blueprint.select(selector)
     return df.select(selector)
 
+def drop(df:PolarsFrame, to_drop:list[str], persist:bool=True) -> PolarsFrame:
+    '''
+    A pipeline compatible way to drop the given columns, which will be remembered by the blueprint
+    by default.
+    '''
+    if isinstance(df, pl.LazyFrame) and persist:
+        return df.blueprint.drop(to_drop)
+    return df.drop(to_drop)
+
 def drop_nulls(
     df:PolarsFrame
-    , subset:Optional[list[str]] = None
-    , persist:bool=False
+    , subset:Optional[Union[list[str], str]] = None
+    , persist: bool = False
 ) -> PolarsFrame:
     '''
-    A wrapper function for Polars' drop_nulls so that it can be used in pipeline.
+    A wrapper function for Polars' drop_nulls so that it can be used in pipeline. Equivalent to
+    filter by pl.all_horizontal([pl.col(c).is_null() for c in subset]).
 
     Set persist = True if this needs to be remembered by the blueprint.
     '''
-    if subset is None:
-        by = df.columns
-    else:
-        by = subset
-
-    output = df.drop_nulls(subset=by)
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.add_func(df, drop_nulls, {"subset":subset})
-    return output
+        if subset is None:
+            by = df.columns
+        elif isinstance(subset, str):
+            by = [subset]
+        else:
+            by = subset
+        expr = pl.all_horizontal([pl.col(c).is_null() for c in by])
+        return df.blueprint.filter(expr)
+    return df.drop_nulls(subset)
 
 def filter(
     df:PolarsFrame
@@ -143,7 +160,7 @@ def filter(
     ''' 
     A wrapper function for Polars' filter so that it can be used in pipeline.
 
-    Set persist = True if this needs to be remembered by the blueprint.
+    This will be remembered by blueprint by default.
     '''
     if isinstance(df, pl.LazyFrame) and persist:
         return df.blueprint.filter(condition)
@@ -167,7 +184,9 @@ def order_by(
     return output
 
 def check_binary_target(df:PolarsFrame, target:str) -> bool:
-    '''Checks if target is binary or not. Only binary targets with 0s and 1s will pass.'''
+    '''
+    Checks if target is binary or not. Returns true only when binary target has 0s and 1s.
+    '''
     target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)
     if len(target_uniques) != 2:
         logger.error("Target is not binary.")
@@ -189,6 +208,144 @@ def check_target_cardinality(df:PolarsFrame, target:str, raise_null:bool=True) -
         raise ValueError("Target contains null.")
     return output
 
+def format_categorical_target(
+    df:PolarsFrame
+    , target:str
+) -> Tuple[PolarsFrame, dict[Union[str, int], int]]:
+    '''
+    Apply an ordinal encoding to the target column for classification problems. This step helps you quickly
+    turn strings into multiple categories, but is not pipeline compatbile. This returns a target-modified df
+    and a mapping dict. It is recommended that you do this step outside the pipeline.
+
+    !!! This will NOT be persisted in blueprint and does NOT work in pipeline. !!!
+
+    Parameters
+    ----------
+    df
+        Either a lazy or an eager Polars dataframe
+    target
+        Name of target column
+    persist
+        Wheter or not this will be persisted by the blueprint
+
+    Example
+    -------
+    >>> import dsds.prescreen as ps
+    ... df = pl.DataFrame({
+    ...     "target":["A", "B", "C", "A", "B"]
+    ... })
+    ... new_df, mapping = ps.format_categorical_target(df, target="target")
+    >>> print(new_df)
+    >>> print(mapping)
+    shape: (5, 1)
+    ┌────────┐
+    │ target │
+    │ ---    │
+    │ u16    │
+    ╞════════╡
+    │ 0      │
+    │ 1      │
+    │ 2      │
+    │ 0      │
+    │ 1      │
+    └────────┘
+    {'A': 0, 'B': 1, 'C': 2}
+    '''
+    uniques = df.lazy().select(
+        t = pl.col(target).unique().sort()
+    ).collect().drop_in_place("t")
+    mapping = dict(zip(uniques, range(len(uniques))))
+    output = df.with_columns(
+        pl.col(target).map_dict(mapping, return_dtype=pl.UInt16)
+    )
+    return output, mapping
+
+def sparse_to_dense_target(df:PolarsFrame, target:str) -> PolarsFrame:
+    '''
+    If target column's elements are like [0,0,1], [0,1,0], etc. for a multicategorical 
+    classification problem, this will turn the target column into 2, 1, etc. This may return 
+    non-sensical results if you have more than one element >= 1 in the list.
+
+    !!! This step will NOT be remembered by the blueprint !!!
+
+    Parameters
+    ----------
+    df
+        Either a lazy or an eager Polars dataframe
+    target
+        Name of target column
+
+    Example
+    -------
+    >>> import dsds.prescreen as ps
+    ... df = pl.DataFrame({
+    ...     "target":[[0,0,1], [0,1,0], [1,0,0], [0,1,0], [1,0,0]]
+    ... })
+    >>> print(ps.sparse_to_dense_target(df, target="target"))
+    shape: (5, 1)
+    ┌────────┐
+    │ target │
+    │ ---    │
+    │ u32    │
+    ╞════════╡
+    │ 2      │
+    │ 1      │
+    │ 0      │
+    │ 1      │
+    │ 0      │
+    └────────┘
+    '''
+    _ = type_checker(df, [target], "list", "sparse_to_dense_target")
+    return df.with_columns(
+        pl.col(target).list.arg_max().alias(target)
+    )
+
+def dense_to_sparse_target(df:PolarsFrame, target:str) -> PolarsFrame:
+    '''
+    This turns dense target column into a sparse column. This steps assume your classification target 
+    is dense, meaning all categories have already been encoded to values in range 0,...,n_classes-1. If
+    your target is not dense, see `dsds.prescreen.format_categorical_target`.
+
+    !!! This step will NOT be remembered by the blueprint !!!
+
+    Parameters
+    ----------
+    df
+        Either a lazy or an eager Polars dataframe
+    target
+        Name of target column
+
+    Example
+    -------
+    >>> import dsds.prescreen as ps
+    ... df = pl.DataFrame({
+    ...     "target":[0,1,2,1,2,0]
+    ... })
+    >>> print(ps.dense_to_sparse_target(df, target="target"))
+    shape: (6, 1)
+    ┌───────────┐
+    │ target    │
+    │ ---       │
+    │ list[u8]  │
+    ╞═══════════╡
+    │ [1, 0, 0] │
+    │ [0, 1, 0] │
+    │ [0, 0, 1] │
+    │ [0, 1, 0] │
+    │ [0, 0, 1] │
+    │ [1, 0, 0] │
+    └───────────┘
+    '''
+    _ = type_checker(df, [target], "numeric", "dense_to_sparse_target")
+    n_unique = df.lazy().select(
+        n_unique = pl.col(target).max() + 1
+    ).collect().item(0,0)
+    return df.with_columns(
+        pl.col(target).apply(
+            lambda i: pl.zeros(n_unique, dtype=pl.UInt8, eager=True).set_at_idx(i, 1)
+        )
+    )
+
 def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
     '''
     Returns the unique types of given columns in a single string. If multiple types are present
@@ -201,12 +358,6 @@ def check_columns_types(df:PolarsFrame, cols:Optional[list[str]]=None) -> str:
 
     types = sorted(set(dtype_mapping(t) for t in df.select(check_cols).dtypes))
     return "|".join(types) if len(types) > 0 else "other/unknown"
-
-def type_checker(df:PolarsFrame, cols:list[str], expected_type:SimpleDtypes, caller_name:str) -> bool:
-    types = check_columns_types(df, cols)
-    if types != expected_type:
-        raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
-    return True
 
 # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
 def dtype_mapping(d: Any) -> SimpleDtypes:
@@ -355,16 +506,9 @@ def describe_str(
 
     return pl.from_dict(output)
 
-# -----------------------------------------------------------------------------------------------
-def drop(df:PolarsFrame, to_drop:list[str]) -> PolarsFrame:
-    '''
-    A pipeline compatible way to drop the given columns, which will be remembered by the blueprint
-    by default.
-    '''
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.drop(to_drop)
-    return df.drop(to_drop)
+# Add an outlier description
 
+# -----------------------------------------------------------------------------------------------
 def non_numeric_removal(df:PolarsFrame, include_bools:bool=False) -> PolarsFrame:
     '''
     Removes all non-numeric columns. If include_bools = True, then keep boolean columns.

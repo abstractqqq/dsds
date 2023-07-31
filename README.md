@@ -52,9 +52,13 @@ output = input_df.pipe(var_removal, threshold = 0.5, target = "Clicked on Ad")\
     .pipe(mutual_info_selector, target = "Clicked on Ad", top_k = 12)
 ```
 
-Performance without sacrificing user experience. See ./examples/dsds_comparisons.ipynb
+Performance without sacrificing user experience.
 
 ![Screenshot](./pics/impute.PNG)
+
+And yes, significant faster than NumPy in many instances:
+
+![Screenshot](./pics/logloss.PNG)
 
 ## Dependencies
 

@@ -34,6 +34,7 @@ MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf
 ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant"]
 ImputationStrategy:TypeAlias = Literal["mean", "avg", "average", "median", "const", "constant", "mode", "most_frequent"]
 PowerTransformStrategy:TypeAlias = Literal["yeo_johnson", "yeojohnson", "box_cox", "boxcox"]
+WeightStrategy: TypeAlias = Literal["none", "balanced", "custom"]
 
 # --- Models ---
 BinaryModels:TypeAlias = Literal["logistic", "lr", "lightgbm", "lgbm", "xgboost", "xgb", "random_forest", "rf"]
@@ -53,7 +54,7 @@ CommonContiDist:TypeAlias = Literal["norm", "lognorm", "truncnorm", "uniform", "
 
 # --- Other ---
 ZeroOneCombineRules = Literal["union", "intersection", "same"]
-SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "string", "other/unknown"]
+SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "list", "string", "other/unknown"]
 
 ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "add_func", "filter", "classif"
                                , "regression"]

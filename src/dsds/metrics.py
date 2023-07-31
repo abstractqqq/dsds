@@ -1,22 +1,62 @@
+from typing import Tuple, Optional, Union
+from .type_alias import WeightStrategy
 import numpy as np 
 import polars as pl
 import logging
-from typing import Tuple, Optional, Union
 
 logger = logging.getLogger(__name__)
 
 # No need to do length checking (len(y_1) == len(y_2)) because NumPy / Polars will complain for us.
-# Everything here is essentially fun stuff.
-# Ideally speaking, you should never convert things to dataframes when you compute these metrics.
-# But using only NumPy means we loss parallelism, and using Python concurrent module will not help
-# in this case (haha Python). 
-# So funnily enough, we can convert things to dataframes and get a performance boost.
-# Ideally, all of these should be re-written in Rust using some kind of parallel stuff in Rust.
+
+def get_sample_weight(
+    y_actual:np.ndarray
+    , strategy:WeightStrategy="balanced"
+    , weight_dict:Optional[dict[int, float]] = None
+) -> np.ndarray:
+    '''
+    Infers sample weight from y_actual. All classes in y_actual must be "dense" categorical target variable, meaning 
+    numbers starting in the list [0, ..., (n_classes - 1)], where the i th entry is the number of records in class_i.
+    If a conversion from sparse target to dense target is needed, see `dsds.prescreen.sparse_to_dense_target`.
+
+    Important: by assumption, target ranges from 0, ..., to (n_classes - 1) and each reprentative must have at least 1 
+    instance. If target is encoded otherwise, unexpected results may be returned.
+
+    Parameters
+    ----------
+    y_actual
+        Actual labels
+    strategy
+        One of 'balanced', 'none', or 'custom'. If 'none', an array of ones will be returned. If 'custom', then a 
+        weight_dict must be provided.
+    weight_dict
+        Dictionary of weights. If there are n_classes, keys must range from 0 to n_classes-1. Values will be the weights
+        for the classes.
+    '''
+    out = np.ones(shape=y_actual.shape)
+    if strategy == "none":
+        return out
+    elif strategy == "balanced":
+        weights = len(y_actual) / (np.unique(y_actual).size * np.bincount(y_actual))
+        for i, w in enumerate(weights):
+            out[y_actual == i] = w
+        return out
+    elif strategy == "custom":
+        if weight_dict is None:
+            raise ValueError("If strategy == 'custom', then weight_dict must be provided.")
+        for i in range(len(weight_dict)):
+            w = weight_dict.get(i, None)
+            if w is None:
+                raise ValueError("The input `weight_dict` must provide the weights for all class, with keys "
+                                 "ranging from 0 to n_classes-1.")
+            out[y_actual == i] = w
+        return out
+    else:
+        raise TypeError(f"Unknown weight strategy: {strategy}.")
 
 def _flatten_input(y_actual: np.ndarray, y_predicted:np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     y_a = y_actual.ravel()
     if y_predicted.ndim == 2:
-        y_p = y_predicted[:, 1] # .ravel()
+        y_p = y_predicted[:, -1] # .ravel()
     else:
         y_p = y_predicted.ravel()
 
@@ -39,7 +79,6 @@ def get_tp_fp(
     ratio
         If true, return true positive rate and false positive rate at the threholds; if false return the count
     '''
-   
     df = pl.from_records((y_predicted, y_actual), schema=["predicted", "actual"])
     all_positives = pl.lit(np.sum(y_actual))
     n = len(df)
@@ -80,9 +119,8 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True)
     
     # This currently has difference of magnitude 1e-10 from the sklearn implementation, 
     # which is likely caused by sklearn adding zeros to the front? Not 100% sure
-    # This is about 50% faster than sklearn's implementation. I know, not that this matters
-    # that much...
-    
+    # This is about 50% faster than sklearn's implementation. I know. This does not matter
+    # that much, unless you are repeatedly computing roc_auc for some reasons.
     y_a, y_p = _flatten_input(y_actual, y_predicted)
     # No need to check if length matches because Polars will complain for us
     if check_binary:
@@ -112,7 +150,7 @@ def logloss(
     y_predicted
         Predicted probabilities
     sample_weights
-        An array of size (n_sample, ) which provides weights to each sample
+        An array of size (len(y_actual), ) which provides weights to each sample
     min_prob
         Minimum probability to clip so that we can prevent illegal computations like 
         log(0). If p < min_prob, log(min_prob) will be computed instead.
@@ -138,12 +176,12 @@ def logloss(
     else:
         s = sample_weights.ravel()
         return pl.from_records((y_a, y_p, s), schema=["y", "p", "s"]).with_columns(
-            l = pl.col("p").clip_min(min_prob).log(),
-            o = (1- pl.col("p")).clip_min(min_prob).log(),
+            l = pl.col("s") * pl.col("p").clip_min(min_prob).log(),
+            o = pl.col("s") * (1- pl.col("p")).clip_min(min_prob).log(),
             ny = 1 - pl.col("y")
         ).select(
-            pl.lit(-1, dtype=pl.Float64)
-            * (pl.col("s") * (pl.col("y") * pl.col("l") + pl.col("ny") * pl.col("o"))).mean()
+            pl.lit(-1, dtype=pl.Float64) 
+            * (pl.col("y").dot(pl.col("l")) + pl.col("ny").dot(pl.col("o"))) / len(y_a)
         ).item(0,0)
     
 def binary_psi(
@@ -188,8 +226,8 @@ def binary_psi(
         b = pl.count()
     )
     return s1_summary.join(s2_summary, on="category").with_columns(
-        a = pl.max(pl.col("a"), 0.00001)/len(s1),
-        b = pl.max(pl.col("b"), 0.00001)/len(s2)
+        a = pl.max_horizontal(pl.col("a"), pl.lit(0.00001))/len(s1),
+        b = pl.max_horizontal(pl.col("b"), pl.lit(0.00001))/len(s2)
     ).with_columns(
         a_minus_b = pl.col("a") - pl.col("b"),
         ln_a_on_b = (pl.col("a")/pl.col("b")).log()
@@ -212,11 +250,11 @@ def mse(
     y_predicted
         Predicted target
     sample_weights
-        An array of size (n_sample, ) which provides weights to each sample
+        An array of size (len(y_actual), ) which provides weights to each sample
     '''
     diff = y_actual - y_predicted
     if sample_weights is None:
-        return np.mean(diff.dot(diff))
+        return diff.dot(diff)/len(diff)
     else:
         return (sample_weights/(len(diff))).dot(diff.dot(diff))
     
@@ -238,7 +276,7 @@ def mae(
     y_predicted
         Predicted target
     sample_weights
-        An array of size (n_sample, ) which provides weights to each sample
+        An array of size (len(y_actual), ) which provides weights to each sample
     '''
     diff = np.abs(y_actual - y_predicted)
     if sample_weights is None:
@@ -259,7 +297,6 @@ def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     y_predicted
         Predicted target
     '''
-
     # This is trivial, and we won't really have any performance gain by using Polars' or other stuff.
     # This is here just for completeness
     d1 = y_actual - y_predicted
@@ -305,17 +342,13 @@ def huber_loss(
     y_predicted
         Predicted target
     delta
-        The delta parameter in huber loss
+        The delta parameter in huber loss. Must be positive.
     sample_weights
-        An array of size (n_sample, ) which provides weights to each sample
+        An array of size (len(y_actual), ) which provides weights to each sample
     '''
-    
     y_a = y_actual.ravel()
     y_p = y_predicted.ravel()
     
-    if delta <= 0:
-        raise ValueError("Delta in Huber loss must be positive.")
-
     abs_diff = np.abs(y_a - y_p)
     mask = abs_diff <= delta
     not_mask = ~mask

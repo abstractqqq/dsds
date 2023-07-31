@@ -243,7 +243,7 @@ def multicat_one_hot_encode(
     └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
     '''
     _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
-    temp = df.lazy().select(cols).groupby(1).agg(
+    temp = df.lazy().select(cols).groupby(pl.lit(1)).agg(
         pl.all().str.split(delimiter).explode().unique().sort()
     ).select(cols)
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
@@ -295,8 +295,8 @@ def ordinal_auto_encode(
     else:
         ordinal_list = get_string_cols(df, exclude=exclude)
 
-    temp = df.lazy().select(ordinal_list).groupby(1).agg(
-        pl.all().unique().sort(descending=descending) 
+    temp = df.lazy().select(ordinal_list).groupby(pl.lit(1)).agg(
+        pl.all().unique().sort(descending=descending)
     ).select(ordinal_list)
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]

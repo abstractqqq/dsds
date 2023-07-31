@@ -333,7 +333,7 @@ def _f_score(
         df.lazy().groupby(target).agg(step_one_expr)
         .select(
             pl.col("cnt").sum().alias("n_samples")
-            , pl.col(target).len().alias("n_classes")
+            , pl.col(target).count().alias("n_classes")
             , *step_two_expr
         ).collect()
     )
@@ -425,7 +425,6 @@ def f_score_selector(
     top_k
         The top_k features will ke kept
     '''
-    
     if isinstance(df, pl.LazyFrame):
         input_data:pl.DataFrame = df.collect()
     else:
@@ -541,7 +540,7 @@ def mrmr(
     selected = [nums[top_idx]]
     pbar = tqdm(total=output_size, desc = f"MRMR, {s}")
     pbar.update(1)
-    for j in range(1, output_size): 
+    for j in range(1, output_size):
         argmax = -1
         current_max = -1
         last_selected_col = df_local.drop_in_place(selected[-1])
