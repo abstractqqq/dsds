@@ -104,9 +104,9 @@ def one_hot_encode(
         str_cols = get_string_cols(df)
 
     if isinstance(df, pl.LazyFrame):
-        temp = df.lazy().select(str_cols).groupby(1).agg(
-            pl.all().unique().sort()
-        ).select(str_cols) # Do this to minimize the number of collects
+        temp = df.lazy().select(str_cols).select(
+            pl.all().unique().implode().list.sort()
+        )
         exprs:list[pl.Expr] = []
         start_index = int(drop_first)
         one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
@@ -172,9 +172,9 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
         Either a lazy or eager Polars DataFrame
     '''
     binary_list = get_unique_count(df).filter(pl.col("n_unique") == 2).get_column("column")
-    temp = df.lazy().select(binary_list).groupby(1).agg(
-            pl.all().unique().sort()
-        ).select(binary_list)
+    temp = df.lazy().select(binary_list).select(
+            pl.all().unique().implode().list.sort()
+        )
     exprs:list[pl.Expr] = []
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
@@ -191,14 +191,16 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
 def multicat_one_hot_encode(
     df:PolarsFrame
     , cols: list[str]
-    , delimiter: str
+    , delimiter: str = "|"
     , drop_first: bool = False
 ) -> PolarsFrame:
     '''
     Expands multicategorical columns into several one-hot-encoded columns respectively. A multicategorical column is a 
     column with strings like `aaa|bbb|ccc`, which means this row belongs to categories aaa, bbb, and ccc. Typically, 
     such a column will contain strings separated by a delimiter. This method will collect all unique strings separated 
-    by the delimiter and one hot encode the corresponding column.
+    by the delimiter and one hot encode the corresponding column, e.g. by checking if `aaa` is contained in values of this
+    column. Nulls will be mapped to 0 in the generated one-hot columns. If you wish to have a null mask, take a look 
+    at `dsds.encoders.missing_indicator`.
 
     This will be remembered by blueprint by default.
 
@@ -243,8 +245,8 @@ def multicat_one_hot_encode(
     └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
     '''
     _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
-    temp = df.lazy().select(cols).groupby(pl.lit(1)).agg(
-        pl.all().str.split(delimiter).explode().unique().sort()
+    temp = df.lazy().select(cols).select(
+        pl.all().str.split("|").explode().unique().implode().list.sort()
     ).select(cols)
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
@@ -255,7 +257,7 @@ def multicat_one_hot_encode(
         if len(u) > 1:
             exprs.extend(
                 pl.when(pl.col(c.name).str.contains(u[i])).then(one).otherwise(zero).alias(c.name + delimiter + u[i])
-                for i in range(start_index, len(u))
+                for i in range(start_index, len(u)) if isinstance(u[i], str)
             )
         else:
             logger.info(f"The multicategorical column {c.name} seems to have only 1 unique value. Dropped.")
@@ -295,9 +297,9 @@ def ordinal_auto_encode(
     else:
         ordinal_list = get_string_cols(df, exclude=exclude)
 
-    temp = df.lazy().select(ordinal_list).groupby(pl.lit(1)).agg(
-        pl.all().unique().sort(descending=descending)
-    ).select(ordinal_list)
+    temp = df.lazy().select(ordinal_list).select(
+        pl.all().unique().implode().list.sort(descending=descending)
+    )
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]
         mapping = {t.name: uniques, "to": list(range(len(uniques)))}

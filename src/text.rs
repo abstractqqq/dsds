@@ -55,14 +55,14 @@ const STOPWORDS:[&str; 179] = ["i", "me", "my", "myself", "we", "our", "ours", "
 pub fn rs_cnt_vectorizer(
     pydf: PyDataFrame
     , c: &str
-    , replace: &str
     , min_dfreq:f32
     , max_dfreq:f32
-    , max_features:u32
+    , max_word_per_doc:u32
+    , max_feautures: u32
 ) -> PyResult<PyDataFrame> {
 
     let df: DataFrame = pydf.into();
-    let df: DataFrame = count_vectorizer(df, c, replace, min_dfreq, max_dfreq, max_features)
+    let df: DataFrame = count_vectorizer(df, c, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(df))
 
@@ -82,14 +82,14 @@ pub fn rs_snowball_stem(word:&str, no_stopwords:bool) -> PyResult<String> {
 pub fn rs_get_stem_table(
     pydf: PyDataFrame
     , c: &str
-    , replace: &str
     , min_dfreq:f32
     , max_dfreq:f32
-    , max_features: u32
+    , max_word_per_doc: u32
+    , max_feautures: u32
 ) -> PyResult<PyDataFrame> {
 
     let df: DataFrame = pydf.into();
-    let out: DataFrame = get_stem_table(df, c, replace, min_dfreq, max_dfreq, max_features)
+    let out: DataFrame = get_stem_table(df, c, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(out))
 
@@ -130,10 +130,10 @@ pub fn stem_on_series(
 pub fn get_stem_table(
     df: DataFrame
     , c: &str
-    , replace: &str
     , min_dfreq:f32
     , max_dfreq:f32
-    , max_features: u32
+    , max_word_per_doc: u32
+    , max_feautures: u32
 ) -> PolarsResult<DataFrame> {
 
     let height: f32 = df.height() as f32;
@@ -142,8 +142,7 @@ pub fn get_stem_table(
         .with_row_count(&"row_nr", None)
         .select([
             col(&"row_nr")
-            , col(c).str().replace_all(lit(replace), lit(""), false).str().to_lowercase()
-                .str().split(&" ").list().head(lit(max_features))
+            , col(c).str().to_lowercase().str().split(&" ").list().head(lit(max_word_per_doc))
         ]).explode([col(c)])
         .filter(col(c).is_not_null())
         .select([
@@ -157,7 +156,8 @@ pub fn get_stem_table(
             , (col(&"row_nr").n_unique().cast(DataType::Float32) / lit(height)).alias(&"doc_freq")
         ]).filter(
             (col(&"doc_freq").gt_eq(min_dfreq)).and(col(&"doc_freq").lt_eq(max_dfreq))
-        ).select([
+        ).top_k(max_feautures, [col(&"doc_freq")], [true], true, false)
+        .select([
             col("stemmed")
             , col(c)
             , col(&"doc_freq")
@@ -169,14 +169,21 @@ pub fn get_stem_table(
 pub fn count_vectorizer(
     df: DataFrame
     , c: &str
-    , replace: &str
     , min_dfreq:f32
     , max_dfreq:f32
-    , max_features: u32
+    , max_word_per_doc: u32
+    , max_feautures: u32
 ) -> PolarsResult<DataFrame> {
 
-    let mut stemmed_vocab: DataFrame = get_stem_table(df.clone(), c, replace, min_dfreq, max_dfreq, max_features)?
-                                        .sort(["stemmed"], false, false)?;
+    let mut stemmed_vocab: DataFrame = get_stem_table(
+                                                df.clone(), 
+                                                c, 
+                                                min_dfreq, 
+                                                max_dfreq, 
+                                                max_word_per_doc, 
+                                                max_feautures
+                                        )?.sort(["stemmed"], false, false)?;
+
     let mut exprs: Vec<Expr> = Vec::with_capacity(stemmed_vocab.height());
     
     let temp: Series = stemmed_vocab.drop_in_place("stemmed")?;

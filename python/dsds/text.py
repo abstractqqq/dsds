@@ -1,14 +1,12 @@
-from typing import Final
+from typing import Final, Tuple
 from .type_alias import PolarsFrame
 import polars as pl
 from nltk.stem.snowball import SnowballStemmer
+from dsds._rust import rs_cnt_vectorizer, rs_get_stem_table, rs_snowball_stem
 
-# Right now, settle with NLTK.
-# I will look into https://crates.io/crates/rust-stemmers
-# I am not confident enough in my Rust to create a rust-Python mix project as of now.
-# Using NLTK for now. I see huge potential for speed up as NLTK is mostly
-# written in Python.
-# I don't expect using Rust to change the code by much.
+# Right now, only English. 
+# Only snowball stemmer is availabe because I can only find snonball stemmer's implementation in Rust.
+# It will take too much effort on my part to add other languages. So the focus is only English for now.
 
 STOPWORDS:Final[pl.Series] = pl.Series(['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves'
              , "you're", "you've", "you'll", "you'd", 'your', 'yours', 'yourself'
@@ -33,13 +31,21 @@ STOPWORDS:Final[pl.Series] = pl.Series(['i', 'me', 'my', 'myself', 'we', 'our', 
              , "shan't", 'shouldn', "shouldn't", 'wasn', "wasn't", 'weren', "weren't"
              , 'won', "won't", 'wouldn', "wouldn't", 'you'])
 
-def count_vectorizer(
+def str_col_cleaner(
+    cols: list[str],
+    replace_by: list[Tuple[str, str]],
+    slice: Tuple[int, int],
+    lower:bool = True,
+    strip:bool = True
+):
+    pass
+
+def py_count_vectorizer(
     df: pl.DataFrame
     , c: str
-    , tokenizer: str = " "
-    , replace: str = '[^\s\w\d%]'
     , min_dfreq: float = 0.05
     , max_dfreq: float = 0.95
+    , max_word_per_doc: int = 3000
     , max_features: int = 3000
 ) -> pl.DataFrame:
     
@@ -47,7 +53,7 @@ def count_vectorizer(
     summary = (
         df.lazy().with_row_count().select(
             pl.col("row_nr")
-            , pl.col(c).str.replace_all(replace, '').str.to_lowercase().str.split(by=tokenizer).list.head(max_features)
+            , pl.col(c).str.to_lowercase().str.split(" ").list.head(max_word_per_doc)
         ).explode(c)
         .filter((~pl.col(c).is_in(STOPWORDS)) & (pl.col(c).str.lengths() > 2) & (pl.col(c).is_not_null()))
         .select(
@@ -59,7 +65,8 @@ def count_vectorizer(
             , doc_freq = pl.col("row_nr").n_unique() / pl.lit(len(df))
         ).filter(
             (pl.col("doc_freq")).is_between(min_dfreq, max_dfreq, closed='both')
-        ).select(
+        ).top_k(k=max_features, by=pl.col("doc_freq"))
+        .select(
             pl.col(c)
             , pl.col("stemmed")
             , pl.col("doc_freq")
@@ -70,5 +77,27 @@ def count_vectorizer(
     for k,v in zip(summary["stemmed"], summary[c]):
         regex = "(" + "|".join(v) + ")"
         exprs.append(pl.col(c).str.count_match(regex).suffix(f"::cnt_{k}"))
+
+    return df.with_columns(exprs).drop(c)
+
+def count_vectorizer(
+    df: PolarsFrame
+    , c: str
+    , min_dfreq: float = 0.05
+    , max_dfreq: float = 0.95
+    , max_word_per_doc: int = 3000
+    , max_features: int = 500
+) -> PolarsFrame:
+    
+    df_local = df.lazy().select(c).collect()
+    ref:pl.DataFrame = rs_get_stem_table(df_local, c, min_dfreq, max_dfreq, max_word_per_doc, max_features)\
+                        .sort("stemmed")
+
+    exprs = []
+    for s, v in zip(ref.get_column("stemmed"), ref.get_column(c)):
+        pattern = f"({'|'.join(v)})"
+        exprs.append(
+            pl.col(c).str.count_match(pattern).suffix(f"::cnt_{s}")
+        )
 
     return df.with_columns(exprs).drop(c)
