@@ -351,7 +351,8 @@ def train_test_split(
         df_test = df.filter(pl.col("row_nr") >= pl.col("row_nr").max() * train_frac)
         return df_train.select(keep), df_test.select(keep)
 
-# Make a monthly split for monthly progression instead of this.
+# Make a monthly split for monthly progression version too.
+
 def time_series_split(
     df: PolarsFrame
     , n_splits: int = 5
@@ -361,7 +362,7 @@ def time_series_split(
     , gap: int = 0
 ) -> Iterator[Tuple[pl.DataFrame, pl.DataFrame]]:
     '''
-    Creates time series validator as an iterator of (train, test) eager frames.
+    Creates a time series validator as an iterator of (train, test) eager frames.
 
     Parameters
     ----------

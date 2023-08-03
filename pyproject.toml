@@ -1,16 +1,33 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["maturin>=1.1,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "dsds"
-version = "0.0.24"
+version = "0.0.25"
 requires-python = ">=3.9"
-readme = "README.md"
-description = "A feature screening, selection, EDA, pipeline building and management tool centered around Polars dataframe."
 authors = [
     {name = "Tianren Qin", email = "tq9695@gmail.com"}
 ]
+
 license = {file = "LICENSE"}
+
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Rust",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+]
+
 dependencies = [
     "polars >= 0.18.9",
     "scipy >= 1.11.1",
@@ -19,33 +36,21 @@ dependencies = [
     "typing_extensions >= 4.0.1"
 ]
 
-keywords = ["data pipeline", "EDA", "feature-screening", "feature-selection"]
-
-classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
-  "Environment :: Console",
-  "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
-  "Operating System :: OS Independent",
-  "Programming Language :: Python",
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
-  "Topic :: Scientific/Engineering",
-]
-
 [project.optional-dependencies]
 scikit-learn = ["scikit-learn"]
 xgboost = ["xgboost"]
 lightgbm = ["lightgbm"]
+# nltk = ["nltk"]
 all = ["scikit-learn", "xgboost", "lightgbm"]
 
-[project.urls]
-"Homepage" = "https://github.com/abstractqqq/dsds"
+keywords = ["data-pipeline", "EDA", "feature-screening", "feature-selection"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "dsds._rust"
+features = ["pyo3/extension-module"]
 
 [tool.ruff]
 line-length = 120
 fix = true
-src = ["src"]
+src = ["python"]

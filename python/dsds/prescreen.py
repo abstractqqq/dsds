@@ -23,7 +23,6 @@ from scipy.stats import (
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 from math import comb
-import numpy as np
 import re
 import polars.selectors as cs
 import polars as pl
@@ -540,7 +539,7 @@ def pattern_inferral(
     , sample_count:int = 100_000
     , sample_rounds:int = 3
     , threshold:float = 0.9
-    , count_null:bool = True
+    , count_null:bool = False
 ) -> list[str]:
     '''
     Find all string columns whose elements reasonably match the given pattern. The match logic can 
@@ -570,7 +569,7 @@ def pattern_inferral(
     strs = get_string_cols(df)
     df_local = lazy_sample(df.lazy(), sample_frac=sample_frac).collect()    
     matches:set[str] = set(strs)
-    sample_size = min(sample_count, len(df_local))
+    sample_size = min(sample_count, len(df_local)-1)
     for _ in range(sample_rounds):
         df_sample = df_local.sample(n = sample_size)
         fail = df_sample.select(
@@ -594,7 +593,7 @@ def pattern_removal(
     , sample_count:int = 100_000
     , sample_rounds:int = 3
     , threshold:float = 0.9
-    , count_null:bool = True
+    , count_null:bool = False
 ) -> PolarsFrame:
     
     remove_cols = pattern_inferral(
@@ -618,7 +617,7 @@ def email_inferral(
     , sample_count:int = 100_000
     , sample_rounds:int = 3
     , threshold:float = 0.9
-    , count_null:bool = True
+    , count_null:bool = False
 ) -> list[str]:
     # Why does this regex not work?
     # r'([A-Za-z0-9]+[.-_])*[A-Za-z0-9]+@[A-Za-z0-9-]+(\.[A-Z|a-z]{2,})+'
@@ -638,7 +637,7 @@ def email_removal(
     , sample_count:int = 100_000
     , sample_rounds:int = 3
     , threshold:float = 0.9
-    , count_null:bool = True
+    , count_null:bool = False
 ) -> PolarsFrame:
     
     emails = email_inferral(df, sample_pct, sample_count, sample_rounds, threshold, count_null)

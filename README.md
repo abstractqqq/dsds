@@ -66,11 +66,7 @@ Python 3.9, 3.10, 3.11+ is recommended. We are forward looking.
 
 It should run on all versions >= 3.9. But I haven't tested 3.9 and 3.10 thoroughly.
 
-pip install polars scipy numpy
-
-pip install dsds[all]
-
-Note: scikit-learn, lightgbm, xgboost are needed for full functionalities. 
+Note: scikit-learn, lightgbm, xgboost and nltk are needed for full functionalities. 
 
 # Why DSDS?
 

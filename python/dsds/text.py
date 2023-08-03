@@ -1,6 +1,16 @@
-import polars as pl 
+from typing import Final
+from .type_alias import PolarsFrame
+import polars as pl
+from nltk import PorterStemmer
 
-STOPWORDS = ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you'
+# Right now, settle with NLTK.
+# I will look into https://crates.io/crates/rust-stemmers
+# I am not confident enough in my Rust to create a rust-Python mix project as of now.
+# Using NLTK for now. I see huge potential for speed up as NLTK is mostly
+# written in Python.
+# I don't expect using Rust to change the code by much.
+
+STOPWORDS:Final[pl.Series[str]] = pl.Series(['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves'
              , "you're", "you've", "you'll", "you'd", 'your', 'yours', 'yourself'
              , 'yourselves', 'he', 'him', 'his', 'himself', 'she', "she's", 'her'
              , 'hers', 'herself', 'it', "it's", 'its', 'itself', 'they', 'them'
@@ -21,7 +31,27 @@ STOPWORDS = ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you'
              , "hadn't", 'hasn', "hasn't", 'haven', "haven't", 'isn', "isn't", 'ma'
              , 'mightn', "mightn't", 'mustn', "mustn't", 'needn', "needn't", 'shan'
              , "shan't", 'shouldn', "shouldn't", 'wasn', "wasn't", 'weren', "weren't"
-             , 'won', "won't", 'wouldn', "wouldn't"]
+             , 'won', "won't", 'wouldn', "wouldn't", 'you'])
+
+
+
+def count_vectorizer(
+    df: PolarsFrame
+    , c: str
+    , replace: str = '[^\s\w\d%]'
+    , min_freq: float = 0.05
+    , max_freq: float = 0.95
+    , trim_after: int = -1
+    , drop_original: bool = True
+) -> PolarsFrame:
+    
+    # first step in cleaning the data, perform split, so now it is a []
+    uniques = df.lazy().select(
+        pl.col(c).str.replace_all(replace, '').str.to_lowercase().str.split(by=" ")
+        .list.unique().explode().unique()
+    ).filter(~pl.col(c).is_in(STOPWORDS)).collect().drop_in_place(c)
+
+
 
 # # DEVELOPMENT HALTED FOR NOW.
 
