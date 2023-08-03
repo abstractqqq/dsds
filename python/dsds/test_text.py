@@ -40,29 +40,29 @@ def count_vectorizer(
     , replace: str = '[^\s\w\d%]'
     , min_dfreq: float = 0.05
     , max_dfreq: float = 0.95
-    , max_tokens: int = 3000
+    , max_features: int = 3000
 ) -> pl.DataFrame:
     
     snow = SnowballStemmer(language="english")
     summary = (
-        df.lazy().with_row_count(name="row_num", offset=1).select(
-            pl.col("row_num"),
-            pl.col(c).str.replace_all(replace, '').str.to_lowercase().str.split(by=tokenizer).list.head(max_tokens)
+        df.lazy().with_row_count().select(
+            pl.col("row_nr")
+            , pl.col(c).str.replace_all(replace, '').str.to_lowercase().str.split(by=tokenizer).list.head(max_features)
         ).explode(c)
         .filter((~pl.col(c).is_in(STOPWORDS)) & (pl.col(c).str.lengths() > 2) & (pl.col(c).is_not_null()))
-        .groupby("row_num", c).count().select(
-            pl.col("row_num")
-            , pl.col(c)
+        .select(
+            pl.col(c)
             , pl.col(c).apply(snow.stem, return_dtype=pl.Utf8).alias("stemmed")
-            , pl.col("count")/len(df)
+            , pl.col("row_nr")
         ).groupby("stemmed").agg(
             pl.col(c).unique()
-            , pl.col("count").sum()
+            , doc_freq = pl.col("row_nr").n_unique() / pl.lit(len(df))
         ).filter(
-            (pl.col("count")).is_between(min_dfreq, max_dfreq, closed='none')
+            (pl.col("doc_freq")).is_between(min_dfreq, max_dfreq, closed='both')
         ).select(
             pl.col(c)
             , pl.col("stemmed")
+            , pl.col("doc_freq")
         ).sort(by="stemmed").collect()
     )
 

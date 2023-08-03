@@ -136,32 +136,27 @@ pub fn get_stem_table(
     , max_features: u32
 ) -> PolarsResult<DataFrame> {
 
-    let height = df.height() as u64;
+    let height: f32 = df.height() as f32;
     Ok(
         df.lazy()
-        .with_row_count("row_num", Some(1))
+        .with_row_count(&"row_nr", None)
         .select([
-            col("row_num")
+            col(&"row_nr")
             , col(c).str().replace_all(lit(replace), lit(""), false).str().to_lowercase()
-                .str().split(" ").list().head(lit(max_features))
-        ]).explode([col(c)]).groupby([
-            col("row_num")
-            , col(c)
-        ]).agg([
-            count()
-        ]).filter(col(c).is_not_null())
+                .str().split(&" ").list().head(lit(max_features))
+        ]).explode([col(c)])
+        .filter(col(c).is_not_null())
         .select([
-            col("row_num")
-            , col(c)
-            , col(c).map(stem_on_series, GetOutput::from_type(DataType::Utf8)).alias("stemmed")
-            , (col(&"count").cast(DataType::Float32) / lit(height).cast(DataType::Float32)).alias(&"doc_freq")
+            col(c)
+            , col(c).map(stem_on_series, GetOutput::from_type(DataType::Utf8)).alias(&"stemmed")
+            , col(&"row_nr")
         ]).groupby([
-            col("stemmed")
+            col(&"stemmed")
         ]).agg([
             col(c).unique()
-            , col(&"doc_freq").sum()
+            , (col(&"row_nr").n_unique().cast(DataType::Float32) / lit(height)).alias(&"doc_freq")
         ]).filter(
-            (col(&"doc_freq").gt(min_dfreq)).and(col(&"doc_freq").lt(max_dfreq))
+            (col(&"doc_freq").gt_eq(min_dfreq)).and(col(&"doc_freq").lt_eq(max_dfreq))
         ).select([
             col("stemmed")
             , col(c)
