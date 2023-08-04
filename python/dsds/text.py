@@ -1,8 +1,11 @@
-from typing import Final, Tuple
-from .type_alias import PolarsFrame
+from typing import Final, Tuple, Union
+from .type_alias import (
+    PolarsFrame
+    , Stemmer
+)
 import polars as pl
-from nltk.stem.snowball import SnowballStemmer
-from dsds._rust import rs_cnt_vectorizer, rs_get_stem_table, rs_snowball_stem
+# from nltk.stem.snowball import SnowballStemmer
+from dsds._rust import rs_get_word_cnt_table, rs_snowball_stem, rs_levenshtein_dist
 
 # Right now, only English. 
 # Only snowball stemmer is availabe because I can only find snonball stemmer's implementation in Rust.
@@ -31,67 +34,160 @@ STOPWORDS:Final[pl.Series] = pl.Series(['i', 'me', 'my', 'myself', 'we', 'our', 
              , "shan't", 'shouldn', "shouldn't", 'wasn', "wasn't", 'weren', "weren't"
              , 'won', "won't", 'wouldn', "wouldn't", 'you'])
 
-def str_col_cleaner(
-    cols: list[str],
-    replace_by: list[Tuple[str, str]],
-    slice: Tuple[int, int],
-    lower:bool = True,
-    strip:bool = True
-):
-    pass
+def levenshtein_dist(s1:str, s2:str) -> int:
+    '''
+    Computes the Levenshtein distance between two strings. If you want ultimate speed, use 
+    `from dsds._rust import rs_levenshtein_dist`. This function is merely an ergonomic wrapper
+    in Python.
 
-def py_count_vectorizer(
-    df: pl.DataFrame
-    , c: str
-    , min_dfreq: float = 0.05
-    , max_dfreq: float = 0.95
-    , max_word_per_doc: int = 3000
-    , max_features: int = 3000
-) -> pl.DataFrame:
+    Parameters
+    ----------
+    s1
+        The first string
+    s2
+        The second string
+    '''
+    return rs_levenshtein_dist(s1,s2)
+
+def clean_str_cols(
+    df: PolarsFrame
+    , cols: Union[str, list[str]]
+    , pattern: str
+    , value: str = ""
+) -> PolarsFrame:
+    '''
+    Clean the strings in the given columns by replacing the pattern with the value.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Either a string representing a name of a column, or a list of column names
+    pattern
+        The regex pattern to replace
+    value
+        The value to replace with
+    '''
+    if isinstance(cols, str):
+        str_cols = [cols]
+    else:
+        str_cols = cols
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns([pl.col(c).str.replace_all(pattern, value) for c in str_cols])
+    return df.with_columns(pl.col(c).str.replace_all(pattern, value) for c in str_cols)
+
+# def py_count_vectorizer(
+#     df: pl.DataFrame
+#     , c: str
+#     , min_dfreq: float = 0.05
+#     , max_dfreq: float = 0.95
+#     , max_word_per_doc: int = 3000
+#     , max_features: int = 3000
+# ) -> pl.DataFrame:
     
-    snow = SnowballStemmer(language="english")
-    summary = (
-        df.lazy().with_row_count().select(
-            pl.col("row_nr")
-            , pl.col(c).str.to_lowercase().str.split(" ").list.head(max_word_per_doc)
-        ).explode(c)
-        .filter((~pl.col(c).is_in(STOPWORDS)) & (pl.col(c).str.lengths() > 2) & (pl.col(c).is_not_null()))
-        .select(
-            pl.col(c)
-            , pl.col(c).apply(snow.stem, return_dtype=pl.Utf8).alias("stemmed")
-            , pl.col("row_nr")
-        ).groupby("stemmed").agg(
-            pl.col(c).unique()
-            , doc_freq = pl.col("row_nr").n_unique() / pl.lit(len(df))
-        ).filter(
-            (pl.col("doc_freq")).is_between(min_dfreq, max_dfreq, closed='both')
-        ).top_k(k=max_features, by=pl.col("doc_freq"))
-        .select(
-            pl.col(c)
-            , pl.col("stemmed")
-            , pl.col("doc_freq")
-        ).sort(by="stemmed").collect()
-    )
+#     snow = SnowballStemmer(language="english")
+#     summary = (
+#         df.lazy().with_row_count().select(
+#             pl.col("row_nr")
+#             , pl.col(c).str.to_lowercase().str.split(" ").list.head(max_word_per_doc)
+#         ).explode(c)
+#         .filter((~pl.col(c).is_in(STOPWORDS)) & (pl.col(c).str.lengths() > 2) & (pl.col(c).is_not_null()))
+#         .select(
+#             pl.col(c)
+#             , pl.col(c).apply(snow.stem, return_dtype=pl.Utf8).alias("stemmed")
+#             , pl.col("row_nr")
+#         ).groupby("stemmed").agg(
+#             pl.col(c).unique()
+#             , doc_freq = pl.col("row_nr").n_unique() / pl.lit(len(df))
+#         ).filter(
+#             (pl.col("doc_freq")).is_between(min_dfreq, max_dfreq, closed='both')
+#         ).top_k(k=max_features, by=pl.col("doc_freq"))
+#         .select(
+#             pl.col(c)
+#             , pl.col("stemmed")
+#             , pl.col("doc_freq")
+#         ).sort(by="stemmed").collect()
+#     )
 
-    exprs = []
-    for k,v in zip(summary["stemmed"], summary[c]):
-        regex = "(" + "|".join(v) + ")"
-        exprs.append(pl.col(c).str.count_match(regex).suffix(f"::cnt_{k}"))
+#     exprs = []
+#     for k,v in zip(summary["stemmed"], summary[c]):
+#         regex = "(" + "|".join(v) + ")"
+#         exprs.append(pl.col(c).str.count_match(regex).suffix(f"::cnt_{k}"))
 
-    return df.with_columns(exprs).drop(c)
+#     return df.with_columns(exprs).drop(c)
 
-def count_vectorizer(
+def get_word_cnt_table(
     df: PolarsFrame
     , c: str
+    , stemmer:Stemmer = "snowball"
     , min_dfreq: float = 0.05
     , max_dfreq: float = 0.95
     , max_word_per_doc: int = 3000
     , max_features: int = 500
+) -> pl.DataFrame:
+    '''
+    A convenience function that returns the table used to compute word counts. The table has 3 columns:
+
+    (1) A column representing all stems found in the documents in df[c]
+
+    (2) A column representing all words that are mapped to these stems
+
+    (3) Document frequency of the stems
+
+    Parameters
+    ----------
+    See `dsds.text.count_vectorizer`
+    '''
+    return rs_get_word_cnt_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
+                                , max_dfreq, max_word_per_doc, max_features).sort("stemmed")
+
+def count_vectorizer(
+    df: PolarsFrame
+    , c: str
+    , stemmer:Stemmer = "snowball"
+    , min_dfreq: float = 0.05
+    , max_dfreq: float = 0.95
+    , max_word_per_doc: int = 3000
+    , max_features: int = 500
+    , persist:bool = False
 ) -> PolarsFrame:
+    '''
+    A word count vectorizer similar to sklearn's. In addition, 
     
-    df_local = df.lazy().select(c).collect()
-    ref:pl.DataFrame = rs_get_stem_table(df_local, c, min_dfreq, max_dfreq, max_word_per_doc, max_features)\
-                        .sort("stemmed")
+    (1) It performs stemming and counts the occurrences of all words that are stemmed to the same 
+    stem together.
+
+    (2) It doesn't convert data to sparse matrix and will output a PolarsFrame.
+
+    If counting for a given list of words is desired, see `dsds.transform.extract_word_count`.
+
+    Parameters
+    ----------
+    df
+        Either an eager or lazy dataframe. Note that if df is lazy, the column c will be collected.
+    c
+        Name of the document column
+    stemmer
+        Only "snowball" stemmer for English is available right now. Everything else will be mapped to no 
+        stemmer option.
+    min_dfreq
+        The minimum document frequency that a word must have. Document Frequency = Sum(Word in Doc) / # Documents
+    max_dfreq
+        The maximum document frequency above which a word will not be selected.
+    max_word_per_doc
+        The maximum word count for a document. The document will be truncated after this many words.
+    max_features
+        The maximum number of word count features to generate. This will take the top words with the highest 
+        frequencies
+    persist
+        If df is lazy, this step can be optionally persisted as part of the pipeline.
+    '''
+    ref: pl.DataFrame = rs_get_word_cnt_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
+                                , max_dfreq, max_word_per_doc, max_features).sort("stemmed")
 
     exprs = []
     for s, v in zip(ref.get_column("stemmed"), ref.get_column(c)):
@@ -99,5 +195,6 @@ def count_vectorizer(
         exprs.append(
             pl.col(c).str.count_match(pattern).suffix(f"::cnt_{s}")
         )
-
+    if persist and isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs).blueprint.drop([c])
     return df.with_columns(exprs).drop(c)

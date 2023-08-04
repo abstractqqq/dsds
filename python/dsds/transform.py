@@ -620,37 +620,6 @@ def extract_horizontally(
         return df.with_columns(exprs).drop(cols)
     return df.with_columns(exprs)
 
-def clean_str_cols(
-    df: PolarsFrame
-    , cols: Union[str, list[str]]
-    , pattern: str
-    , value: str = ""
-) -> PolarsFrame:
-    '''
-    Clean the strings in the given columns by replacing the pattern with the value.
-
-    This will be remembered by blueprint by default.
-
-    Parameters
-    ----------
-    df
-        Either a lazy or eager Polars dataframe
-    cols
-        Either a string representing a name of a column, or a list of column names
-    pattern
-        The regex pattern to replace
-    value
-        The value to replace with
-    '''
-    if isinstance(cols, str):
-        str_cols = [cols]
-    else:
-        str_cols = cols
-
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns([pl.col(c).str.replace_all(pattern, value) for c in str_cols])
-    return df.with_columns(pl.col(c).str.replace_all(pattern, value) for c in str_cols)
-
 def extract_word_count(
     df: PolarsFrame
     , cols: Union[str, list[str]]
@@ -670,7 +639,7 @@ def extract_word_count(
     cols
         Either a string representing a name of a column, or a list of column names.
     words
-        Words/Patterns to count for each record in the columns
+        Words/Patterns to count
     lower
         Whether a lowercase() step should be done before the count match
     drop_original

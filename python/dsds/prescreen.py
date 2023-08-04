@@ -433,7 +433,7 @@ def describe(
     pat = re.compile("^\d+%$")
     pctls = [d for d in desc if pat.search(d)]
     # Numerical stuff
-    nums = ["null_count", "mean", "std", "median"] + pctls
+    nums = ["count" ,"null_count", "mean", "std", "median"] + pctls
     # Combine all
     final = temp.transpose(include_header=True, column_names=desc).with_columns(
         pl.col(c).cast(pl.Float64) for c in nums

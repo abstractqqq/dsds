@@ -31,6 +31,7 @@ const STOPWORDS:[&str; 179] = ["i", "me", "my", "myself", "we", "our", "ours", "
                                 , "shan't", "shouldn", "shouldn't", "wasn", "wasn't", "weren", "weren't"
                                 , "won", "won't", "wouldn", "wouldn't", "you"];
 
+
 // fn split_offsets(len: usize, n: usize) -> Vec<(usize, usize)> {
 //     if n == 1 {
 //         vec![(0, len)]
@@ -55,6 +56,7 @@ const STOPWORDS:[&str; 179] = ["i", "me", "my", "myself", "we", "our", "ours", "
 pub fn rs_cnt_vectorizer(
     pydf: PyDataFrame
     , c: &str
+    , stemmer: &str
     , min_dfreq:f32
     , max_dfreq:f32
     , max_word_per_doc:u32
@@ -62,11 +64,65 @@ pub fn rs_cnt_vectorizer(
 ) -> PyResult<PyDataFrame> {
 
     let df: DataFrame = pydf.into();
-    let df: DataFrame = count_vectorizer(df, c, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
+    let df: DataFrame = count_vectorizer(df, c, stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(df))
 
 }
+
+#[pyfunction]
+pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> usize {
+
+    // Naive implementation
+    // if s1.is_empty() {
+    //     s2.len()
+    // } else if s2.is_empty() {
+    //     s1.len()
+    // } else if s1 == s2 {
+    //     0
+    // } else {
+    //     let s1_owned: String = s1.to_owned();
+    //     let s2_owned: String = s2.to_owned();
+    //     let (s1_head, s1_tail) = s1_owned.split_at(1);
+    //     let (s2_head, s2_tail) = s2_owned.split_at(1);
+    //     if s1_head == s2_head {
+    //         rs_levenshtein_dist(s1_tail, s2_tail)
+    //     } else {
+    //         1 + [rs_levenshtein_dist(s1_tail, &s2_owned)
+    //             , rs_levenshtein_dist(&s1_owned, s2_tail)
+    //             , rs_levenshtein_dist(s1_tail, s2_tail)].iter().min().unwrap()
+    //     }
+    // }
+    // But this is about 10x faster
+    // https://en.wikipedia.org/wiki/Wagner%E2%80%93Fischer_algorithm
+
+    let len1: usize = s1.len();
+    let len2: usize = s2.len();
+    let mut dp: Vec<Vec<usize>> = vec![vec![0; len2 + 1]; len1 + 1];
+
+    // Initialize the first row and first column
+    for i in 0..=len1 {
+        dp[i][0] = i;
+    }
+
+    for j in 0..=len2 {
+        dp[0][j] = j;
+    }
+
+    // Fill the dp matrix using dynamic programming
+    for (i, char1) in s1.chars().enumerate() {
+        for (j, char2) in s2.chars().enumerate() {
+            if char1 == char2 {
+                dp[i + 1][j + 1] = dp[i][j];
+            } else {
+                dp[i + 1][j + 1] = 1 + dp[i][j].min(dp[i][j + 1].min(dp[i + 1][j]));
+            }
+        }
+    }
+
+    dp[len1][len2]
+}
+
 
 #[pyfunction]
 pub fn rs_snowball_stem(word:&str, no_stopwords:bool) -> PyResult<String> {
@@ -79,9 +135,10 @@ pub fn rs_snowball_stem(word:&str, no_stopwords:bool) -> PyResult<String> {
 }
 
 #[pyfunction]
-pub fn rs_get_stem_table(
+pub fn rs_get_word_cnt_table(
     pydf: PyDataFrame
     , c: &str
+    , stemmer: &str
     , min_dfreq:f32
     , max_dfreq:f32
     , max_word_per_doc: u32
@@ -89,10 +146,9 @@ pub fn rs_get_stem_table(
 ) -> PyResult<PyDataFrame> {
 
     let df: DataFrame = pydf.into();
-    let out: DataFrame = get_stem_table(df, c, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
+    let out: DataFrame = get_word_cnt_table(df, c,stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(out))
-
 }
 
 #[inline]
@@ -109,12 +165,12 @@ pub fn snowball_stem(word:&str, no_stopwords:bool) -> Option<String> {
     }
 }
 
-pub fn stem_on_series(
+#[inline]
+fn snowball_on_series(
     words: Series
 ) -> Result<Option<Series>, PolarsError> {
 
     Ok(Some(
-        
         words.utf8()?.par_iter()
         .map(|word| {
             match word {
@@ -122,19 +178,24 @@ pub fn stem_on_series(
                 _ => Ok(None)
             } 
         }).collect::<PolarsResult<Utf8Chunked>>()?.into_series()
-
     ))
 }
 
 #[inline]
-pub fn get_stem_table(
+pub fn get_word_cnt_table(
     df: DataFrame
     , c: &str
+    , stemmer: &str
     , min_dfreq:f32
     , max_dfreq:f32
     , max_word_per_doc: u32
     , max_feautures: u32
 ) -> PolarsResult<DataFrame> {
+
+    let stemmer_expr:Expr = match stemmer.to_lowercase().as_str() {
+        "snowball" => col(c).map(snowball_on_series, GetOutput::from_type(DataType::Utf8)).alias(&"stemmed"),
+        _ => col(c).alias(&"stemmed")
+    };
 
     let height: f32 = df.height() as f32;
     Ok(
@@ -147,7 +208,7 @@ pub fn get_stem_table(
         .filter(col(c).is_not_null())
         .select([
             col(c)
-            , col(c).map(stem_on_series, GetOutput::from_type(DataType::Utf8)).alias(&"stemmed")
+            , stemmer_expr
             , col(&"row_nr")
         ]).groupby([
             col(&"stemmed")
@@ -165,19 +226,20 @@ pub fn get_stem_table(
     )
 }
 
-
 pub fn count_vectorizer(
     df: DataFrame
     , c: &str
+    , stemmer: &str
     , min_dfreq:f32
     , max_dfreq:f32
     , max_word_per_doc: u32
     , max_feautures: u32
 ) -> PolarsResult<DataFrame> {
 
-    let mut stemmed_vocab: DataFrame = get_stem_table(
+    let mut stemmed_vocab: DataFrame = get_word_cnt_table(
                                                 df.clone(), 
-                                                c, 
+                                                c,
+                                                stemmer,
                                                 min_dfreq, 
                                                 max_dfreq, 
                                                 max_word_per_doc, 
