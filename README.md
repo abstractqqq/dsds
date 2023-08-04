@@ -9,6 +9,7 @@ Welcome to DSDS, a data science package that aims to be an improvement over a su
 3. Cleaner pipeline construction and management (See examples below.)
 4. Compatible with Polars LazyFrames (Yes! Pipelines can enjoy the benefits of query optimization too!)
 5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. No nonsenses.
+6. Even more performance for all of the above with the power of Rust!
 
 DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
 
@@ -62,23 +63,12 @@ And yes, significant faster than NumPy in many instances:
 
 ## Dependencies
 
-Python 3.9, 3.10, 3.11+ is recommended. We are forward looking. 
+Python 3.9, 3.10, 3.11+ is recommended.
 
-It should run on all versions >= 3.9. But I haven't tested 3.9 and 3.10 thoroughly.
+It should run on all versions >= 3.9.
 
 Note: scikit-learn, lightgbm, xgboost and nltk are needed for full functionalities. 
 
-# Why DSDS?
-
-(1) Fast and furious
-
-(2) Simple, single-purpose, clean, optimized and fully typed functions
-
-(3) Easy to extend
-
-(4) Supports Polars LazyFrame, and therefore query optimizations in pipeline.
-
-(5) No boilerplate
 
 # Why the name DSDS?
 
@@ -88,9 +78,9 @@ I choose the name Dark Side of Data Science because data pipelines are like real
 
 You are right in the sense that this package does its best to separate itself from sklearn because of its focus and design. You do not need sklearn for pipelines, transformations, metrics, or the prescreen modules. However, for the fs (feature selection) module, right now there is no other high quality, tried and true package for random forest and logistic regression. The feature importance from these two models are used in some feature selection algorithms. Feel free to let me know if there are alternatives.
 
-# Why not write more functionalities in Rust?
+# Why not write more in Rust?
 
-Yes. I will. I am not confident enough with my Rust skill at the moment. I am slowly learning more Rust and hopefully we can delegate more heavy work to Rust. The immediate benefit of using more Rust will be (1) slightly more memory efficient, and (2) slightly faster. I do not expect huge speed boost because most code are written in Polars already. There are some cases when a lot of Python stuff is added (lists and for loops, etc.). But we definitely need to evaluate the gain by using Rust more carefully in the future.
+Yes. I am. I recently resumed working on traditional NLP, and this is an area where Rust really shines. It is well-known that Stemmers in NLTK has terrible performance, but stemming is an important operations for many traditional NLP algorithms. To combat this, I have decided to move stemming and other heavy string manipulations to Rust and leave only a very thin wrapper in Python. That said, using Rust can greatly improve performance in many other modules, not just dsds.text. But because development in Rust is relatively slow, I do not want to blindly 'rewrite' in Rust. In near future, I do not have plans to 'rewrite' in Rust, if performance gain is less than 10%.
 
 # Disclaimer
 

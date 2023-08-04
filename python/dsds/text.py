@@ -34,6 +34,23 @@ STOPWORDS:Final[pl.Series] = pl.Series(['i', 'me', 'my', 'myself', 'we', 'our', 
              , "shan't", 'shouldn', "shouldn't", 'wasn', "wasn't", 'weren', "weren't"
              , 'won', "won't", 'wouldn', "wouldn't", 'you'])
 
+def snowball_stem(word:str, no_stopword:bool=True, language="english") -> str:
+    '''
+    Stems the word using a snowball stemmer. If you want ultimate speed, use 
+    `from dsds._rust import rs_snowball_stem`. This function is merely an ergonomic wrapper
+    in Python. This function will always stem words with length <= 2 to empty string.
+
+    Parameters
+    ----------
+    word
+        The word to be stemmed
+    no_stopword
+        If true, English stopwords will be stemmed to the empty string
+    language
+        Right now English is the only option and the argument will not do anything.
+    '''
+    return rs_snowball_stem(word, no_stopword)
+
 def levenshtein_dist(s1:str, s2:str) -> int:
     '''
     Computes the Levenshtein distance between two strings. If you want ultimate speed, use 
