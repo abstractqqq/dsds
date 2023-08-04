@@ -203,7 +203,7 @@ pub fn get_word_cnt_table(
         .with_row_count(&"row_nr", None)
         .select([
             col(&"row_nr")
-            , col(c).str().to_lowercase().str().split(&" ").list().head(lit(max_word_per_doc))
+            , col(c).str().to_lowercase().str().extract_all(lit(r"(?u)\b\w\w+\b")).list().head(lit(max_word_per_doc))
         ]).explode([col(c)])
         .filter(col(c).is_not_null())
         .select([

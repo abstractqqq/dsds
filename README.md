@@ -57,9 +57,13 @@ Performance without sacrificing user experience.
 
 ![Screenshot](./pics/impute.PNG)
 
-And yes, significant faster than NumPy in many instances:
+And yes, significantly faster than NumPy in many cases
 
 ![Screenshot](./pics/logloss.PNG)
+
+Fast and Ergonomic traditional NLP. In comparison, Scikit-learn's CountVectorizer does not perform stemming, and treats words with the same stem differently, does not filter out useless words like 'an', and took 2.2s for the same run.
+
+![Screenshot](./pics/nlp.PNG)
 
 ## Dependencies
 
