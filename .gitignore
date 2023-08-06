@@ -6,6 +6,7 @@
 train.csv
 test.csv
 _notes/
+main.rs
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

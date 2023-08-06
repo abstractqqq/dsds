@@ -39,6 +39,9 @@ from itertools import combinations
 
 logger = logging.getLogger(__name__)
 
+# todo()!
+# 
+
 def corr(
     df: PolarsFrame
     , target: str
@@ -88,13 +91,11 @@ def corr_selector(
     complement = [f for f in df.columns if f not in nums]
     # select high corr columns
     to_select = corr(df, target, nums)\
-                .filter(pl.col("abs_corr") >= threshold)\
-                .get_column("column").to_list()
+                .filter(pl.col("abs_corr") >= threshold)["column"].to_list()
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")
     # add the complement set
     return select(df, to_select + complement, persist=True)
-
 
 def discrete_ig(
     df:pl.DataFrame
@@ -104,20 +105,20 @@ def discrete_ig(
 
     if isinstance(cols, list):
         discretes = cols
-    else: # If discrete_cols is not passed, infer it
+    else: # If discrete_cols is not passed, infer it.
         discretes = discrete_inferral(df, exclude=[target])
 
     # Compute target entropy. This only needs to be done once.
     target_entropy = df.groupby(target).agg(
                         (pl.count()).alias("prob(target)") / len(df)
-                    ).get_column("prob(target)").entropy()
+                    )["prob(target)"].entropy()
 
     # Get unique count for selected columns. This is because higher unique percentage may skew information gain
     unique_count = get_unique_count(df.select(discretes)).with_columns(
         (pl.col("n_unique") / len(df)).alias("unique_pct")
     ).rename({"column":"feature"})
 
-    conditional_entropy = (
+    conditional_entropy = [
         df.lazy().groupby(target, pred).agg(
             pl.count()
         ).with_columns(
@@ -129,7 +130,7 @@ def discrete_ig(
             * pl.col("prob(target,predictive)")).sum()).alias("conditional_entropy") 
         )
         for pred in discretes
-    )
+    ]
 
     return pl.concat(pl.collect_all(conditional_entropy))\
         .with_columns(
@@ -168,8 +169,7 @@ def discrete_ig_selector(
     discrete_cols = discrete_inferral(df, exclude=[target])
     complement = [f for f in df.columns if f not in discrete_cols]
     to_select = discrete_ig(input_data, target, discrete_cols)\
-        .top_k(by="information_gain", k = top_k)\
-        .get_column("feature").to_list()
+        .top_k(by="information_gain", k = top_k)["feature"].to_list()
 
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
@@ -217,7 +217,7 @@ def mutual_info(
     '''
     n = len(df)
     rng = np.random.default_rng(seed)
-    target_col = df.get_column(target).to_numpy().ravel()
+    target_col = df[target].to_numpy().ravel()
     unique_targets = np.unique(target_col)
     all_masks = {}
     for t in unique_targets:
@@ -295,8 +295,7 @@ def mutual_info_selector(
     nums = get_numeric_cols(df, exclude=[target])
     complement = [f for f in df.columns if f not in nums]
     to_select = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
-                .top_k(by="estimated_mi", k = top_k)\
-                .get_column("feature").to_list()
+                .top_k(by="estimated_mi", k = top_k)["feature"].to_list()
 
     logger.info(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")

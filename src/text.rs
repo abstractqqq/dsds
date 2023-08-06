@@ -8,7 +8,6 @@ use pyo3_polars::error::PyPolarsErr;
 use pyo3_polars::PyDataFrame;
 use std::iter::zip;
 
-
 const STOPWORDS:[&str; 179] = ["i", "me", "my", "myself", "we", "our", "ours", "ourselves"
                                 , "you're", "you've", "you'll", "you'd", "your", "yours", "yourself"
                                 , "yourselves", "he", "him", "his", "himself", "she", "she's", "her"
@@ -156,9 +155,9 @@ pub fn snowball_stem(word:&str, no_stopwords:bool) -> Option<String> {
 
     if (no_stopwords) & (STOPWORDS.contains(&word)) {
         None
-    } else if word.parse::<f64>().is_ok()  {
+    } else if word.parse::<f64>().is_ok() {
         None
-    }else {
+    } else {
         let mut env: SnowballEnv<'_> = SnowballEnv::create(word);
         algorithms::english_stemmer::stem(&mut env);
         Some(env.get_current().to_string())
@@ -199,6 +198,8 @@ pub fn get_ref_table(
     };
 
     let height: f32 = df.height() as f32;
+    let min_count: u32 = (height * min_dfreq).ceil() as u32;
+    let max_count: u32 = (height * max_dfreq).ceil() as u32;
     let output: DataFrame = df.select([c])?
     .lazy()
     .with_row_count(&"i", None)
@@ -206,25 +207,24 @@ pub fn get_ref_table(
         col(&"i")
         , col(c).str().extract_all(lit(r"(?u)\b\w\w+\b")).list().head(lit(max_word_per_doc))
     ]).explode([col(c)])
-    .filter(col(c).is_not_null().and(col(c).str().lengths().gt(lit(2))))
+    .filter(col(c).str().lengths().gt(lit(2)).and(col(c).is_not_null()))
     .select([
         col(&"i")
         , col(c)
-        , stemmer_expr // name is ref
+        , stemmer_expr // stemmed words, column name is ref
     ]).groupby([col(&"ref")])
     .agg([
         col(c).unique()
-        , (col(&"i").n_unique().cast(DataType::Float64) / lit(height)).alias(&"doc_freq")
-        , (lit(height + 1.)/(col(&"i").n_unique() + lit(1)).cast(DataType::Float64)).log(std::f64::consts::E).alias(&"smooth_idf")
+        , col(&"i").n_unique().alias(&"doc_cnt")
     ]).filter(
-        (col(&"doc_freq").gt_eq(min_dfreq)).and(col(&"doc_freq").lt_eq(max_dfreq))
-    ).top_k(max_feautures, [col(&"doc_freq")], [true], true, false)
+        (col(&"doc_cnt").gt_eq(min_count)).and(col(&"doc_cnt").lt_eq(max_count))
+    ).top_k(max_feautures, [col(&"doc_cnt")], [true], true, false)
     .select([
         col(&"ref")
-        // .list().sort(SortOptions::default()) No need to sort.
         , (lit("(") + col(c).list().join(&"|") + lit(")")).alias(&"captures")
-        , col(&"doc_freq")
-        , col(&"smooth_idf")
+        , (col(&"doc_cnt").cast(DataType::Float32)/lit(height)).alias(&"doc_freq")
+        , (lit(height + 1.)/(col(&"doc_cnt") + lit(1)).cast(DataType::Float64))
+            .log(std::f64::consts::E).alias(&"smooth_idf")
     ]).collect()?;
     
     Ok(output)
@@ -258,21 +258,21 @@ pub fn count_vectorizer(
         df_local = df.lazy().with_column(col(c).str().to_lowercase().alias(c)).collect()?;
     }
 
-    let mut stemmed_vocab: DataFrame = get_ref_table(
-                                                df_local.clone(),
-                                                c,
-                                                stemmer,
-                                                min_dfreq, 
-                                                max_dfreq, 
-                                                max_word_per_doc, 
-                                                max_feautures
-                                        )?.sort(["ref"], false, false)?;
+    let stemmed_vocab: DataFrame = get_ref_table(
+                                            df_local.clone(),
+                                            c,
+                                            stemmer,
+                                            min_dfreq, 
+                                            max_dfreq, 
+                                            max_word_per_doc, 
+                                            max_feautures
+                                    )?.sort(["ref"], false, false)?;
 
     // let mut exprs: Vec<Expr> = Vec::with_capacity(stemmed_vocab.height());
     
-    let temp: Series = stemmed_vocab.drop_in_place("ref")?;
+    let temp: &Series = stemmed_vocab.column("ref")?;
     let stems: &ChunkedArray<Utf8Type> = temp.utf8()?;
-    let temp: Series = stemmed_vocab.drop_in_place(&"captures")?;
+    let temp: &Series = stemmed_vocab.column(&"captures")?;
     let vocabs: &ChunkedArray<Utf8Type> = temp.utf8()?;
 
     let mut exprs:Vec<Expr> = Vec::with_capacity(stems.len());
@@ -305,21 +305,21 @@ pub fn tfidf_vectorizer(
         df_local = df.lazy().with_column(col(c).str().to_lowercase().alias(c)).collect()?;
     }
 
-    let mut stemmed_vocab: DataFrame = get_ref_table(
-                                                df_local.clone(),
-                                                c,
-                                                stemmer,
-                                                min_dfreq, 
-                                                max_dfreq, 
-                                                max_word_per_doc, 
-                                                max_feautures
-                                        )?.sort(["ref"], false, false)?;
+    let stemmed_vocab: DataFrame = get_ref_table(
+                                            df_local.clone(),
+                                            c,
+                                            stemmer,
+                                            min_dfreq, 
+                                            max_dfreq, 
+                                            max_word_per_doc, 
+                                            max_feautures
+                                    )?.sort(["ref"], false, false)?;
 
-    let temp: Series = stemmed_vocab.drop_in_place("ref")?;
+    let temp: &Series = stemmed_vocab.column(&"ref")?;
     let stems: &ChunkedArray<Utf8Type> = temp.utf8()?;
-    let temp: Series = stemmed_vocab.drop_in_place(&"captures")?;
+    let temp: &Series = stemmed_vocab.column(&"captures")?;
     let vocabs: &ChunkedArray<Utf8Type> = temp.utf8()?;
-    let temp: Series = stemmed_vocab.drop_in_place(&"smooth_idf")?;
+    let temp: &Series = stemmed_vocab.column(&"smooth_idf")?;
     let smooth_idf: &ChunkedArray<Float64Type> = temp.f64()?;
                                         
     let mut exprs: Vec<Expr> = Vec::with_capacity(stems.len());

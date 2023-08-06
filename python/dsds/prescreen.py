@@ -186,7 +186,7 @@ def check_binary_target(df:PolarsFrame, target:str) -> bool:
     '''
     Checks if target is binary or not. Returns true only when binary target has 0s and 1s.
     '''
-    target_uniques = df.lazy().select(pl.col(target).unique()).collect().get_column(target)
+    target_uniques = df.lazy().select(pl.col(target).unique()).collect()[target]
     if len(target_uniques) != 2:
         logger.error("Target is not binary.")
         return False
@@ -203,7 +203,7 @@ def check_target_cardinality(df:PolarsFrame, target:str, raise_null:bool=True) -
     output = df.lazy().groupby(target).count().sort(target).with_columns(
         pct = pl.col("count")/pl.col("count").sum()
     ).collect()
-    if raise_null and output.get_column(target).null_count() > 0:
+    if raise_null and output[target].null_count() > 0:
         raise ValueError("Target contains null.")
     return output
 
@@ -580,7 +580,7 @@ def pattern_inferral(
             ).alias(s) 
             for s in strs
         ).transpose(include_header=True, column_names=["pattern_match_pct"])\
-        .filter(pl.col("pattern_match_pct") < threshold).get_column("column")
+        .filter(pl.col("pattern_match_pct") < threshold)["column"]
         # If the match failes in this round, remove the column.
         matches.difference_update(fail)
 
@@ -717,8 +717,7 @@ def invalid_inferral(df:PolarsFrame, threshold:float=0.5, include_null:bool=Fals
         ).select(~cs.by_name(["row_nr"]))
         .collect()
         .transpose(include_header=True, column_names=["nan_pct"])
-        .filter(pl.col("nan_pct") >= threshold)
-        .get_column("column")
+        .filter(pl.col("nan_pct") >= threshold)["column"]
         .to_list()
     )
 
@@ -753,8 +752,7 @@ def null_inferral(df:PolarsFrame, threshold:float=0.5) -> list[str]:
         Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
     '''
     return (df.lazy().null_count().collect()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
-                    .filter(pl.col("null_pct") >= threshold)\
-                    .get_column("column").to_list()
+                    .filter(pl.col("null_pct") >= threshold)["column"].to_list()
 
 def null_removal(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
     '''
@@ -778,7 +776,7 @@ def var_inferral(df:PolarsFrame, threshold:float, target:str) -> list[str]:
     return df.lazy().select(
                 pl.col(x).var() for x in get_numeric_cols(df) if x != target
             ).collect().transpose(include_header=True, column_names=["var"])\
-            .filter(pl.col("var") < threshold).get_column("column").to_list() 
+            .filter(pl.col("var") < threshold)["column"].to_list() 
 
 def var_removal(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
     '''Removes features with low variance. Features with > threshold variance will be kept. 
@@ -857,8 +855,7 @@ def unique_inferral(df:PolarsFrame, threshold:float=0.9) -> list[str]:
     return (
         temp.with_columns(
             (pl.col("n_unique")/len_df).alias("unique_pct")
-        ).filter((pl.col("unique_pct") >= clipped_threshold) & (pl.col("column") != "row_nr"))\
-        .get_column("column")
+        ).filter((pl.col("unique_pct") >= clipped_threshold) & (pl.col("column") != "row_nr"))["column"]
         .to_list()
     )
 
@@ -910,7 +907,7 @@ def discrete_inferral(df:PolarsFrame
     return temp.filter(
         ((pl.col("n_unique") < max_n_unique) | (pl.col("n_unique")/len_df < threshold)) 
         & (~pl.col("column").is_in(exclude_list)) # is not in
-    ).get_column("column").to_list()
+    )["column"].to_list()
 
 def conti_inferral(
     df:PolarsFrame
@@ -951,9 +948,9 @@ def constant_inferral(df:PolarsFrame, include_null:bool=True) -> list[str]:
     if include_null:
         return get_unique_count(df, include_null_count=True).filter(
             ((pl.col("n_unique") == 1) | ((pl.col("n_unique") == 2) & (pl.col("null_count") > 0)))
-        ).get_column("column").to_list()
+        )["column"].to_list()
     else:
-        return get_unique_count(df).filter(pl.col("n_unique") == 1).get_column("column").to_list()
+        return get_unique_count(df).filter(pl.col("n_unique") == 1)["column"].to_list()
 
 def constant_removal(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     '''
@@ -987,7 +984,7 @@ def _ks_compare(
     , pair:Tuple[str, str]
     , alt:Alternatives="two-sided"
 ) -> Tuple[Tuple[str, str], float, float]:
-    res = ks_2samp(df.get_column(pair[0]), df.get_column(pair[1]), alt)
+    res = ks_2samp(df[pair[0]], df[pair[1]], alt)
     return (pair, res.statistic, res.pvalue)
 
 def ks_compare(
@@ -1079,8 +1076,8 @@ def suggest_normal(
     Suggests which columns are normally distributed. This takes the columns for which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, "norm", target=target).filter(pl.col("p_value") > threshold)\
-        .get_column("feature").to_list()
+    return dist_test(df, "norm", target=target)\
+        .filter(pl.col("p_value") > threshold)["feature"].to_list()
 
 def suggest_uniform(
     df:PolarsFrame
@@ -1091,8 +1088,8 @@ def suggest_uniform(
     Suggests which columns are uniformly distributed. This takes the columns for which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, "uniform", target=target).filter(pl.col("p_value") > threshold)\
-        .get_column("feature").to_list()
+    return dist_test(df, "uniform", target=target)\
+        .filter(pl.col("p_value") > threshold)["feature"].to_list()
 
 def suggest_lognormal(
     df:PolarsFrame
@@ -1103,8 +1100,8 @@ def suggest_lognormal(
     Suggests which columns are log-normally distributed. This takes the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, "lognorm", target=target).filter(pl.col("p_value") > threshold)\
-        .get_column("feature").to_list()
+    return dist_test(df, "lognorm", target=target)\
+        .filter(pl.col("p_value") > threshold)["feature"].to_list()
 
 def suggest_dist(
     df:PolarsFrame
@@ -1116,5 +1113,4 @@ def suggest_dist(
     Suggests which columns follow the given distribution. This returns the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, dist, target=target).filter(pl.col("p_value") > threshold)\
-        .get_column("feature").to_list()
+    return dist_test(df, dist, target=target).filter(pl.col("p_value") > threshold)["feature"].to_list()

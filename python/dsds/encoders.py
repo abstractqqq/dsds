@@ -153,7 +153,7 @@ def binary_encode(
         binary_list = get_unique_count(df)\
             .filter( # Binary + Not Exclude + Only String
                 (pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude)) & (pl.col("column").is_in(str_cols))
-            ).get_column("column").to_list()
+            )["column"].to_list()
     else:
         binary_list = cols
     
@@ -171,7 +171,7 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
     df
         Either a lazy or eager Polars DataFrame
     '''
-    binary_list = get_unique_count(df).filter(pl.col("n_unique") == 2).get_column("column")
+    binary_list = get_unique_count(df).filter(pl.col("n_unique") == 2)["column"]
     temp = df.lazy().select(binary_list).select(
             pl.all().unique().implode().list.sort()
         )

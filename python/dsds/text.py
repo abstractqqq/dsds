@@ -71,6 +71,7 @@ def clean_str_cols(
     , cols: Union[str, list[str]]
     , pattern: str
     , value: str = ""
+    , lowercase: bool = True
 ) -> PolarsFrame:
     '''
     Clean the strings in the given columns by replacing the pattern with the value.
@@ -87,15 +88,22 @@ def clean_str_cols(
         The regex pattern to replace
     value
         The value to replace with
+    lowercase
+        If true, lowercase the string first and then apply replace by
     '''
     if isinstance(cols, str):
         str_cols = [cols]
     else:
         str_cols = cols
+    
+    if lowercase:
+        exprs = [pl.col(c).str.to_lowercase().str.replace_all(pattern, value) for c in str_cols]
+    else:
+        exprs = [pl.col(c).str.replace_all(pattern, value) for c in str_cols]
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns([pl.col(c).str.replace_all(pattern, value) for c in str_cols])
-    return df.with_columns(pl.col(c).str.replace_all(pattern, value) for c in str_cols)
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
 
 # def py_count_vectorizer(
 #     df: pl.DataFrame
@@ -137,7 +145,7 @@ def clean_str_cols(
 
 #     return df.with_columns(exprs).drop(c)
 
-def get_word_cnt_table(
+def get_ref_table(
     df: PolarsFrame
     , c: str
     , stemmer:Stemmer = "snowball"
@@ -145,23 +153,31 @@ def get_word_cnt_table(
     , max_dfreq: float = 0.95
     , max_word_per_doc: int = 3000
     , max_features: int = 500
+    , lowercase: bool = True
 ) -> pl.DataFrame:
     '''
-    A convenience function that returns the table used to compute word counts. Words with length <= 2 will 
-    not be counted. The table has 3 columns:
+    A convenience function that returns the table used to compute word counts and TFIDF. Words with 
+    length <= 2, numerics, and stopwords will not be counted. All words sharing the stem will be counted 
+    as the stem word. The table has 4 columns:
 
-    (1) A column representing all stems found in the documents in df[c]
+    (1) A column representing all stems found in the documents in df[c], called "ref"
 
-    (2) A column representing all words that are mapped to these stems
+    (2) A column representing all words that are mapped to these stems, called "captures"
 
-    (3) Document frequency of the stems
+    (3) Document frequency of the stems, called "doc_freq"
+
+    (4) Smooth IDF, called "smooth_idf"
 
     Parameters
     ----------
     See `dsds.text.count_vectorizer`
     '''
-    return rs_ref_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
-                        , max_dfreq, max_word_per_doc, max_features).sort("ref")
+    if lowercase:
+        return rs_ref_table(df.lazy().with_columns(pl.col(c).str.to_lowercase()).collect(), c, stemmer, min_dfreq
+                            , max_dfreq, max_word_per_doc, max_features).sort("ref")
+    else:
+        return rs_ref_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
+                            , max_dfreq, max_word_per_doc, max_features).sort("ref")
 
 def count_vectorizer(
     df: PolarsFrame
@@ -183,7 +199,10 @@ def count_vectorizer(
     (2) It doesn't convert data to sparse matrix and will output a PolarsFrame.
 
     If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
-    also that Words of length <=2 will not be counted. See Rust source code for comment on performance.
+    also that Words of length <=2 will not be counted.Turn off lowercase to improve performance if
+    documents are already lowercased. See Rust source code for more comment on performance. Because 
+    this works directly with dataframes, instead of sparse matrices, memory consumption might be larger
+    upfront.
 
     Parameters
     ----------
@@ -215,11 +234,10 @@ def count_vectorizer(
     ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq
                                     , max_dfreq, max_word_per_doc, max_features).sort("ref")
 
-    exprs = []
-    for s, p in zip(ref.get_column("ref"), ref.get_column("captures")):
-        exprs.append(
-            pl.col(c).str.count_match(p).suffix(f"::cnt_{s}")
-        )
+    exprs = [
+        pl.col(c).str.count_match(p).suffix(f"::cnt_{s}")
+        for s, p in zip(ref["ref"], ref["captures"])
+    ]
     if persist and isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs).blueprint.drop([c])
     return df.with_columns(exprs).drop(c)
@@ -238,15 +256,19 @@ def tfidf_vectorizer(
     '''
     A TFIDF vectorizer similar to sklearn's. In addition, 
     
-    (1) It performs stemming and counts the occurrences of all words that are stemmed to the same 
-    stem together. It filters out numerics. It always computes smooth_idf.
+    (1) It performs stemming and counts the occurrences of all words that share the same stem together. 
+    It filters out numerics. It always computes smooth_idf, e.g. ln((1 + N)/(1 + {# t in D}))
 
     (2) It doesn't convert data to sparse matrix and will output a PolarsFrame.
 
-    (3) It is a single call. It does not rely on prior count_vectorizer.
+    (3) It is a single call. It does not rely on prior count_vectorizer. It does not row-wise normalize
+    the TFIDF output.
 
     If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
-    also that Words of length <=2 will not be counted. See Rust source code for comment on performance.
+    also that Words of length <=2 will not be counted. Turn off lowercase to improve performance if
+    documents are already lowercased. See Rust source code for more comment on performance. Because 
+    this works directly with dataframes, instead of sparse matrices, memory consumption might be larger
+    upfront.
 
     Parameters
     ----------
@@ -278,24 +300,24 @@ def tfidf_vectorizer(
             df = df.blueprint.with_columns([
                 pl.col(c).str.to_lowercase()
             ])
-            # Create local. df has to be lazy
+            # Create local
             df_local = df.select(pl.col(c)).collect()
         else: # just lowercase
-            df_local = df.lazy().select(pl.col(c).str.to_lowercase()).collect()
+            df = df.with_columns(pl.col(c).str.to_lowercase())
+            df_local = df.lazy().select(pl.col(c)).collect()
     else: 
         df_local = df.lazy().select(pl.col(c)).collect()
 
     ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq
                                     , max_dfreq, max_word_per_doc, max_features).sort("ref")
 
-    exprs = []
-    for s, p, idf in zip(ref.get_column("ref"), ref.get_column("captures"), ref.get_column("smooth_idf")):
-        exprs.append(
-            (   pl.lit(idf, dtype=pl.Float64)
-                * pl.col(c).str.count_match(p).cast(pl.Float64)
-                / pl.col("__doc_len__").cast(pl.Float64)
-            ).suffix(f"::tfidf_{s}")
-        )
+    exprs = [
+        (   pl.lit(idf, dtype=pl.Float64)
+            * pl.col(c).str.count_match(p).cast(pl.Float64)
+            / pl.col("__doc_len__").cast(pl.Float64)
+        ).suffix(f"::tfidf_{s}")
+        for s, p, idf in zip(ref["ref"], ref["captures"], ref["smooth_idf"])
+    ]
     if persist and is_lazy:
         return (
             df.blueprint.with_columns([

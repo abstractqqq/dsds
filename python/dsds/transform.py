@@ -198,7 +198,7 @@ def merge_infreq_values(
     for c in cols:
         infreq = df.lazy().groupby(c).count().filter(
             comp
-        ).collect().get_column(c)
+        ).collect()[c]
         value = separator.join(infreq)
         exprs.append(
             pl.when(pl.col(c).is_in(infreq)).then(value).otherwise(pl.col(c)).alias(c)
