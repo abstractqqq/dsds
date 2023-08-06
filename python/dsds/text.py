@@ -5,7 +5,7 @@ from .type_alias import (
 )
 import polars as pl
 # from nltk.stem.snowball import SnowballStemmer
-from dsds._rust import rs_get_word_cnt_table, rs_snowball_stem, rs_levenshtein_dist
+from dsds._rust import rs_ref_table, rs_snowball_stem, rs_levenshtein_dist
 
 # Right now, only English. 
 # Only snowball stemmer is availabe because I can only find snonball stemmer's implementation in Rust.
@@ -38,7 +38,7 @@ def snowball_stem(word:str, no_stopword:bool=True, language="english") -> str:
     '''
     Stems the word using a snowball stemmer. If you want ultimate speed, use 
     `from dsds._rust import rs_snowball_stem`. This function is merely an ergonomic wrapper
-    in Python. This function will always stem words with length <= 2 to empty string.
+    in Python.
 
     Parameters
     ----------
@@ -147,7 +147,8 @@ def get_word_cnt_table(
     , max_features: int = 500
 ) -> pl.DataFrame:
     '''
-    A convenience function that returns the table used to compute word counts. The table has 3 columns:
+    A convenience function that returns the table used to compute word counts. Words with length <= 2 will 
+    not be counted. The table has 3 columns:
 
     (1) A column representing all stems found in the documents in df[c]
 
@@ -159,8 +160,8 @@ def get_word_cnt_table(
     ----------
     See `dsds.text.count_vectorizer`
     '''
-    return rs_get_word_cnt_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
-                                , max_dfreq, max_word_per_doc, max_features).sort("stemmed")
+    return rs_ref_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
+                        , max_dfreq, max_word_per_doc, max_features).sort("ref")
 
 def count_vectorizer(
     df: PolarsFrame
@@ -170,17 +171,19 @@ def count_vectorizer(
     , max_dfreq: float = 0.95
     , max_word_per_doc: int = 3000
     , max_features: int = 500
+    , lowercase: bool = True
     , persist:bool = False
 ) -> PolarsFrame:
     '''
     A word count vectorizer similar to sklearn's. In addition, 
     
     (1) It performs stemming and counts the occurrences of all words that are stemmed to the same 
-    stem together.
+    stem together. It filters out numerics.
 
     (2) It doesn't convert data to sparse matrix and will output a PolarsFrame.
 
-    If counting for a given list of words is desired, see `dsds.transform.extract_word_count`.
+    If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
+    also that Words of length <=2 will not be counted. See Rust source code for comment on performance.
 
     Parameters
     ----------
@@ -200,18 +203,108 @@ def count_vectorizer(
     max_features
         The maximum number of word count features to generate. This will take the top words with the highest 
         frequencies
+    lowercase
+        If true, will lowercase column c first.
     persist
-        If df is lazy, this step can be optionally persisted as part of the pipeline.
+        If df is lazy, this step can be optionally persisted as part of the pipeline (saved in blueprint).
     '''
-    ref: pl.DataFrame = rs_get_word_cnt_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
-                                , max_dfreq, max_word_per_doc, max_features).sort("stemmed")
+    if lowercase:
+        df_local = df.lazy().with_columns(pl.col(c).str.to_lowercase()).collect()
+    else:
+        df_local = df.lazy().select(pl.col(c)).collect()
+    ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq
+                                    , max_dfreq, max_word_per_doc, max_features).sort("ref")
 
     exprs = []
-    for s, v in zip(ref.get_column("stemmed"), ref.get_column(c)):
-        pattern = f"({'|'.join(v)})"
+    for s, p in zip(ref.get_column("ref"), ref.get_column("captures")):
         exprs.append(
-            pl.col(c).str.count_match(pattern).suffix(f"::cnt_{s}")
+            pl.col(c).str.count_match(p).suffix(f"::cnt_{s}")
         )
     if persist and isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs).blueprint.drop([c])
     return df.with_columns(exprs).drop(c)
+
+def tfidf_vectorizer(
+    df: PolarsFrame
+    , c: str
+    , stemmer:Stemmer = "snowball"
+    , min_dfreq: float = 0.05
+    , max_dfreq: float = 0.95
+    , max_word_per_doc: int = 3000
+    , max_features: int = 500
+    , lowercase: bool = True
+    , persist:bool = False
+) -> PolarsFrame:
+    '''
+    A TFIDF vectorizer similar to sklearn's. In addition, 
+    
+    (1) It performs stemming and counts the occurrences of all words that are stemmed to the same 
+    stem together. It filters out numerics. It always computes smooth_idf.
+
+    (2) It doesn't convert data to sparse matrix and will output a PolarsFrame.
+
+    (3) It is a single call. It does not rely on prior count_vectorizer.
+
+    If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
+    also that Words of length <=2 will not be counted. See Rust source code for comment on performance.
+
+    Parameters
+    ----------
+    df
+        Either an eager or lazy dataframe. Note that if df is lazy, the column c will be collected.
+    c
+        Name of the document column
+    stemmer
+        Only "snowball" stemmer for English is available right now. Everything else will be mapped to no 
+        stemmer option.
+    min_dfreq
+        The minimum document frequency that a word must have. Document Frequency = Sum(Word in Doc) / # Documents
+    max_dfreq
+        The maximum document frequency above which a word will not be selected.
+    max_word_per_doc
+        The maximum word count for a document. The document will be truncated after this many words.
+    max_features
+        The maximum number of word count features to generate. This will take the top words with the highest 
+        frequencies
+    lowercase
+        If true, will lowercase column c first.
+    persist
+        If df is lazy, this step can be optionally persisted as part of the pipeline (saved in blueprint).
+    '''
+    is_lazy = isinstance(df, pl.LazyFrame)
+    if lowercase:
+        if persist and is_lazy:
+            # In this case, persist the lowercase step
+            df = df.blueprint.with_columns([
+                pl.col(c).str.to_lowercase()
+            ])
+            # Create local. df has to be lazy
+            df_local = df.select(pl.col(c)).collect()
+        else: # just lowercase
+            df_local = df.lazy().select(pl.col(c).str.to_lowercase()).collect()
+    else: 
+        df_local = df.lazy().select(pl.col(c)).collect()
+
+    ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq
+                                    , max_dfreq, max_word_per_doc, max_features).sort("ref")
+
+    exprs = []
+    for s, p, idf in zip(ref.get_column("ref"), ref.get_column("captures"), ref.get_column("smooth_idf")):
+        exprs.append(
+            (   pl.lit(idf, dtype=pl.Float64)
+                * pl.col(c).str.count_match(p).cast(pl.Float64)
+                / pl.col("__doc_len__").cast(pl.Float64)
+            ).suffix(f"::tfidf_{s}")
+        )
+    if persist and is_lazy:
+        return (
+            df.blueprint.with_columns([
+                pl.col(c).str.extract_all(pl.lit(r"(?u)\b\w\w+\b")).list.lengths().cast(pl.Float64).alias("__doc_len__")
+            ]).blueprint.with_columns(exprs).blueprint.drop([c, "__doc_len__"])
+        )
+    else:
+        return (
+            df.with_columns(
+                pl.col(c).str.extract_all(pl.lit(r"(?u)\b\w\w+\b")).list.lengths().cast(pl.Float64).alias("__doc_len__")
+            ).with_columns(exprs).drop([c, "__doc_len__"])
+        )

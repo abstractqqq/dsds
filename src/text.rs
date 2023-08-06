@@ -8,6 +8,7 @@ use pyo3_polars::error::PyPolarsErr;
 use pyo3_polars::PyDataFrame;
 use std::iter::zip;
 
+
 const STOPWORDS:[&str; 179] = ["i", "me", "my", "myself", "we", "our", "ours", "ourselves"
                                 , "you're", "you've", "you'll", "you'd", "your", "yours", "yourself"
                                 , "yourselves", "he", "him", "his", "himself", "she", "she's", "her"
@@ -61,10 +62,30 @@ pub fn rs_cnt_vectorizer(
     , max_dfreq:f32
     , max_word_per_doc:u32
     , max_feautures: u32
+    , lowercase: bool
 ) -> PyResult<PyDataFrame> {
 
     let df: DataFrame = pydf.into();
-    let df: DataFrame = count_vectorizer(df, c, stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
+    let df: DataFrame = count_vectorizer(df, c, stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
+                        .map_err(PyPolarsErr::from)?;
+    Ok(PyDataFrame(df))
+
+}
+
+#[pyfunction]
+pub fn rs_tfidf_vectorizer(
+    pydf: PyDataFrame
+    , c: &str
+    , stemmer: &str
+    , min_dfreq:f32
+    , max_dfreq:f32
+    , max_word_per_doc:u32
+    , max_feautures: u32
+    , lowercase: bool
+) -> PyResult<PyDataFrame> {
+
+    let df: DataFrame = pydf.into();
+    let df: DataFrame = tfidf_vectorizer(df, c, stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(df))
 
@@ -73,27 +94,6 @@ pub fn rs_cnt_vectorizer(
 #[pyfunction]
 pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> usize {
 
-    // Naive implementation
-    // if s1.is_empty() {
-    //     s2.len()
-    // } else if s2.is_empty() {
-    //     s1.len()
-    // } else if s1 == s2 {
-    //     0
-    // } else {
-    //     let s1_owned: String = s1.to_owned();
-    //     let s2_owned: String = s2.to_owned();
-    //     let (s1_head, s1_tail) = s1_owned.split_at(1);
-    //     let (s2_head, s2_tail) = s2_owned.split_at(1);
-    //     if s1_head == s2_head {
-    //         rs_levenshtein_dist(s1_tail, s2_tail)
-    //     } else {
-    //         1 + [rs_levenshtein_dist(s1_tail, &s2_owned)
-    //             , rs_levenshtein_dist(&s1_owned, s2_tail)
-    //             , rs_levenshtein_dist(s1_tail, s2_tail)].iter().min().unwrap()
-    //     }
-    // }
-    // But this is about 10x faster
     // https://en.wikipedia.org/wiki/Wagner%E2%80%93Fischer_algorithm
 
     let len1: usize = s1.len();
@@ -123,11 +123,9 @@ pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> usize {
     dp[len1][len2]
 }
 
-
 #[pyfunction]
 pub fn rs_snowball_stem(word:&str, no_stopwords:bool) -> PyResult<String> {
-    let out: Option<String> = snowball_stem(word, no_stopwords);
-    if let Some(good) = out {
+    if let Some(good) = snowball_stem(word, no_stopwords) {
         Ok(good)
     } else {
         Ok("".to_string())
@@ -135,7 +133,7 @@ pub fn rs_snowball_stem(word:&str, no_stopwords:bool) -> PyResult<String> {
 }
 
 #[pyfunction]
-pub fn rs_get_word_cnt_table(
+pub fn rs_ref_table(
     pydf: PyDataFrame
     , c: &str
     , stemmer: &str
@@ -144,9 +142,11 @@ pub fn rs_get_word_cnt_table(
     , max_word_per_doc: u32
     , max_feautures: u32
 ) -> PyResult<PyDataFrame> {
+    
+    // get_ref_table assumes all docs in df[c] are already lowercased
 
     let df: DataFrame = pydf.into();
-    let out: DataFrame = get_word_cnt_table(df, c,stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
+    let out: DataFrame = get_ref_table(df, c,stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(out))
 }
@@ -154,11 +154,11 @@ pub fn rs_get_word_cnt_table(
 #[inline]
 pub fn snowball_stem(word:&str, no_stopwords:bool) -> Option<String> {
 
-    if word.len() <= 2 {
+    if (no_stopwords) & (STOPWORDS.contains(&word)) {
         None
-    } else if (no_stopwords) & (STOPWORDS.contains(&word)) {
+    } else if word.parse::<f64>().is_ok()  {
         None
-    } else {
+    }else {
         let mut env: SnowballEnv<'_> = SnowballEnv::create(word);
         algorithms::english_stemmer::stem(&mut env);
         Some(env.get_current().to_string())
@@ -177,12 +177,12 @@ fn snowball_on_series(
                 Some(w) => Ok(snowball_stem(w, true)),
                 _ => Ok(None)
             } 
-        }).collect::<PolarsResult<Utf8Chunked>>()?.into_series()
+        }).collect::<PolarsResult<ChunkedArray<Utf8Type>>>()?.into_series()
     ))
 }
 
 #[inline]
-pub fn get_word_cnt_table(
+pub fn get_ref_table(
     df: DataFrame
     , c: &str
     , stemmer: &str
@@ -192,38 +192,43 @@ pub fn get_word_cnt_table(
     , max_feautures: u32
 ) -> PolarsResult<DataFrame> {
 
+    // this function assumes all documents in df[c] are lowercased.
     let stemmer_expr:Expr = match stemmer.to_lowercase().as_str() {
-        "snowball" => col(c).map(snowball_on_series, GetOutput::from_type(DataType::Utf8)).alias(&"stemmed"),
-        _ => col(c).alias(&"stemmed")
+        "snowball" => col(c).map(snowball_on_series, GetOutput::from_type(DataType::Utf8)).alias(&"ref"),
+        _ => col(c).alias(&"ref")
     };
 
     let height: f32 = df.height() as f32;
-    Ok(
-        df.lazy()
-        .with_row_count(&"row_nr", None)
-        .select([
-            col(&"row_nr")
-            , col(c).str().to_lowercase().str().extract_all(lit(r"(?u)\b\w\w+\b")).list().head(lit(max_word_per_doc))
-        ]).explode([col(c)])
-        .filter(col(c).is_not_null())
-        .select([
-            col(c)
-            , stemmer_expr
-            , col(&"row_nr")
-        ]).groupby([
-            col(&"stemmed")
-        ]).agg([
-            col(c).unique()
-            , (col(&"row_nr").n_unique().cast(DataType::Float32) / lit(height)).alias(&"doc_freq")
-        ]).filter(
-            (col(&"doc_freq").gt_eq(min_dfreq)).and(col(&"doc_freq").lt_eq(max_dfreq))
-        ).top_k(max_feautures, [col(&"doc_freq")], [true], true, false)
-        .select([
-            col("stemmed")
-            , col(c)
-            , col(&"doc_freq")
-        ]).collect()?
-    )
+    let output: DataFrame = df.select([c])?
+    .lazy()
+    .with_row_count(&"i", None)
+    .select([
+        col(&"i")
+        , col(c).str().extract_all(lit(r"(?u)\b\w\w+\b")).list().head(lit(max_word_per_doc))
+    ]).explode([col(c)])
+    .filter(col(c).is_not_null().and(col(c).str().lengths().gt(lit(2))))
+    .select([
+        col(&"i")
+        , col(c)
+        , stemmer_expr // name is ref
+    ]).groupby([col(&"ref")])
+    .agg([
+        col(c).unique()
+        , (col(&"i").n_unique().cast(DataType::Float64) / lit(height)).alias(&"doc_freq")
+        , (lit(height + 1.)/(col(&"i").n_unique() + lit(1)).cast(DataType::Float64)).log(std::f64::consts::E).alias(&"smooth_idf")
+    ]).filter(
+        (col(&"doc_freq").gt_eq(min_dfreq)).and(col(&"doc_freq").lt_eq(max_dfreq))
+    ).top_k(max_feautures, [col(&"doc_freq")], [true], true, false)
+    .select([
+        col(&"ref")
+        // .list().sort(SortOptions::default()) No need to sort.
+        , (lit("(") + col(c).list().join(&"|") + lit(")")).alias(&"captures")
+        , col(&"doc_freq")
+        , col(&"smooth_idf")
+    ]).collect()?;
+    
+    Ok(output)
+
 }
 
 pub fn count_vectorizer(
@@ -234,45 +239,109 @@ pub fn count_vectorizer(
     , max_dfreq:f32
     , max_word_per_doc: u32
     , max_feautures: u32
+    , lowercase: bool
 ) -> PolarsResult<DataFrame> {
 
-    let mut stemmed_vocab: DataFrame = get_word_cnt_table(
-                                                df.clone(), 
+    // lowercase is expensive, do it only once.
+
+    // This, in fact, is still doing some duplicate work.
+    // The get_ref_table call technically has computed all count/tfidf vectorizer information
+    // at least once.
+    // The with_columns(exprs) call technically can be skipped. But the problem is for better 
+    // user-experience, we want to use dataframe as output.
+    // Scikit-learn uses sparse matrix as output, so technically get_ref_table is all Scikit-learn needs.
+    // With that said, this is still faster than Scikit-learn, and does stemming, does more 
+    // filtering, and technically computes some stuff twice,
+
+    let mut df_local: DataFrame = df.clone();
+    if lowercase {
+        df_local = df.lazy().with_column(col(c).str().to_lowercase().alias(c)).collect()?;
+    }
+
+    let mut stemmed_vocab: DataFrame = get_ref_table(
+                                                df_local.clone(),
                                                 c,
                                                 stemmer,
                                                 min_dfreq, 
                                                 max_dfreq, 
                                                 max_word_per_doc, 
                                                 max_feautures
-                                        )?.sort(["stemmed"], false, false)?;
+                                        )?.sort(["ref"], false, false)?;
 
-    let mut exprs: Vec<Expr> = Vec::with_capacity(stemmed_vocab.height());
+    // let mut exprs: Vec<Expr> = Vec::with_capacity(stemmed_vocab.height());
     
-    let temp: Series = stemmed_vocab.drop_in_place("stemmed")?;
+    let temp: Series = stemmed_vocab.drop_in_place("ref")?;
     let stems: &ChunkedArray<Utf8Type> = temp.utf8()?;
-    let temp: Series = stemmed_vocab.drop_in_place(c)?;
-    let vocabs: &ChunkedArray<ListType> = temp.list()?;
+    let temp: Series = stemmed_vocab.drop_in_place(&"captures")?;
+    let vocabs: &ChunkedArray<Utf8Type> = temp.utf8()?;
 
-    for (stem, vec) in zip(stems.into_iter(), vocabs.into_iter()) {
-        if let Some(w) = stem {
-            if let Some(v) = vec {
-                let suffix: String = format!("::cnt_{}", w);
-                let mut pattern: String = "(".to_string();
-                for word in v.utf8()?.into_iter() {
-                    if let Some(ww) = word {
-                        pattern.push_str(ww);
-                        pattern.push('|');
-                    }
-                }
-                pattern.pop();
-                pattern.push(')');
-                exprs.push(
-                    col(c).str().count_match(&pattern).suffix(&suffix)
-                )
-            }
+    let mut exprs:Vec<Expr> = Vec::with_capacity(stems.len());
+    for (stem, pat) in zip(stems.into_iter(), vocabs.into_iter()) {
+        if let (Some(s), Some(p)) = (stem, pat) {
+            exprs.push(col(c).str().count_match(p).suffix(format!("::cnt_{}", s).as_ref()))
         }
     }
-    let out: DataFrame = df.lazy().with_columns(exprs).drop_columns([c]).collect()?;
+
+    let out: DataFrame = df_local.lazy().with_columns(exprs).drop_columns([c]).collect()?;
     Ok(out)
 
+}
+
+pub fn tfidf_vectorizer(
+    df: DataFrame
+    , c: &str
+    , stemmer: &str
+    , min_dfreq:f32
+    , max_dfreq:f32
+    , max_word_per_doc: u32
+    , max_feautures: u32
+    , lowercase: bool
+) -> PolarsResult<DataFrame> {
+
+    // lowercase is expensive, do it only once.
+
+    let mut df_local: DataFrame = df.clone();
+    if lowercase {
+        df_local = df.lazy().with_column(col(c).str().to_lowercase().alias(c)).collect()?;
+    }
+
+    let mut stemmed_vocab: DataFrame = get_ref_table(
+                                                df_local.clone(),
+                                                c,
+                                                stemmer,
+                                                min_dfreq, 
+                                                max_dfreq, 
+                                                max_word_per_doc, 
+                                                max_feautures
+                                        )?.sort(["ref"], false, false)?;
+
+    let temp: Series = stemmed_vocab.drop_in_place("ref")?;
+    let stems: &ChunkedArray<Utf8Type> = temp.utf8()?;
+    let temp: Series = stemmed_vocab.drop_in_place(&"captures")?;
+    let vocabs: &ChunkedArray<Utf8Type> = temp.utf8()?;
+    let temp: Series = stemmed_vocab.drop_in_place(&"smooth_idf")?;
+    let smooth_idf: &ChunkedArray<Float64Type> = temp.f64()?;
+                                        
+    let mut exprs: Vec<Expr> = Vec::with_capacity(stems.len());
+    for ((stem, pat), idf) in 
+        stems.into_iter().zip(vocabs.into_iter()).zip(smooth_idf.into_iter()) 
+    {
+        if let (Some(w), Some(p), Some(f)) = (stem, pat, idf) {
+            exprs.push(
+                (   lit(f).cast(DataType::Float64)
+                    * col(c).str().count_match(p).cast(DataType::Float64)
+                    / col(&"__doc_len__")
+                ).suffix(format!("::tfidf_{}", w).as_ref())
+            )
+        }
+    }
+    let out: DataFrame = df_local.lazy().with_column(
+        col(c).str().extract_all(lit(r"(?u)\b\w\w+\b"))
+        .list().head(lit(max_word_per_doc))
+        .list().lengths()
+        .cast(DataType::Float64).alias(&"__doc_len__")
+    ).with_columns(exprs)
+    .drop_columns([c, &"__doc_len__"]).collect()?;
+    
+    Ok(out)
 }

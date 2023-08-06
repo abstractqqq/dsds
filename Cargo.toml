@@ -15,3 +15,4 @@ polars-core = {version = "0.31.1"}
 polars-lazy =  {version="0.31.1"}
 polars = {version = "0.31.1", features = ["fmt", "is_in"]}
 rayon = "1.7.0"
+regex = "1.9.2"
