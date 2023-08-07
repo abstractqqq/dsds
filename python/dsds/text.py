@@ -56,13 +56,6 @@ def levenshtein_dist(s1:str, s2:str) -> int:
     Computes the Levenshtein distance between two strings. If you want ultimate speed, use 
     `from dsds._rust import rs_levenshtein_dist`. This function is merely an ergonomic wrapper
     in Python.
-
-    Parameters
-    ----------
-    s1
-        The first string
-    s2
-        The second string
     '''
     return rs_levenshtein_dist(s1,s2)
 
@@ -196,12 +189,13 @@ def count_vectorizer(
     (1) It performs stemming and counts the occurrences of all words that are stemmed to the same 
     stem together. It filters out numerics.
 
-    (2) It doesn't convert data to sparse matrix and will output a PolarsFrame.
+    (2) It doesn't convert data to sparse matrix and will output a PolarsFrame. Unfortunately, because of
+    this, it does not perform row-wise normalization. So the weights for each document do not mean the same.
 
     If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
     also that Words of length <=2 will not be counted.Turn off lowercase to improve performance if
     documents are already lowercased. See Rust source code for more comment on performance. Because 
-    this works directly with dataframes, instead of sparse matrices, memory consumption might be larger
+    this works directly with dataframes, unlike sparse matrices, memory consumption might be larger
     upfront.
 
     Parameters
@@ -259,7 +253,8 @@ def tfidf_vectorizer(
     (1) It performs stemming and counts the occurrences of all words that share the same stem together. 
     It filters out numerics. It always computes smooth_idf, e.g. ln((1 + N)/(1 + {# t in D}))
 
-    (2) It doesn't convert data to sparse matrix and will output a PolarsFrame.
+    (2) It doesn't convert data to sparse matrix and will output a PolarsFrame. Unfortunately, because of
+    this, it does not perform row-wise normalization. So the weights for each document do not mean the same.
 
     (3) It is a single call. It does not rely on prior count_vectorizer. It does not row-wise normalize
     the TFIDF output.
@@ -267,7 +262,7 @@ def tfidf_vectorizer(
     If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
     also that Words of length <=2 will not be counted. Turn off lowercase to improve performance if
     documents are already lowercased. See Rust source code for more comment on performance. Because 
-    this works directly with dataframes, instead of sparse matrices, memory consumption might be larger
+    this works directly with dataframes, unlike sparse matrices, memory consumption might be larger
     upfront.
 
     Parameters

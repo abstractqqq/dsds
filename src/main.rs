@@ -1,13 +1,13 @@
 
 use polars::prelude::CsvReader;
-use pyo3::prelude::*;
+//use pyo3::prelude::*;
 use polars::prelude::*;
 
 use std::time::Instant;
 
-pub mod snowball;
-pub mod text;
-use text::get_ref_table;
+mod snowball;
+mod text;
+use crate::text::text::get_ref_table;
 
 fn main() {
 

@@ -1,5 +1,13 @@
-from typing import Tuple, Optional, Union
+from typing import (
+    Tuple
+    , Optional
+    , Union
+)
 from .type_alias import WeightStrategy
+from dsds._rust import (
+    rs_cosine_similarity
+    , rs_self_cosine_similarity
+)
 import numpy as np 
 import polars as pl
 import logging
@@ -216,7 +224,7 @@ def binary_psi(
         s2 = old_score
 
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
-    s1_cuts:pl.DataFrame = s1.qcut(quantiles=qcuts, series=False)
+    s1_cuts:pl.DataFrame = s1.qcut(qcuts, series=False)
     s1_summary = s1_cuts.lazy().groupby(pl.col("category").cast(pl.Utf8)).agg(
         a = pl.count()
     )
@@ -364,3 +372,41 @@ def huber_loss(
         return np.mean(loss)
     else:
         return (sample_weights/(len(loss))).dot(loss)
+
+def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=True) -> np.ndarray:
+    '''
+    Computes cosine similarity. If both x and y are 1-dimensional, this is the cosine similarity of two
+    vectors. If y is None, this is the self cosine similarity of x. Say x has dim (N, F), representing
+    N documents and F features. The self cosine similarity is the matrix where the ij-th entry represents
+    the cosine similarity between doc i and doc j. When x and y are both give and > 1 dimensional, the 
+    resulting matrix will have entry ij representing the cosine similarity between i-th doc in x and j-th
+    doc in y.
+
+    When both x and y are row-normalized matrices, this is equivalent to x.dot(y.t).
+
+    Performance hint: if rows in x, y are normalized, then you may set normalize to False and this will
+    greatly improve performance. Say x has dimension (m, n) and y has dimension (k, n), this methid is much 
+    faster than NumPy/Scikit-learn when m >> k or vice versa. It is advised if m >> k, you should put x as
+    the first input. The condition m >> k is quite common, when you have a large corpus (x), and want to 
+    compare a new entry (y) to the corpus. However, when both m and n are large, NumPy/Scikit-learn is faster
+    because the Rust implementation requires extra copying and the resulting matrix will be very large.
+
+    Parameters
+    ----------
+    x
+        A Numpy 1d/2d array
+    y
+        If none, perform cosine similarity with x and x. If not, will perform cosine similarity between x 
+        and y.
+    normalize
+        If the rows of the matrices are normalized already, set this to False.
+    '''
+    if y is None:
+        return rs_self_cosine_similarity(x, normalize)
+    elif x.ndim == 1 and y.ndim == 1:
+        if normalize:
+            return x.dot(y)/np.sqrt(x.dot(x) * y.dot(y))
+        return x.dot(y)
+    else:
+        return rs_cosine_similarity(x, y, normalize)
+

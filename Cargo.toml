@@ -15,4 +15,5 @@ polars-core = {version = "0.31.1"}
 polars-lazy =  {version="0.31.1"}
 polars = {version = "0.31.1", features = ["fmt", "is_in", "ndarray"]}
 rayon = "1.7.0"
-regex = "1.9.2"
+ndarray = {version = "0.15", features = ["rayon", "matrixmultiply-threading"]}
+numpy = "*"
