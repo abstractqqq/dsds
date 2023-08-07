@@ -5,7 +5,7 @@ mod text;
 use numpy::{
     PyReadonlyArray2, 
     PyArray2, 
-    ToPyArray
+    ToPyArray, IntoPyArray
 };
 use crate::text::text::{
     rs_cnt_vectorizer,
@@ -49,7 +49,7 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
         mat1:PyReadonlyArray2<f64>,
         normalize: bool
     ) -> &'py PyArray2<f64> {
-        self_cosine_similarity(mat1.as_array().to_owned(), normalize).to_pyarray(py)
+        self_cosine_similarity(mat1.as_array().to_owned(), normalize).into_pyarray(py)
     }
 
     Ok(())

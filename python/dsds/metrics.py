@@ -386,10 +386,10 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
 
     Performance hint: if rows in x, y are normalized, then you may set normalize to False and this will
     greatly improve performance. Say x has dimension (m, n) and y has dimension (k, n), this methid is much 
-    faster than NumPy/Scikit-learn when m >> k or vice versa. It is advised if m >> k, you should put x as
-    the first input. The condition m >> k is quite common, when you have a large corpus (x), and want to 
-    compare a new entry (y) to the corpus. However, when both m and n are large, NumPy/Scikit-learn is faster
-    because the Rust implementation requires extra copying and the resulting matrix will be very large.
+    faster than NumPy/Scikit-learn when m >> k. It is advised if m >> k, you should put x as
+    the first input. The condition m >> k is quite common, when you have a large corpus x, and want to 
+    compare a new entry y to the corpus. By my testing, m = 5000, n = 1000, k = 10, this is 2x faster. However, 
+    when both m and n are large (both > 1000), NumPy Scikit-learn is faster. I am not sure why.
 
     Parameters
     ----------

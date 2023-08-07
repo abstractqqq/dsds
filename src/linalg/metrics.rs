@@ -37,7 +37,7 @@ pub fn self_cosine_similarity(
 #[inline]
 fn row_normalize(mat:&mut Array2<f64>) {
     mat.axis_iter_mut(Axis(0)).into_par_iter().for_each(|mut row| {
-        let norm:f64 = row.dot(&row).sqrt();
+        let norm: f64 = row.iter().fold(0., |acc, x| acc + x.powi(2)).sqrt();
         row /= norm;
     });
 }
