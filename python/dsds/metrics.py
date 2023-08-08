@@ -3,11 +3,19 @@ from typing import (
     , Optional
     , Union
 )
-from .type_alias import WeightStrategy
+from .type_alias import (
+    WeightStrategy
+    , InnerDtypes
+)
 from dsds._rust import (
     rs_cosine_similarity
     , rs_self_cosine_similarity
+    , rs_df_inner_list_jaccard
+    , rs_series_jaccard
 )
+
+from dsds.text import snowball_stem
+from dsds.prescreen import type_checker
 import numpy as np 
 import polars as pl
 import logging
@@ -388,8 +396,8 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
     greatly improve performance. Say x has dimension (m, n) and y has dimension (k, n), this methid is much 
     faster than NumPy/Scikit-learn when m >> k. It is advised if m >> k, you should put x as
     the first input. The condition m >> k is quite common, when you have a large corpus x, and want to 
-    compare a new entry y to the corpus. By my testing, m = 5000, n = 1000, k = 10, this is 2x faster. However, 
-    when both m and n are large (both > 1000), NumPy Scikit-learn is faster. I am not sure why.
+    compare a new entry y to the corpus. By my testing, m = 5000, n = 1000, k = 10, this is still faster. However, 
+    when both m and n are large (both > 2000), NumPy Scikit-learn is faster. I am not sure why.
 
     Parameters
     ----------
@@ -401,7 +409,7 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
     normalize
         If the rows of the matrices are normalized already, set this to False.
     '''
-    if y is None:
+    if y is None or x is y:
         return rs_self_cosine_similarity(x, normalize)
     elif x.ndim == 1 and y.ndim == 1:
         if normalize:
@@ -409,4 +417,116 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
         return x.dot(y)
     else:
         return rs_cosine_similarity(x, y, normalize)
+    
+def jaccard_similarity(
+    s1:Union[pl.Series,list,np.ndarray],
+    s2:Union[pl.Series,list,np.ndarray],
+    include_null:bool=True,
+    stem:bool = False,
+    parallel:bool=True
+) -> float:
+    '''
+    Computes jaccard similarity between the two input lists. Internally, both will be turned into Polars Series.
+    The lists must contain either integer or str values. 
 
+    Parameters
+    ----------
+    s1
+        The first list
+    s2
+        The second list
+    include_null
+        If true, null/none will be counted as common. If false, they will not.
+    stem
+        If true and inner values are strings, then perform snowball stemming on the words. This is only useful 
+        when the lists are lists of words
+    parallel
+        Whether to hash values in lists in parallel. The difference only gets significant for large string lists
+        because it only parallelizes the hashing of the two lists. For small integer lists, it is better to set 
+        this to false.
+    '''
+    
+    if len(s1) == 0 or len(s2) == 0:
+        return 0.
+
+    t1 = type(s1[0]).__name__
+    if t1 not in ("int", "str"):
+        raise TypeError(f"Input s1 must have values of type int or str, not {t1}.")
+    t2 = type(s2[0]).__name__
+    if t2 not in ("int", "str"):
+        raise TypeError(f"Input s2 must have values of type int or str, not {t2}.")
+    
+    if t1 != t2:
+        raise TypeError("Input s1 and s2 must have the same type for their values.")
+    
+    if isinstance(s1, pl.Series):
+        ss1 = s1
+    else:
+        ss1 = pl.Series(s1)
+    
+    if isinstance(s2, pl.Series):
+        ss2 = s2
+    else:
+        ss2 = pl.Series(s2)
+
+    if stem and t1 == "str":
+        ss1 = ss1.apply(snowball_stem, return_dtype=pl.Utf8)
+        ss2 = ss2.apply(snowball_stem, return_dtype=pl.Utf8)
+
+    return rs_series_jaccard(ss1, ss2, t1, include_null, parallel)
+
+def df_jaccard_similarity(
+    df: pl.DataFrame
+    , c1: str
+    , c2: str
+    , inner_dtype:InnerDtypes
+    , include_null:bool = True
+    , append:bool = False
+) -> pl.DataFrame:
+    '''
+    Computes pairwise jaccard similarity between two list columns. Currently this does not support 
+    stemming for columns with list[str] values.
+
+    Parameters
+    ----------
+    df
+        An eager Polars dataframe
+    s1
+        Name of the first column
+    s2
+        Name of the second column
+    inner_dtype
+        The inner dtype of the list columns. Must be either int or str
+    include_null
+        If true, null/none will be counted as common. If false, they will not.
+    append
+        If true, the new similarity column will be appeded to df
+
+    Example
+    -------
+    >>> from dsds.metrics import df_jaccard_similarity
+    ... df = pl.DataFrame({
+    ... "a":[["like", "hello"]]*2000
+    ... , "b":[["like", "world"]]*2000
+    ... })
+    >>> df_jaccard_similarity(df, "a", "b", "str").head()
+    shape: (5, 1)
+    ┌─────────────┐
+    │ a_b_jaccard │
+    │ ---         │
+    │ f64         │
+    ╞═════════════╡
+    │ 0.333333    │
+    │ 0.333333    │
+    │ 0.333333    │
+    │ 0.333333    │
+    │ 0.333333    │
+    └─────────────┘
+    '''
+    _ = type_checker(df, [c1,c2], "list", "df_jaccard_similarity")
+    out:pl.DataFrame = rs_df_inner_list_jaccard(df, c1, c2, inner_dtype, include_null).rename(
+        {"jaccard":f"{c1}_{c2}_jaccard"}
+    )
+    if append:
+        return pl.concat([df, out], how="horizontal")
+    return out

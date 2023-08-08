@@ -1,20 +1,25 @@
 use pyo3::prelude::*;
-mod linalg;
+mod functions;
 mod snowball;
 mod text;
 use numpy::{
     PyReadonlyArray2, 
     PyArray2, 
-    ToPyArray, IntoPyArray
+    IntoPyArray
 };
-use crate::text::text::{
+use crate::text::{
     rs_cnt_vectorizer,
     rs_tfidf_vectorizer,
     rs_ref_table,
     rs_snowball_stem,
     rs_levenshtein_dist,
+    rs_hamming_dist
 };
-use crate::linalg::metrics::{
+use crate::functions::{
+    rs_df_inner_list_jaccard,
+    rs_series_jaccard
+};
+use crate::functions::metrics::{
     cosine_similarity,
     self_cosine_similarity
 };
@@ -28,7 +33,9 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rs_ref_table, m)?)?;
     m.add_function(wrap_pyfunction!(rs_snowball_stem, m)?)?;
     m.add_function(wrap_pyfunction!(rs_levenshtein_dist, m)?)?;
-
+    m.add_function(wrap_pyfunction!(rs_df_inner_list_jaccard, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_series_jaccard, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_hamming_dist, m)?)?;
 
     #[pyfn(m)]
     fn rs_cosine_similarity<'py>(
@@ -41,8 +48,9 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
             mat1.as_array().to_owned(),
             mat2.as_array().to_owned(), 
             normalize
-        ).to_pyarray(py)
+        ).into_pyarray(py)
     }
+
     #[pyfn(m)]
     fn rs_self_cosine_similarity<'py>(
         py:Python<'py>,    

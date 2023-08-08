@@ -442,11 +442,11 @@ def log_transform(
     '''
     _ = type_checker(df, cols, "numeric", "log_transform")
     if plus_one:
-        exprs = (pl.col(c).log1p().suffix("_log1p") for c in cols)
+        exprs = [pl.col(c).log1p().suffix("_log1p") for c in cols]
     else:
-        exprs = (pl.col(c).log(base).suffix(suffix) for c in cols)
+        exprs = [pl.col(c).log(base).suffix(suffix) for c in cols]
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def extract_dt_features(
@@ -883,8 +883,8 @@ def moving_avgs(
         The number of values in the window that should be non-null before computing a result. If None, 
         it will be set equal to window size.
     '''
-    exprs = (pl.col(c).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
-             for i in window_sizes if i > 1)
+    exprs = [pl.col(c).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
+             for i in window_sizes if i > 1]
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)

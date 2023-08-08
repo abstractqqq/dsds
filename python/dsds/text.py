@@ -1,11 +1,15 @@
-from typing import Final, Tuple, Union
+from typing import Final, Union, Optional
 from .type_alias import (
     PolarsFrame
     , Stemmer
 )
 import polars as pl
-# from nltk.stem.snowball import SnowballStemmer
-from dsds._rust import rs_ref_table, rs_snowball_stem, rs_levenshtein_dist
+from dsds._rust import (
+    rs_ref_table, 
+    rs_snowball_stem, 
+    rs_levenshtein_dist,
+    rs_hamming_dist
+)
 
 # Right now, only English. 
 # Only snowball stemmer is availabe because I can only find snonball stemmer's implementation in Rust.
@@ -37,8 +41,9 @@ STOPWORDS:Final[pl.Series] = pl.Series(['i', 'me', 'my', 'myself', 'we', 'our', 
 def snowball_stem(word:str, no_stopword:bool=True, language="english") -> str:
     '''
     Stems the word using a snowball stemmer. If you want ultimate speed, use 
-    `from dsds._rust import rs_snowball_stem`. This function is merely an ergonomic wrapper
-    in Python.
+    `from dsds._rust import rs_snowball_stem`. You will have to supply a str and a bool 
+    every time you call the rs_snowball_stem but it is the fasteest. This function is merely 
+    an ergonomic wrapper in Python.
 
     Parameters
     ----------
@@ -50,6 +55,14 @@ def snowball_stem(word:str, no_stopword:bool=True, language="english") -> str:
         Right now English is the only option and the argument will not do anything.
     '''
     return rs_snowball_stem(word, no_stopword)
+
+def hamming_dist(s1:str, s2:str) -> Optional[int]:
+    '''
+    Computes the hamming distance between two strings. If you want ultimate speed, use 
+    `from dsds._rust import rs_hamming_dist`. This function is merely an ergonomic wrapper
+    in Python. If s1 and s2 do not have the same length, None will be returned.
+    '''
+    return rs_hamming_dist(s1,s2)
 
 def levenshtein_dist(s1:str, s2:str) -> int:
     '''
