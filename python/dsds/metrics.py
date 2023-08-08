@@ -276,7 +276,7 @@ def mse(
     if sample_weights is None:
         return diff.dot(diff)/len(diff)
     else:
-        return (sample_weights/(len(diff))).dot(diff.dot(diff))
+        return (sample_weights).dot(np.power(diff, 2)) / len(diff)
     
 l2_loss = mse
 brier_loss = mse
@@ -302,7 +302,7 @@ def mae(
     if sample_weights is None:
         return np.mean(diff)
     else:
-        return (sample_weights/(len(diff))).dot(diff)
+        return sample_weights.dot(diff) / len(diff)
 
 l1_loss = mae
 
@@ -379,7 +379,7 @@ def huber_loss(
     if sample_weights is None:
         return np.mean(loss)
     else:
-        return (sample_weights/(len(loss))).dot(loss)
+        return sample_weights.dot(loss) / len(loss)
 
 def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=True) -> np.ndarray:
     '''
@@ -393,7 +393,7 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
     When both x and y are row-normalized matrices, this is equivalent to x.dot(y.t).
 
     Performance hint: if rows in x, y are normalized, then you may set normalize to False and this will
-    greatly improve performance. Say x has dimension (m, n) and y has dimension (k, n), this methid is much 
+    greatly improve performance. Say x has dimension (m, n) and y has dimension (k, n), this method is much 
     faster than NumPy/Scikit-learn when m >> k. It is advised if m >> k, you should put x as
     the first input. The condition m >> k is quite common, when you have a large corpus x, and want to 
     compare a new entry y to the corpus. By my testing, m = 5000, n = 1000, k = 10, this is still faster. However, 
@@ -524,9 +524,7 @@ def df_jaccard_similarity(
     └─────────────┘
     '''
     _ = type_checker(df, [c1,c2], "list", "df_jaccard_similarity")
-    out:pl.DataFrame = rs_df_inner_list_jaccard(df, c1, c2, inner_dtype, include_null).rename(
-        {"jaccard":f"{c1}_{c2}_jaccard"}
-    )
+    out:pl.DataFrame = rs_df_inner_list_jaccard(df, c1, c2, inner_dtype, include_null)
     if append:
         return pl.concat([df, out], how="horizontal")
     return out
