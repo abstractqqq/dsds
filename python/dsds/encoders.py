@@ -688,7 +688,7 @@ def woe_cat_encode(
 
     if check_binary:
         if not check_binary_target(df, target):
-            raise ValueError("Target is not binary or not properly encoded.")
+            raise ValueError("Target is not binary or not properly encoded or contains nulls.")
 
     is_lazy = isinstance(df, pl.LazyFrame)
     for s in str_cols:

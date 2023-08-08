@@ -760,7 +760,7 @@ def woe_iv(
 
     if check_binary:
         if not check_binary_target(df, target):
-            raise ValueError("Target is not binary or not properly encoded.")
+            raise ValueError("Target is not binary or not properly encoded or contains nulls.")
 
     results = (
         df.lazy().groupby(s).agg(

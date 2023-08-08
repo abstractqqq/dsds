@@ -31,7 +31,7 @@ def get_sample_weight(
 ) -> np.ndarray:
     '''
     Infers sample weight from y_actual. All classes in y_actual must be "dense" categorical target variable, meaning 
-    numbers starting in the list [0, ..., (n_classes - 1)], where the i th entry is the number of records in class_i.
+    numbers in the range [0, ..., (n_classes - 1)], where the i th entry is the number of records in class_i.
     If a conversion from sparse target to dense target is needed, see `dsds.prescreen.sparse_to_dense_target`.
 
     Important: by assumption, target ranges from 0, ..., to (n_classes - 1) and each reprentative must have at least 1 
@@ -47,6 +47,16 @@ def get_sample_weight(
     weight_dict
         Dictionary of weights. If there are n_classes, keys must range from 0 to n_classes-1. Values will be the weights
         for the classes.
+
+    Example
+    -------
+    >>> import dsds.metrics as me
+    ... y_actual = np.array([0,0,1,1,2,2]) # balanced labels will return weights of 1
+    >>> me.get_sample_weight(y_actual)
+    array([1., 1., 1., 1., 1., 1.])
+    >>> y_actual = np.array([0,1,1,1,2]) 
+    >>> me.get_sample_weight(y_actual)
+    array([1.66666667, 0.55555556, 0.55555556, 0.55555556, 1.66666667])
     '''
     out = np.ones(shape=y_actual.shape)
     if strategy == "none":
