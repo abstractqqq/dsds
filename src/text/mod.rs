@@ -5,8 +5,7 @@ use crate::text::text::{
     count_vectorizer,
     tfidf_vectorizer,
     snowball_stem,
-    get_ref_table,
-    hamming_distance
+    get_ref_table
 };
 use polars_core::prelude::*;
 // use polars_lazy::prelude::*;
@@ -55,7 +54,14 @@ pub fn rs_tfidf_vectorizer(
 
 #[pyfunction]
 pub fn rs_hamming_dist(s1:&str, s2:&str) -> Option<usize> {
-    hamming_distance(s1, s2)
+    if s1.len() != s2.len() {
+        return None
+    }
+    Some(
+        s1.chars().zip(s2.chars()).fold(
+            0, |acc, (c1,c2)| acc + (c1 != c2) as usize
+        )
+    )
 }
 
 #[pyfunction]
@@ -63,8 +69,7 @@ pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> usize {
 
     // https://en.wikipedia.org/wiki/Wagner%E2%80%93Fischer_algorithm
 
-    let len1: usize = s1.len();
-    let len2: usize = s2.len();
+    let (len1, len2) = (s1.len(), s2.len());
     let mut dp: Vec<Vec<usize>> = vec![vec![0; len2 + 1]; len1 + 1];
 
     // Initialize the first row and first column

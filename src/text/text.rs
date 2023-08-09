@@ -7,17 +7,6 @@ use polars_lazy::prelude::*;
 use std::iter::zip;
 
 #[inline]
-pub fn hamming_distance(s1:&str, s2:&str) -> Option<usize> {
-    if s1.len() != s2.len() {
-        return None
-    }
-    let dist: usize = s1.chars().zip(s2.chars()).fold(
-        0, |acc, (c1,c2)| acc + (c1 != c2) as usize
-    );
-    Some(dist)
-}
-
-#[inline]
 pub fn snowball_stem(word:&str, no_stopwords:bool) -> Option<String> {
 
     if (no_stopwords) & (EN_STOPWORDS.contains(&word)) {
@@ -83,6 +72,7 @@ pub fn get_ref_table(
     .agg([
         col(c).unique()
         , col(&"i").n_unique().alias(&"doc_cnt")
+        , count().alias(&"corpus_cnt")
     ]).filter(
         (col(&"doc_cnt").gt_eq(min_count)).and(col(&"doc_cnt").lt_eq(max_count))
     ).top_k(max_feautures, [col(&"doc_cnt")], [true], true, false)
@@ -92,6 +82,7 @@ pub fn get_ref_table(
         , (col(&"doc_cnt").cast(DataType::Float32)/lit(height)).alias(&"doc_freq")
         , (lit(height + 1.)/(col(&"doc_cnt") + lit(1)).cast(DataType::Float64))
             .log(std::f64::consts::E).alias(&"smooth_idf")
+        , col(&"corpus_cnt")
     ]).collect()?;
     
     Ok(output)

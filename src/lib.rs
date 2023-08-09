@@ -17,11 +17,11 @@ use crate::text::{
 };
 use crate::functions::{
     rs_df_inner_list_jaccard,
-    rs_series_jaccard
-};
-use crate::functions::metrics::{
-    cosine_similarity,
-    self_cosine_similarity
+    rs_series_jaccard, 
+    metrics::{  
+        cosine_similarity,
+        self_cosine_similarity
+    }
 };
 
 // A Python module implemented in Rust.

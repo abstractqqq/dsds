@@ -104,10 +104,10 @@ pub fn list_jaccard_similarity(df:DataFrame, col_a: &str, col_b: &str, st: Inner
         let sub_df = df.slice(*offset as i64, *len);
         let a: &Series = sub_df.column(col_a)?;
         let b: &Series = sub_df.column(col_b)?;
-        let name = format!("{}_{}_jaccard", col_a, col_b).as_str();
+        let name = format!("{}_{}_jaccard", col_a, col_b);
         let out: Series = compute_jaccard_similarity(a, b, &st, include_null)?;
         df!(
-            name => out
+            name.as_str() => out
         )
     }).collect::<PolarsResult<Vec<_>>>()?;
     accumulate_dataframes_vertical(dfs)
