@@ -63,7 +63,7 @@ And yes, significantly faster than NumPy in many cases
 
 ![Screenshot](./pics/logloss.PNG)
 
-Fast and Ergonomic traditional NLP. In comparison, Scikit-learn's CountVectorizer does not perform stemming, and treats words with the same stem differently, does not filter out useless words like 'an', and took 2.2s for the same run.
+Fast and Ergonomic traditional NLP.
 
 ![Screenshot](./pics/nlp.PNG)
 
