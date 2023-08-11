@@ -391,5 +391,3 @@ def from_pkl(path: Union[str,Path]) -> Blueprint:
             return obj
         else:
             raise ValueError("The object in the pickled file is not a Blueprint object.")
-
-

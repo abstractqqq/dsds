@@ -214,8 +214,8 @@ def append_regression(
     
 def id_passthrough(
     df: PolarsFrame
-    , col: str
-    , score_col: str = "_score"
+    , col:str
+    , score_col:str = "_score"
 ) -> PolarsFrame:
     '''
     Appends an identity passthrough score to the pipeline.
@@ -230,11 +230,11 @@ def id_passthrough(
 
 def logistic_passthrough(
     df: PolarsFrame
-    , col: str
+    , col:str
     , coeff:float = 1.0
     , const:float = 0.
-    , k: float = 1.0
-    , score_col: str = "_logistic"
+    , k:float = 1.0
+    , score_col:str = "_logistic"
 ) -> PolarsFrame:
     '''
     Appends a logistic regression passthrough score to the pipeline. The formula used is 
@@ -249,10 +249,10 @@ def logistic_passthrough(
 
 def linear_passthrough(
     df: PolarsFrame
-    , col: str
+    , col:str
     , coeff:float = 1.0
     , const:float = 0.
-    , score_col: str = "_linear"
+    , score_col:str = "_linear"
 ) -> PolarsFrame:
     '''
     Appends a linear passthrough score to the pipeline. The formula is coeff * x + const.

@@ -178,7 +178,7 @@ def order_by(
     , nulls_last:bool = False
     , persist: bool = False
 ) -> PolarsFrame:
-    ''' 
+    '''
     A wrapper function for Polars' sort so that it can be used in pipeline.
 
     Set persist = True if this needs to be remembered by the blueprint.
@@ -511,6 +511,30 @@ def describe_str(
                                             ).row(0)
 
     return pl.from_dict(output)
+
+def describe_str_categories(
+    df:PolarsFrame
+) -> pl.DataFrame:
+
+    strs = get_string_cols(df)
+    stats = [
+        df.lazy().groupby(s).agg(
+            pl.count()
+        ).sort(by=[pl.col("count"), pl.col(s)]).select(
+            pl.lit(s).alias("feature"),
+            pl.col(s).count().alias("n_unique"),
+            pl.col(s).first().alias("min_cat"),
+            pl.col("count").min().alias("min_count"),
+            pl.col(s).last().alias("max_cat"),
+            pl.col("count").max().alias("max_count"),
+            pl.col("count").mean().alias("avg_count"),
+            pl.col("count").diff().min().alias("min_successive_diff"),
+            pl.col("count").diff().mean().alias("avg_successive_diff"),
+            pl.col("count").diff().max().alias("max_successive_diff"),
+        )
+        for s in strs
+    ]
+    return pl.concat(pl.collect_all(stats))
 
 # Add an outlier description
 

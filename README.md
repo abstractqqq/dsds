@@ -5,13 +5,13 @@ This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a dev
 Welcome to DSDS, a data science package that aims to be an improvement over a subset of sklearn's functionality, primarily in the following areas:
 
 1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, etc.)
-2. Fast and furious feature selection (significantly faster F-score, MRMR, mutual_info_score, etc.)
+2. Fast and furious feature selection (significantly faster F-score, MRMR, mutual_info_score, etc.), make "data preparation" stage fast and simple, and reduce the amount of code by providing well-established functions.
 3. Cleaner pipeline construction and management (See examples below.)
 4. Compatible with Polars LazyFrames (Yes! Pipelines can enjoy the benefits of query optimization too!)
-5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. No nonsenses.
+5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes.
 6. Even more performance for all of the above with the power of Rust!
 
-Currently, the package is only built with local ML development in mind. I am aware that ML is moving towards more "orchestrated" environments like Kubeflow/Flyte. I have not tested or made compatbility considerations for those environments yet, although I don't think things would be drastically different.  
+Currently, the package is only built with local ML development in mind. I am aware that ML is moving towards more "orchestrated" environments like Kubeflow/Flyte. I have not tested or made compatbility considerations for those environments yet, although I don't think things would be drastically different. All ML pipeline related utility should be able to fit in a final container along with the model run. The orchestration should mostly be about queries and data filtering before the dsds-pipeline.
 
 DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
 
