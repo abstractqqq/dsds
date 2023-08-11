@@ -14,7 +14,8 @@ from .type_alias import (
     , ClassifModel
     , RegressionModel
 )
-import pickle
+# from datetime import datetime
+import pickle # Use pickle for now. Think about other ways to preserve.
 import polars as pl
 import importlib
 import logging
@@ -37,14 +38,15 @@ class Step:
     with_columns: Optional[list[pl.Expr]] = None
     map_dict: Optional[MapDict] = None
     add_func: Optional[dict[str, Any]] = None
-    filter: Optional[pl.Expr] = None 
-    select_or_drop: Optional[list[str]] = None
+    filter: Optional[pl.Expr] = None
+    select: Optional[list[str]] = None
+    drop: Optional[list[str]] = None
     model_step: Optional[dict[str, Any]] = None
 
     def validate(self) -> bool:
         not_nones:list[str] = []
         for field in fields(self):
-            if field.name in ["with_columns", "map_dict", "select_or_drop", "add_func", "filter", "model_step"]:
+            if field.name in ("with_columns", "map_dict", "select", "drop", "add_func", "filter", "model_step"):
                 if getattr(self, field.name) is not None:
                     not_nones.append(field.name)
             elif field.name == "action":
@@ -67,8 +69,6 @@ class Step:
             value = getattr(self, field.name)
             if field.name != "action" and value is not None:
                 return value
-
-# Break associated_data into parts?
 
 @pl.api.register_lazyframe_namespace("blueprint")
 class Blueprint:
@@ -188,7 +188,8 @@ class Blueprint:
         return output
 
     # Feature Transformations that requires a 1-1 mapping as given by the ref dict. This will be
-    # carried out using a join logic to avoid the use of Python UDF.
+    # carried out using a join logic. This is a special case of how map_dict works because I need
+    # to preserve this mapping.
     def map_dict(self, left_col:str, ref:dict, right_col:str, default:Optional[Any]) -> LazyFrame:
         map_dict = MapDict(left_col = left_col, ref = ref, right_col = right_col, default = default)
         output = Blueprint._map_dict(self._ldf, map_dict)
@@ -201,7 +202,7 @@ class Blueprint:
     # Shallow copy should work
     # Just make sure exprs are not lazy structures like generators
     
-    # Transformations are just with_columns(exprs)
+    # Transformations that can be done with with_columns(exprs)
     def with_columns(self, exprs:list[pl.Expr]) -> LazyFrame:
         output = self._ldf.with_columns(exprs)
         output.blueprint.steps = self.steps.copy() # Shallow copy should work
@@ -223,7 +224,7 @@ class Blueprint:
         output = self._ldf.select(select_cols)
         output.blueprint.steps = self.steps.copy() 
         output.blueprint.steps.append(
-            Step(action = "select", select_or_drop = select_cols)
+            Step(action = "select", select = select_cols)
         )
         return output
     
@@ -232,7 +233,7 @@ class Blueprint:
         output = self._ldf.drop(drop_cols)
         output.blueprint.steps = self.steps.copy() 
         output.blueprint.steps.append(
-            Step(action = "drop", select_or_drop = drop_cols)
+            Step(action = "drop", drop = drop_cols)
         )
         return output
     
@@ -358,13 +359,13 @@ class Blueprint:
         for i,s in enumerate(self.steps):
             if i < _up_to:
                 if s.action == "drop":
-                    df = df.drop(s.select_or_drop)
+                    df = df.drop(s.drop)
                 elif s.action == "with_columns":
                     df = df.with_columns(s.with_columns)
                 elif s.action == "map_dict":
                     df = self._map_dict(df, s.map_dict)
                 elif s.action == "select":
-                    df = df.select(s.select_or_drop)
+                    df = df.select(s.select)
                 elif s.action == "filter":
                     df = df.filter(s.filter)
                 elif s.action == "add_func":
@@ -382,6 +383,7 @@ class Blueprint:
             return df.collect()
         return df
 
+# Right now, use Pickle. Definitely move away from Pickle in the future.
 def from_pkl(path: Union[str,Path]) -> Blueprint:
     with open(path, "rb") as f:
         obj = pickle.loads(f.read())

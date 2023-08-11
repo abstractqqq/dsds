@@ -1,6 +1,7 @@
 
 pub mod metrics;
 pub mod utils;
+pub mod time_series;
 
 use polars_core::prelude::*;
 use pyo3::prelude::*;

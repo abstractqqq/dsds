@@ -17,7 +17,6 @@ fn main() {
     for _ in 0..n {
         let start = Instant::now();
 
-
         let _table = get_ref_table(df.clone(), "Description", "snowball", 0.02, 0.95, 1000, 200).unwrap();
 
         // println!("{}", table.unwrap().head(Some(5)));
@@ -29,5 +28,14 @@ fn main() {
     let avg = times.into_iter().sum::<f32>() / n as f32; 
     println!("Average time: {}", avg);
 
-    
+    // use rustfft::{FftPlanner, num_complex::Complex};
+
+    // let mut planner = FftPlanner::<f32>::new();
+    // let fft = planner.plan_fft_forward(1234);
+
+    // let mut buffer = vec![Complex{ re: 0.0, im: 0.0 }; 1234];
+
+    // fft.process(&mut buffer);
+
+    // println!("{:?}", buffer);
 }

@@ -12,8 +12,10 @@ use crate::text::{
     rs_tfidf_vectorizer,
     rs_ref_table,
     rs_snowball_stem,
+    rs_snowball_stem_series,
     rs_levenshtein_dist,
-    rs_hamming_dist
+    rs_hamming_dist,
+    rs_hamming_dist_series
 };
 use crate::functions::{
     rs_df_inner_list_jaccard,
@@ -36,6 +38,8 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rs_df_inner_list_jaccard, m)?)?;
     m.add_function(wrap_pyfunction!(rs_series_jaccard, m)?)?;
     m.add_function(wrap_pyfunction!(rs_hamming_dist, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_snowball_stem_series, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_hamming_dist_series, m)?)?;
 
     #[pyfn(m)]
     fn rs_cosine_similarity<'py>(

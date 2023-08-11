@@ -11,6 +11,8 @@ Welcome to DSDS, a data science package that aims to be an improvement over a su
 5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. No nonsenses.
 6. Even more performance for all of the above with the power of Rust!
 
+Currently, the package is only built with local ML development in mind. I am aware that ML is moving towards more "orchestrated" environments like Kubeflow/Flyte. I have not tested or made compatbility considerations for those environments yet, although I don't think things would be drastically different.  
+
 DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
 
 ## Usage

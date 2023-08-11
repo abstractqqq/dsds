@@ -3,6 +3,7 @@ use ndarray::parallel::prelude::*;
 use rayon::prelude::*;
 use polars_core::utils::accumulate_dataframes_vertical;
 use polars::prelude::*;
+
 use super::utils::split_offsets;
 
 // Don't use these functions in Rust.. They shouldn't be in place operations
@@ -17,8 +18,8 @@ pub fn cosine_similarity(
     normalize:bool
 ) -> Array2<f64> {
     if normalize {
-        row_normalize(&mut mat1);
-        row_normalize(&mut mat2);
+        normalize_in_place(&mut mat1, Axis(0));
+        normalize_in_place(&mut mat2, Axis(0));
         mat1.dot(&mat2.t())
     } else {
         mat1.dot(&mat2.t())
@@ -31,7 +32,7 @@ pub fn self_cosine_similarity(
     normalize:bool
 ) -> Array2<f64> {
     if normalize {
-        row_normalize(&mut mat1);
+        normalize_in_place(&mut mat1, Axis(0));
         mat1.dot(&mat1.t())
     } else {
         mat1.dot(&mat1.t())
@@ -39,10 +40,10 @@ pub fn self_cosine_similarity(
 }
 
 #[inline]
-fn row_normalize(mat:&mut Array2<f64>) {
-    mat.axis_iter_mut(Axis(0)).into_par_iter().for_each(|mut row| {
-        let norm: f64 = row.iter().fold(0., |acc, x| acc + x.powi(2)).sqrt();
-        row /= norm;
+fn normalize_in_place(mat:&mut Array2<f64>, axis:Axis) {
+    mat.axis_iter_mut(axis).into_par_iter().for_each(|mut rc| {
+        let norm: f64 = rc.iter().fold(0., |acc, x| acc + x.powi(2)).sqrt();
+        rc /= norm;
     });
 }
 
@@ -64,7 +65,12 @@ impl InnerType {
     }
 }
 
-fn compute_jaccard_similarity(sa: &Series, sb: &Series, st: &InnerType, include_null:bool) -> PolarsResult<Series> {
+fn compute_jaccard_similarity(
+    sa: &Series, 
+    sb: &Series, 
+    st: &InnerType, 
+    include_null:bool
+) -> PolarsResult<Series> {
     let sa: &ChunkedArray<ListType> = sa.list()?;
     let sb: &ChunkedArray<ListType> = sb.list()?;
 
@@ -97,7 +103,14 @@ fn compute_jaccard_similarity(sa: &Series, sb: &Series, st: &InnerType, include_
     Ok(ca.into_series())
 }
 
-pub fn list_jaccard_similarity(df:DataFrame, col_a: &str, col_b: &str, st: InnerType, include_null:bool) -> PolarsResult<DataFrame> {
+pub fn list_jaccard_similarity(
+    df:DataFrame, 
+    col_a: &str, 
+    col_b: &str, 
+    st: InnerType, 
+    include_null:bool
+) -> PolarsResult<DataFrame> {
+
     let offsets: Vec<(usize, usize)> = split_offsets(df.height(), rayon::current_num_threads());
 
     let dfs: Vec<DataFrame>= offsets.par_iter().map(|(offset, len)| {
@@ -122,9 +135,9 @@ pub fn series_jaccard_similarity(
     parallel: bool
 ) -> PolarsResult<f64> {
 
-    // Jaccard similarity of two series. Stem only applies to string type.
-    let na = a.null_count();
-    let nb = b.null_count();
+    // Jaccard similarity of two series.
+    let na: usize = a.null_count();
+    let nb: usize = b.null_count();
     let (mut s3_len, s1_len, s2_len) = match st {
         InnerType::INTEGER => {
             if parallel {

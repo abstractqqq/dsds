@@ -7,16 +7,49 @@ use polars_lazy::prelude::*;
 use std::iter::zip;
 
 #[inline]
-pub fn snowball_stem(word:&str, no_stopwords:bool) -> Option<String> {
+pub fn hamming_dist_series(a: &Series, b: &Series) -> PolarsResult<UInt32Chunked> {
+    Ok(
+        a.utf8()?
+        .into_iter()
+        .zip(b.utf8()?)
+        .map(|(lhs, rhs)| {
+            if let (Some(l), Some(r)) = (lhs, rhs) {
+                hamming_dist(l, r)
+            } else {
+                None
+            }
+        }).collect()
+    )
+}
 
-    if (no_stopwords) & (EN_STOPWORDS.contains(&word)) {
-        None
-    } else if word.parse::<f64>().is_ok() {
-        None
-    } else {
-        let mut env: SnowballEnv<'_> = SnowballEnv::create(word);
-        algorithms::english_stemmer::stem(&mut env);
-        Some(env.get_current().to_string())
+#[inline]
+pub fn hamming_dist(s1:&str, s2:&str) -> Option<u32> {
+    if s1.len() != s2.len() {
+        return None
+    }
+    Some(
+        s1.chars().zip(s2.chars()).fold(
+            0, |acc, (c1,c2)| acc + (c1 != c2) as u32
+        )
+    )
+}
+
+#[inline]
+pub fn snowball_stem(word:Option<&str>, no_stopwords:bool) -> Option<String> {
+
+    match word {
+        Some(w) => {
+            if (no_stopwords) & (EN_STOPWORDS.contains(&w)) {
+                None
+            } else if w.parse::<f64>().is_ok() {
+                None
+            } else {
+                let mut env: SnowballEnv<'_> = SnowballEnv::create(w);
+                algorithms::english_stemmer::stem(&mut env);
+                Some(env.get_current().to_string())
+            }
+        },
+        _ => None
     }
 }
 
@@ -24,14 +57,10 @@ pub fn snowball_stem(word:&str, no_stopwords:bool) -> Option<String> {
 pub fn snowball_on_series(
     words: Series
 ) -> Result<Option<Series>, PolarsError> {
-
     Ok(Some(
         words.utf8()?.par_iter()
         .map(|word| {
-            match word {
-                Some(w) => Ok(snowball_stem(w, true)),
-                _ => Ok(None)
-            } 
+            Ok(snowball_stem(word, true))
         }).collect::<PolarsResult<ChunkedArray<Utf8Type>>>()?.into_series()
     ))
 }

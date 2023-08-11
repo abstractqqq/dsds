@@ -84,9 +84,15 @@ def rename(df:PolarsFrame, rename_dict:dict[str, str], persist:bool=False) -> Po
 
     Set persist = True if this needs to be remembered by the blueprint.
     '''
-    output = df.rename(rename_dict)
+    d = {}
+    for k, v in rename_dict.items():
+        if k in df.columns:
+            d[k] = v
+        else:
+            logger.warn(f"Attempting to rename {k}, which does not exist in df. Ignored.")
+    output = df.rename(d)
     if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.add_func(df, rename, kwargs = {"rename_dict": rename_dict})
+        return output.blueprint.add_func(df, rename, kwargs = {"rename_dict": d})
     return output
 
 def lowercase(df:PolarsFrame, persist:bool=False) -> PolarsFrame:

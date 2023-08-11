@@ -6,6 +6,7 @@ from typing import (
 from .type_alias import (
     WeightStrategy
     , InnerDtypes
+    , PolarsFrame
 )
 from dsds._rust import (
     rs_cosine_similarity
@@ -427,6 +428,33 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
         return x.dot(y)
     else:
         return rs_cosine_similarity(x, y, normalize)
+    
+def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
+    return 1 - cosine_similarity(x,y,True)
+
+# def haversine_dist(
+#     df:PolarsFrame
+#     , x_long:str
+#     , x_lat:str
+#     , y_long:str
+#     , y_lat:str
+#     , out_name:str="haversine"
+# ) -> PolarsFrame:
+#     '''
+    
+#     '''
+#     keep = df.columns
+#     return df.with_columns(
+#         sin_lat = ((pl.col(x_lat) - pl.col(y_lat))/2).sin().pow(2),
+#         sin_long = ((pl.col(x_long) - pl.col(y_long))/2).sin().pow(2),
+#         cos = pl.col(x_lat).cos() * pl.col(y_lat).cos()
+#     ).select(
+#         *keep,
+#         pl.lit(2.0, dtype=pl.Float64)
+#         * (pl.col("sin_lat") + pl.col("sin_long") * pl.col("cos")).sqrt().arcsin().alias(out_name)
+#     )
+
+
     
 def jaccard_similarity(
     s1:Union[pl.Series,list,np.ndarray],

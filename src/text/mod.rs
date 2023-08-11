@@ -5,15 +5,20 @@ use crate::text::text::{
     count_vectorizer,
     tfidf_vectorizer,
     snowball_stem,
-    get_ref_table
+    get_ref_table,
+    hamming_dist_series,
+    hamming_dist,
 };
+
 use polars_core::prelude::*;
+
 // use polars_lazy::prelude::*;
 use pyo3::prelude::*;
 use pyo3_polars::error::PyPolarsErr;
-use pyo3_polars::PyDataFrame;
+use pyo3_polars::{PyDataFrame, PySeries};
+use rayon::prelude::ParallelIterator;
 
-// Only expose Python Layer in mod.rs
+// Only expose Python Layer in mod.rs, except for things that require py object.
 
 #[pyfunction]
 pub fn rs_cnt_vectorizer(
@@ -53,15 +58,22 @@ pub fn rs_tfidf_vectorizer(
 }
 
 #[pyfunction]
-pub fn rs_hamming_dist(s1:&str, s2:&str) -> Option<usize> {
-    if s1.len() != s2.len() {
-        return None
-    }
-    Some(
-        s1.chars().zip(s2.chars()).fold(
-            0, |acc, (c1,c2)| acc + (c1 != c2) as usize
-        )
+pub fn rs_hamming_dist(s1:&str, s2:&str) -> Option<u32> {
+    hamming_dist(s1, s2)
+}
+
+#[pyfunction]
+pub fn rs_hamming_dist_series(series_a:PySeries, series_b:PySeries) -> PyResult<PySeries> {
+    
+    let a:Series = series_a.into();
+    let b:Series = series_b.into();
+
+    let out: ChunkedArray<UInt32Type> = hamming_dist_series(&a, &b).map_err(PyPolarsErr::from)?;
+
+    Ok(
+        PySeries(out.into_series())
     )
+
 }
 
 #[pyfunction]
@@ -97,11 +109,28 @@ pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> usize {
 
 #[pyfunction]
 pub fn rs_snowball_stem(word:&str, no_stopwords:bool) -> PyResult<String> {
-    if let Some(good) = snowball_stem(word, no_stopwords) {
-        Ok(good)
+    let out: Option<String> = snowball_stem(Some(word), no_stopwords);
+    if let Some(s) = out {
+        Ok(s)
     } else {
         Ok("".to_string())
     }
+}
+
+#[pyfunction]
+pub fn rs_snowball_stem_series(words:PySeries) -> PyResult<PySeries>{
+    
+    let words: Series = words.into();
+    let out = words.utf8()
+    .map_err(PyPolarsErr::from)?
+    .par_iter()
+    .map(|word| {
+        snowball_stem(word, true)
+    }).collect::<ChunkedArray<Utf8Type>>();
+
+    Ok(
+        PySeries(out.into_series())
+    )
 }
 
 #[pyfunction]
