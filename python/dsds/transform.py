@@ -55,21 +55,21 @@ def impute(
         The constant value to impute by if strategy = 'const'
     '''
     if strategy == "median":
-        all_medians = df.lazy().select(cols).median().collect().row(0)
-        exprs = (pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols))
+        all_medians = df.lazy().select(pl.col(cols).median()).collect().row(0)
+        exprs = [pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols)]
     elif strategy in ("mean", "avg", "average"):
-        all_means = df.lazy().select(cols).mean().collect().row(0)
-        exprs = (pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols))
+        all_means = df.lazy().select(pl.col(cols).mean()).collect().row(0)
+        exprs = [pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
-        exprs = (pl.col(c).fill_null(const) for c in cols)
+        exprs = [pl.col(cols).fill_null(const)]
     elif strategy in ("mode", "most_frequent"):
-        all_modes = df.lazy().select(cols).select(pl.all().mode().first()).collect().row(0)
-        exprs = (pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols))
+        all_modes = df.lazy().select(pl.col(cols).mode().first()).collect().row(0)
+        exprs = [pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols)]
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def scale(
@@ -96,24 +96,24 @@ def scale(
     '''
     _ = type_checker(df, cols, "numeric", "scale")
     if strategy == "standard":
-        mean_std = df.lazy().select(cols).select(
-            pl.all().mean().prefix("mean:"),
-            pl.all().std().prefix("std:")
+        mean_std = df.lazy().select(
+            pl.col(cols).mean().prefix("mean:"),
+            pl.col(cols).std().prefix("std:")
         ).collect().row(0)
-        exprs = ((pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols))
+        exprs = [(pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols)]
     elif strategy == "min_max":
-        min_max = df.lazy().select(cols).select(
-            pl.all().min().prefix("min:"),
-            pl.all().max().prefix("max:")
+        min_max = df.lazy().select(
+            pl.col(cols).min().prefix("min:"),
+            pl.col(cols).max().prefix("max:")
         ).collect().row(0) # All mins come first, then maxs
-        exprs = ((pl.col(c) - min_max[i])/((min_max[i + len(cols)] - min_max[i])) for i,c in enumerate(cols))
+        exprs = [(pl.col(c) - min_max[i])/((min_max[i + len(cols)] - min_max[i])) for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
-        exprs = (pl.col(c)/const for c in cols)
+        exprs = [pl.col(cols) / const]
     else:
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def merge_infreq_values(
@@ -198,7 +198,7 @@ def merge_infreq_values(
     for c in cols:
         infreq = df.lazy().groupby(c).count().filter(
             comp
-        ).collect()[c]
+        ).select(pl.col(c)).collect()[c]
         value = separator.join(infreq)
         exprs.append(
             pl.when(pl.col(c).is_in(infreq)).then(value).otherwise(pl.col(c)).alias(c)
@@ -216,9 +216,10 @@ def combine_zero_ones(
     , drop_original:bool = True
 ) -> PolarsFrame:
     '''
-    Take columns that are all binary 0, 1 columns, combine them according to the rule. Please make sure 
-    the columns only contain binary 0s and 1s. Depending on the rule, this can be used, for example, to 
-    quickly combine many one hot encoded columns into one, or reducing the same binary columns into one.
+    Take columns that are all binary 0, 1 columns, combine them horizontally according to the rule. 
+    Please make sure the columns only contain binary 0s and 1s. Depending on the rule, this can be 
+    used, for example, to quickly combine many one hot encoded columns into one, or reducing the 
+    same binary columns into one.
 
     This will be remembered by blueprint by default.
 
@@ -267,11 +268,11 @@ def combine_zero_ones(
     └─────┘
     '''
     if rule == "union":
-        expr = pl.max_horizontal([pl.col(c) for c in cols]).cast(pl.UInt8).alias(new_name)
+        expr = pl.max_horizontal([pl.col(cols)]).cast(pl.UInt8).alias(new_name)
     elif rule == "intersection":
-        expr = pl.min_horizontal([pl.col(c) for c in cols]).cast(pl.UInt8).alias(new_name)
+        expr = pl.min_horizontal([pl.col(cols)]).cast(pl.UInt8).alias(new_name)
     elif rule == "same":
-        expr = pl.when(sum(pl.col(c) for c in cols).is_in((0, len(cols)))).then(
+        expr = pl.when(pl.sum_horizontal([pl.col(cols)]).is_in((0, len(cols)))).then(
                     pl.lit(1, dtype=pl.UInt8)
                 ).otherwise(
                     pl.lit(0, dtype=pl.UInt8)
@@ -397,16 +398,16 @@ def clip(
     a:bool = min_clip is None
     b:bool = max_clip is None
     if a & (not b):
-        exprs = (pl.col(c).clip_max(max_clip) for c in cols)
+        exprs = [pl.col(cols).clip_max(max_clip)]
     elif (not a) & b:
-        exprs = (pl.col(c).clip_min(min_clip) for c in cols)
+        exprs = [pl.col(cols).clip_min(min_clip)]
     elif not (a | b):
-        exprs = (pl.col(c).clip(min_clip, max_clip) for c in cols)
+        exprs = [pl.col(cols).clip(min_clip, max_clip)]
     else:
         raise ValueError("At least one of min_cap and max_cap should be provided.")
     
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def log_transform(
@@ -437,14 +438,13 @@ def log_transform(
         If plus_one is true, this will perform ln(1+x) and ignore the `base` input.
     suffix
         Choice of a suffix to the transformed columns. If this is the empty string "", then the original column
-        will be replaced, except when plus_one = True, in which case the suffix will always be "_log1p". In that
-        case, please use a `dsds.prescreen.drop` step if you want the original columns to be dropped.
+        will be replaced.
     '''
     _ = type_checker(df, cols, "numeric", "log_transform")
     if plus_one:
-        exprs = [pl.col(c).log1p().suffix("_log1p") for c in cols]
+        exprs = [pl.col(cols).log1p().suffix(suffix)]
     else:
-        exprs = [pl.col(c).log(base).suffix(suffix) for c in cols]
+        exprs = [pl.col(cols).log(base).suffix(suffix)]
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
@@ -519,13 +519,13 @@ def extract_dt_features(
     
     for e in to_extract:
         if e == "month":
-            exprs.extend(pl.col(c).dt.month().suffix("_month") for c in cols)
+            exprs.append(pl.col(cols).dt.month().suffix("_month"))
         elif e == "year":
-            exprs.extend(pl.col(c).dt.year().suffix("_year") for c in cols)
+            exprs.append(pl.col(cols).dt.year().suffix("_year"))
         elif e == "quarter":
-            exprs.extend(pl.col(c).dt.quarter().suffix("_quarter") for c in cols)
+            exprs.append(pl.col(cols).dt.quarter().suffix("_quarter"))
         elif e == "week":
-            exprs.extend(pl.col(c).dt.week().suffix("_week") for c in cols)
+            exprs.append(pl.col(cols).dt.week().suffix("_week"))
         elif e == "day_of_week":
             if sunday_first:
                 exprs.extend(
@@ -534,9 +534,9 @@ def extract_dt_features(
                     for c in cols
                 )
             else:
-                exprs.extend(pl.col(c).dt.weekday().suffix("_day_of_week") for c in cols)
+                exprs.append(pl.col(cols).dt.weekday().suffix("_day_of_week"))
         elif e == "day_of_year":
-            exprs.extend(pl.col(c).dt.ordinal_day().suffix("_day_of_year") for c in cols)
+            exprs.append(pl.col(cols).dt.ordinal_day().suffix("_day_of_year"))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid DateExtract value. Ignored.")
 
@@ -600,15 +600,15 @@ def extract_horizontally(
     for e in to_extract:
         alias = f"{e}({','.join(cols)})"
         if e == "min":
-            exprs.append(pl.min_horizontal([pl.col(c) for c in cols]).alias(alias))
+            exprs.append(pl.min_horizontal(pl.col(cols)).alias(alias))
         elif e == "max":
-            exprs.append(pl.max_horizontal([pl.col(c) for c in cols]).alias(alias))
+            exprs.append(pl.max_horizontal(pl.col(cols)).alias(alias))
         elif e == "sum":
-            exprs.append(pl.sum_horizontal([pl.col(c) for c in cols]).alias(alias))
+            exprs.append(pl.sum_horizontal(pl.col(cols)).alias(alias))
         elif e == "any":
-            exprs.append(pl.any_horizontal([pl.col(c) for c in cols]).alias(alias))
+            exprs.append(pl.any_horizontal(pl.col(cols)).alias(alias))
         elif e == "all":
-            exprs.append(pl.all_horizontal([pl.col(c) for c in cols]).alias(alias))
+            exprs.append(pl.all_horizontal(pl.col(cols)).alias(alias))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid HorizontalExtract value. Ignored.")
 
@@ -672,13 +672,13 @@ def extract_word_count(
 
     _ = type_checker(df, str_cols, "string", "extract_word_count")
     exprs = []
-    if lower:
-        for c in str_cols:
-            exprs.extend(pl.col(c).str.to_lowercase().str.count_match(w).suffix(f"_count_{w}") for w in words)
-    else:
-        for c in str_cols:
-            exprs.extend(pl.col(c).str.count_match(w).suffix(f"_count_{w}") for w in words)
 
+    base = pl.col(str_cols)
+    if lower:
+        base = base.str.to_lowercase()
+    
+    exprs.extend(base.str.count_match(w).suffix(f"_count_{w}") for w in words)
+    
     if isinstance(df, pl.LazyFrame):
         if drop_original:
             return df.blueprint.with_columns(exprs).blueprint.drop(cols)
@@ -749,30 +749,24 @@ def extract_from_str(
     exprs = []
     for e in to_extract:
         if e == "len":
-            exprs.extend(pl.col(c).str.lengths().suffix("_len") for c in cols)
+            exprs.extend(pl.col(cols).str.lengths().suffix("_len"))
         elif e == "starts_with":
             if use_bool:
-                exprs.extend(pl.col(c).str.starts_with(pattern).suffix(f"_starts_with_{pattern}") 
-                            for c in cols)
+                exprs.append(pl.col(cols).str.starts_with(pattern).suffix(f"_starts_with_{pattern}"))
             else:
-                exprs.extend(pl.col(c).str.starts_with(pattern).cast(pl.UInt8).suffix(f"_starts_with_{pattern}") 
-                            for c in cols)
+                exprs.append(pl.col(cols).str.starts_with(pattern).cast(pl.UInt8).suffix(f"_starts_with_{pattern}"))
         elif e == "ends_with":
             if use_bool:
-                exprs.extend(pl.col(c).str.ends_with(pattern).suffix(f"_ends_with_{pattern}")
-                            for c in cols)
+                exprs.append(pl.col(cols).str.ends_with(pattern).suffix(f"_ends_with_{pattern}"))
             else:
-                exprs.extend(pl.col(c).str.ends_with(pattern).cast(pl.UInt8).suffix(f"_ends_with_{pattern}") 
-                            for c in cols)
+                exprs.append(pl.col(cols).str.ends_with(pattern).cast(pl.UInt8).suffix(f"_ends_with_{pattern}"))
         elif e == "count":
-            exprs.extend(pl.col(c).str.count_match(pattern).suffix(f"_{pattern}_count") for c in cols)
+            exprs.append(pl.col(cols).str.count_match(pattern).suffix(f"_{pattern}_count"))
         elif e == "contains":
             if use_bool:
-                exprs.extend(pl.col(c).str.contains(pattern).suffix(f"_contains_{pattern}") 
-                            for c in cols)
+                exprs.append(pl.col(cols).str.contains(pattern).suffix(f"_contains_{pattern}"))
             else:
-                exprs.extend(pl.col(c).str.contains(pattern).cast(pl.UInt8).suffix(f"_contains_{pattern}") 
-                            for c in cols)
+                exprs.append(pl.col(cols).str.contains(pattern).cast(pl.UInt8).suffix(f"_contains_{pattern}"))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid StrExtract value. Ignored.")
 
@@ -836,17 +830,17 @@ def extract_list_features(
     
     for e in to_extract:
         if e == "min":
-            exprs.extend(pl.col(c).list.min().suffix("_min") for c in cols)
+            exprs.append(pl.col(cols).list.min().suffix("_min"))
         elif e == "max":
-            exprs.extend(pl.col(c).list.max().suffix("_max") for c in cols)
+            exprs.extend(pl.col(cols).list.max().suffix("_max"))
         elif e in ("mean", "avg"):
-            exprs.extend(pl.col(c).list.mean().suffix("_mean") for c in cols)
+            exprs.extend(pl.col(cols).list.mean().suffix("_mean"))
         elif e == "len":
-            exprs.extend(pl.col(c).list.lengths().suffix("_len") for c in cols)
+            exprs.extend(pl.col(cols).list.lengths().suffix("_len"))
         elif e == "first":
-            exprs.extend(pl.col(c).list.first().suffix("_first") for c in cols)
+            exprs.extend(pl.col(cols).list.first().suffix("_first"))
         elif e == "last":
-            exprs.extend(pl.col(c).list.last().suffix("_last") for c in cols)
+            exprs.extend(pl.col(cols).list.last().suffix("_last"))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid ListExtract value. Ignored.")
 
@@ -860,7 +854,7 @@ def extract_list_features(
 
 def moving_avgs(
     df:PolarsFrame
-    , c: str
+    , cols: list[str]
     , window_sizes:list[int]
     , min_periods: Optional[int] = None,
 ) -> PolarsFrame:
@@ -874,8 +868,8 @@ def moving_avgs(
     ----------
     df
         Either a lazy or eager Polars dataframe
-    c
-        Name of the column to compute moving averages
+    cols
+        Columns for which you want to compute moving averages
     window_sizes
         A list of positive integers > 1, representing the different moving average periods for the column c.
         Everything <= 1 will be ignored
@@ -883,7 +877,8 @@ def moving_avgs(
         The number of values in the window that should be non-null before computing a result. If None, 
         it will be set equal to window size.
     '''
-    exprs = [pl.col(c).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
+    _ = type_checker(df, cols, "numeric", "moving_avgs")
+    exprs = [pl.col(cols).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
              for i in window_sizes if i > 1]
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)

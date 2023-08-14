@@ -35,9 +35,9 @@ def boolean_encode(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
     '''
     bool_cols = get_bool_cols(df)
     if keep_null: # Directly cast. If null, then cast will also return null
-        exprs = (pl.col(c).cast(pl.UInt8) for c in bool_cols)
+        exprs = [pl.col(bool_cols).cast(pl.UInt8)]
     else: # Cast. Then fill null to 0s.
-        exprs = (pl.col(c).cast(pl.UInt8).fill_null(0) for c in bool_cols)
+        exprs = [pl.col(bool_cols).cast(pl.UInt8).fill_null(0)]
 
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
@@ -68,9 +68,9 @@ def missing_indicator(
         to_add = cols
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
-    exprs = (pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add)
+    exprs = [pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add]
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(list(exprs))
+        return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
 def one_hot_encode(
@@ -104,8 +104,8 @@ def one_hot_encode(
         str_cols = get_string_cols(df)
 
     if isinstance(df, pl.LazyFrame):
-        temp = df.lazy().select(str_cols).select(
-            pl.all().unique().implode().list.sort()
+        temp = df.lazy().select(
+            pl.col(str_cols).unique().implode().list.sort()
         )
         exprs:list[pl.Expr] = []
         start_index = int(drop_first)
@@ -161,7 +161,7 @@ def binary_encode(
 
 def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''
-    Force every binary column, no matter what data type, to be turned into 0s and 1s according to the order of the 
+    Force every binary column, no matter what data type, into 0s and 1s according to the order of the 
     elements. If a column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
 
     This will be remembered by blueprint by default.
@@ -172,8 +172,8 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
         Either a lazy or eager Polars DataFrame
     '''
     binary_list = get_unique_count(df).filter(pl.col("n_unique") == 2)["column"]
-    temp = df.lazy().select(binary_list).select(
-            pl.all().unique().implode().list.sort()
+    temp = df.lazy().select(
+            pl.col(binary_list).unique().implode().list.sort()
         )
     exprs:list[pl.Expr] = []
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
@@ -245,9 +245,9 @@ def multicat_one_hot_encode(
     └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
     '''
     _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
-    temp = df.lazy().select(cols).select(
-        pl.all().str.split("|").explode().unique().implode().list.sort()
-    ).select(cols)
+    temp = df.lazy().select(
+        pl.col(cols).str.split("|").explode().unique().implode().list.sort()
+    )
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     exprs = []
@@ -297,8 +297,8 @@ def ordinal_auto_encode(
     else:
         ordinal_list = get_string_cols(df, exclude=exclude)
 
-    temp = df.lazy().select(ordinal_list).select(
-        pl.all().unique().implode().list.sort(descending=descending)
+    temp = df.lazy().select(
+        pl.col(ordinal_list).unique().implode().list.sort(descending=descending)
     )
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]
@@ -530,14 +530,11 @@ def custom_binning(
         If you don't want to replace the original columns, you have the option to give the binned column a suffix
     '''
     if isinstance(df, pl.LazyFrame):
-        exprs = [
-            pl.col(c).cut(cuts).cast(pl.Utf8).suffix(suffix) for c in cols
-        ]
-        return df.blueprint.with_columns(exprs)
-    else:
-        return df.with_columns(
-            pl.col(c).cut(cuts).cast(pl.Utf8).suffix(suffix) for c in cols
+        return df.blueprint.with_columns(
+            [pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix)]
         )
+    else:
+        return df.with_columns(pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix))
     
 def fixed_sized_binning(
     df:PolarsFrame
@@ -562,9 +559,9 @@ def fixed_sized_binning(
     suffix
         If you don't want to replace the original columns, you have the option to give the binned column a suffix
     '''
-    bounds = df.lazy().select(cols).select(
-        pl.all().min().prefix("min:")
-        , pl.all().max().prefix("max:")
+    bounds = df.lazy().select(
+        pl.col(cols).min().prefix("min:")
+        , pl.col(cols).max().prefix("max:")
     ).collect().row(0)
     exprs = []
     n = len(cols)
@@ -638,8 +635,8 @@ def quantile_binning(
     _ = type_checker(df, cols, "numeric", "quantile_binning")
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
     if isinstance(df, pl.LazyFrame):
-        cuts = df.select(cols).select(
-            pl.all().qcut(qcuts).unique().cast(pl.Utf8).str.extract(r"\((.*?),")
+        cuts = df.select(
+            pl.col(cols).qcut(qcuts).unique().cast(pl.Utf8).str.extract(r"\((.*?),")
             .cast(pl.Float64).sort().tail(len(qcuts))
         ).collect()
         exprs = [
@@ -648,7 +645,7 @@ def quantile_binning(
         return df.blueprint.with_columns(exprs)
     else: # Eager frame
         return df.with_columns(
-            pl.col(c).qcut(qcuts).cast(pl.Utf8).suffix(suffix) for c in cols 
+            pl.col(cols).qcut(qcuts).cast(pl.Utf8).suffix(suffix) 
         )
 
 def woe_cat_encode(
