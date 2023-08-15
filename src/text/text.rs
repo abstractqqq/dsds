@@ -1,10 +1,25 @@
 use crate::snowball::{SnowballEnv, algorithms};
 use crate::text::consts::EN_STOPWORDS;
+use polars_core::series::IsSorted;
 use polars_lazy::dsl::GetOutput;
 use rayon::prelude::*;
 use polars_core::prelude::*;
 use polars_lazy::prelude::*;
 use std::iter::zip;
+
+pub enum STEMMER {
+    SNOWBALL
+    , NONE 
+}
+
+impl STEMMER {
+    pub fn from_str(s:&str) -> Self {
+        match s {
+            "snowball" => STEMMER::SNOWBALL,
+            _ => STEMMER::NONE
+        }
+    }
+}
 
 #[inline]
 pub fn hamming_dist_series(a: &Series, b: &Series) -> PolarsResult<UInt32Chunked> {
@@ -69,7 +84,7 @@ pub fn snowball_on_series(
 pub fn get_ref_table(
     df: DataFrame
     , c: &str
-    , stemmer: &str
+    , stemmer: STEMMER
     , min_dfreq:f32
     , max_dfreq:f32
     , max_word_per_doc: u32
@@ -77,13 +92,13 @@ pub fn get_ref_table(
 ) -> PolarsResult<DataFrame> {
 
     // this function assumes all documents in df[c] are lowercased.
-    let stemmer_expr:Expr = match stemmer.to_lowercase().as_str() {
-        "snowball" => col(c).map(snowball_on_series, GetOutput::from_type(DataType::Utf8)).alias(&"ref"),
+    let stemmer_expr:Expr = match stemmer {
+        STEMMER::SNOWBALL => col(c).map(snowball_on_series, GetOutput::from_type(DataType::Utf8)).alias(&"ref"),
         _ => col(c).alias(&"ref")
     };
 
     let height: f32 = df.height() as f32;
-    let min_count: u32 = (height * min_dfreq).ceil() as u32;
+    let min_count: u32 = (height * min_dfreq).floor() as u32;
     let max_count: u32 = (height * max_dfreq).ceil() as u32;
     let output: DataFrame = df.select([c])?
     .lazy()
@@ -102,8 +117,9 @@ pub fn get_ref_table(
         col(c).unique()
         , col(&"i").n_unique().alias(&"doc_cnt")
         , count().alias(&"corpus_cnt")
-    ]).filter(
-        (col(&"doc_cnt").gt_eq(min_count)).and(col(&"doc_cnt").lt_eq(max_count))
+    ])
+    .filter(
+        (col(&"doc_cnt").gt(min_count)).and(col(&"doc_cnt").lt(max_count))
     ).top_k(max_feautures, [col(&"doc_cnt")], [true], true, false)
     .select([
         col(&"ref")
@@ -113,7 +129,8 @@ pub fn get_ref_table(
             .log(std::f64::consts::E).alias(&"smooth_idf")
         , col(&"corpus_cnt")
     ]).collect()?;
-    
+    // .sort(&"doc_cnt", SortOptions::default())
+    // .with_column(col(&"doc_cnt").set_sorted_flag(IsSorted::Ascending))
     Ok(output)
 
 }
@@ -121,7 +138,7 @@ pub fn get_ref_table(
 pub fn count_vectorizer(
     df: DataFrame
     , c: &str
-    , stemmer: &str
+    , stemmer: STEMMER
     , min_dfreq:f32
     , max_dfreq:f32
     , max_word_per_doc: u32
@@ -177,7 +194,7 @@ pub fn count_vectorizer(
 pub fn tfidf_vectorizer(
     df: DataFrame
     , c: &str
-    , stemmer: &str
+    , stemmer: STEMMER
     , min_dfreq:f32
     , max_dfreq:f32
     , max_word_per_doc: u32

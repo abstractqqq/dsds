@@ -711,11 +711,14 @@ def segmentation(
         for comb in product(*temp.collect().get_columns()):
             expr = pl.lit(True)
             to_str = []
+            # Construct the expr
             for se, v in zip(seg, comb):
                 expr = expr & pl.col(se).eq(v)
                 to_str.append(f"{se}=={v}")
+            
             output = df.lazy().filter(expr).collect()
             seg_name = ", ".join(to_str)
+            
             if len(output) > 0:
                 yield seg_name, output
             else:

@@ -11,7 +11,10 @@ from .type_alias import (
     , HorizontalExtract
     , ZeroOneCombineStrategy
 )
-from .prescreen import type_checker
+from .prescreen import (
+    type_checker, 
+    numeric_inferral
+)
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
@@ -777,6 +780,63 @@ def extract_from_str(
     if drop_original:
         return df.with_columns(exprs).drop(cols)
     return df.with_columns(exprs)
+
+def extract_numbers(
+    df: PolarsFrame
+    , cols: Optional[list[str]] = None
+    , ignore_comma: bool = True
+) -> PolarsFrame:
+    '''
+    Extracts the first number from the given columns.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        If not given, will infer possible numerical columns from string columns. If given, must be all 
+        string columns.
+    ignore_comma
+        If true, remove the "," in the string before matching for numbers
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...    # Numerical string columns
+    ...    "a": ["$1,123.23", "$2,221", "$31.23"],
+    ...    "b": ["(1,123.23)", "(2,221)", "(31.23)"], 
+    ...    # Not a numerical string column
+    ...    "c": ["1212@1212", "12312DGAD231", "123!!!"] 
+    ... })
+    >>> t.extract_numbers(df) # a, b are turned into a numerical column
+    shape: (3, 3)
+    ┌─────────┬─────────┬──────────────┐
+    │ a       ┆ b       ┆ c            │
+    │ ---     ┆ ---     ┆ ---          │
+    │ f64     ┆ f64     ┆ str          │
+    ╞═════════╪═════════╪══════════════╡
+    │ 1123.23 ┆ 1123.23 ┆ 1212@1212    │
+    │ 2221.0  ┆ 2221.0  ┆ 12312DGAD231 │
+    │ 31.23   ┆ 31.23   ┆ 123!!!       │
+    └─────────┴─────────┴──────────────┘
+    '''
+    if isinstance(cols, list):
+        _ = type_checker(df, cols, "string", "extract_numbers")
+        strs = cols
+    else:
+        strs = numeric_inferral(df, ignore_comma)
+
+    expr = pl.col(strs)
+    if ignore_comma:
+        expr = expr.str.replace_all(",", "")
+    
+    expr = expr.str.extract("(\d*\.?\d+)").cast(pl.Float64)
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns([expr])
+    return df.with_columns(expr)
 
 def extract_list_features(
     df: PolarsFrame

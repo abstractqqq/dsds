@@ -161,11 +161,8 @@ def discrete_ig_selector(
     top_k
         Only the top_k features in terms of discrete_ig will be selected 
     '''
-    if isinstance(df, pl.LazyFrame):
-        input_data:pl.DataFrame = df.collect()
-    else:
-        input_data:pl.DataFrame = df
 
+    input_data:pl.DataFrame = df.lazy().collect()
     discrete_cols = discrete_inferral(df, exclude=[target])
     complement = [f for f in df.columns if f not in discrete_cols]
     to_select = discrete_ig(input_data, target, discrete_cols)\
@@ -287,11 +284,7 @@ def mutual_info_selector(
     seed
         Random seed used in approximation to generate noise
     '''
-    if isinstance(df, pl.LazyFrame):
-        input_data:pl.DataFrame = df.collect()
-    else:
-        input_data:pl.DataFrame = df
-
+    input_data:pl.DataFrame = df.lazy().collect()
     nums = get_numeric_cols(df, exclude=[target])
     complement = [f for f in df.columns if f not in nums]
     to_select = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
@@ -424,11 +417,7 @@ def f_score_selector(
     top_k
         The top_k features will ke kept
     '''
-    if isinstance(df, pl.LazyFrame):
-        input_data:pl.DataFrame = df.collect()
-    else:
-        input_data:pl.DataFrame = df
-
+    input_data:pl.DataFrame = df.lazy().collect()
     nums = get_numeric_cols(input_data, exclude=[target])
     complement = [f for f in df.columns if f not in nums]
     scores = _f_score(input_data, target, nums)
@@ -596,11 +585,7 @@ def mrmr_selector(
     low_memory
         If true, use less memory. But the computation will take longer
     '''
-    if isinstance(df, pl.LazyFrame):
-        input_data:pl.DataFrame = df.collect()
-    else:
-        input_data:pl.DataFrame = df
-
+    input_data:pl.DataFrame = df.lazy().collect()
     nums = get_numeric_cols(input_data, exclude=[target])
     s = clean_strategy_str(strategy)
     to_select = mrmr(input_data, target, top_k, nums, s, params, low_memory)
@@ -711,11 +696,7 @@ def knock_out_mrmr_selector(
     params
         If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     '''
-    if isinstance(df, pl.LazyFrame):
-        input_data:pl.DataFrame = df.collect()
-    else:
-        input_data:pl.DataFrame = df
-
+    input_data:pl.DataFrame = df.lazy().collect()
     nums = get_numeric_cols(df, exclude=[target])
     complement = [f for f in df.columns if f not in nums]
     s = clean_strategy_str(strategy)

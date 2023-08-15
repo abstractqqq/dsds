@@ -8,6 +8,7 @@ use crate::text::text::{
     get_ref_table,
     hamming_dist_series,
     hamming_dist,
+    STEMMER
 };
 
 use polars_core::prelude::*;
@@ -33,7 +34,8 @@ pub fn rs_cnt_vectorizer(
 ) -> PyResult<PyDataFrame> {
 
     let df: DataFrame = pydf.into();
-    let df: DataFrame = count_vectorizer(df, c, stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
+    let st: STEMMER = STEMMER::from_str(stemmer);
+    let df: DataFrame = count_vectorizer(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(df))
 }
@@ -51,7 +53,8 @@ pub fn rs_tfidf_vectorizer(
 ) -> PyResult<PyDataFrame> {
 
     let df: DataFrame = pydf.into();
-    let df: DataFrame = tfidf_vectorizer(df, c, stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
+    let st: STEMMER = STEMMER::from_str(stemmer);
+    let df: DataFrame = tfidf_vectorizer(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(df))
 
@@ -147,7 +150,8 @@ pub fn rs_ref_table(
     // get_ref_table assumes all docs in df[c] are already lowercased
 
     let df: DataFrame = pydf.into();
-    let out: DataFrame = get_ref_table(df, c,stemmer, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
+    let st: STEMMER = STEMMER::from_str(stemmer);
+    let out: DataFrame = get_ref_table(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
                         .map_err(PyPolarsErr::from)?;
     Ok(PyDataFrame(out))
 }

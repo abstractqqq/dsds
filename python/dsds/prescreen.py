@@ -65,9 +65,8 @@ def get_bool_cols(df:PolarsFrame) -> list[str]:
 
 def get_cols_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> list[str]:
     '''
-    Returns columns that have names matching the regex pattern.
-    
-    
+    Returns columns that have names matching the regex pattern. If lowercase is true, match 
+    using the lowercased column names.
     '''
     if lowercase:
         return (
@@ -935,7 +934,7 @@ def discrete_inferral(df:PolarsFrame
     temp = get_unique_count(df.with_row_count(offset=1).set_sorted("row_nr"))
     len_df = temp.filter(pl.col("column") == "row_nr").item(0,1)
     return temp.filter(
-        ((pl.col("n_unique") < max_n_unique) | (pl.col("n_unique")/len_df < threshold)) 
+        ((pl.col("n_unique") < max_n_unique) | (pl.col("n_unique") < len_df * threshold)) 
         & (~pl.col("column").is_in(exclude_list)) # is not in
     )["column"].to_list()
 
@@ -959,9 +958,10 @@ def conti_inferral(
     exclude
         List of columns to exclude
     '''
-    exclude_list = [] if exclude is None else exclude
-    discrete = discrete_inferral(df, discrete_threshold, discrete_max_n_unique)
-    return df.select(cs.numeric() & ~cs.by_name(exclude_list) & ~cs.by_name(discrete)).columns
+    exclude_list = discrete_inferral(df, discrete_threshold, discrete_max_n_unique)
+    if exclude is not None:
+        exclude_list.extend(exclude)
+    return df.select(cs.numeric() & ~cs.by_name(exclude_list)).columns
 
 def constant_inferral(df:PolarsFrame, include_null:bool=True) -> list[str]:
     '''
@@ -998,6 +998,30 @@ def constant_removal(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     logger.info(f"The following columns are dropped because they are constants. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
+
+def numeric_inferral(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
+    '''
+    Infers hidden numeric columns which are stored as strings like "$5.55" or "#123". If 
+    ignire_comma = True, then it will first filter out all "," in the string.
+    '''
+    expr = pl.col(df.select(cs.string()).columns)
+    if ignore_comma:
+        expr = expr.str.replace_all(",", "")
+
+    nums = (
+        df.lazy().select(
+            expr.str.count_match("\d*\.?\d+").mean()
+        ).collect()
+        .transpose(include_header=True, column_names=["avg_num_cnt"])
+        .filter(pl.col("avg_num_cnt").is_between(0.95, 1))["column"].to_list()
+    )
+    return nums
+
+def coordinates_inferral(df:PolarsFrame):
+    pass
+
+def numeric_list_inferral(df:PolarsFrame):
+    pass
 
 def remove_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
     '''Removes the given columns if they exist in the dataframe.'''
