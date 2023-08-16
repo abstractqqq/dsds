@@ -125,6 +125,64 @@ def one_hot_encode(
     else:
         return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
     
+def selective_one_hot_encode(
+    df:PolarsFrame,
+    selected: dict[str, list[str]],
+    separator:str="_"
+) -> PolarsFrame:
+    '''
+    Selectively one-hot encode only the provided values for the corresponding columns. This is equivalent to a 
+    full one-hot encode followed by a column selection but this is more efficient. It is recommended to use this
+    rather than full one-hot encoding after knowing the importance of each value in the string categories.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    selected
+        A dictionary where the key refers to column names, and values are the values of the string column that 
+        will be one-hot encoded.
+    separator
+        The separator used in the names of the new columns
+
+    Example
+    -------
+    >>> import dsds.encoders as en
+    ... df = pl.DataFrame({
+    ...     "a": ["A", "B", "C", "D", "A"],
+    ...     "b": ["AA", "BB", "BB", "CC", "CC"]
+    ... })
+    ... en.selective_one_hot_encode(df, {"a":["A", "B"], "b":["BB"]})
+    shape: (5, 3)
+    ┌─────┬─────┬──────┐
+    │ a_A ┆ a_B ┆ b_BB │
+    │ --- ┆ --- ┆ ---  │
+    │ u8  ┆ u8  ┆ u8   │
+    ╞═════╪═════╪══════╡
+    │ 1   ┆ 0   ┆ 0    │
+    │ 0   ┆ 1   ┆ 1    │
+    │ 0   ┆ 0   ┆ 1    │
+    │ 0   ┆ 0   ┆ 0    │
+    │ 1   ┆ 0   ┆ 0    │
+    └─────┴─────┴──────┘
+    '''
+    
+    str_cols = list(selected.keys())
+    _ = type_checker(df, str_cols, "string", "selective_one_hot_encode")
+
+    exprs = []
+    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
+    zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
+    for c, vals in selected.items(): # Python's dict is ordered.
+        exprs.extend(
+            pl.when(pl.col(c) == v).then(one).otherwise(zero).alias(c+separator+v) for v in vals
+        )
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs).blueprint.drop(str_cols) 
+    return df.with_columns(exprs).drop(str_cols) 
+    
 def binary_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None

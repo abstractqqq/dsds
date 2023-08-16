@@ -20,19 +20,18 @@ DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-r
 Practical Feature Prescreen
 ```python
 from dsds.prescreen import (
-    remove_if_exists
-    , regex_removal
-    , pattern_removal
-    , var_removal
-    , null_removal
-    , unique_removal
-    , constant_removal
-    , date_removal
-    , non_numeric_removal
-    , get_unique_count
-    , get_string_cols
-    , suggest_normal
-    , discrete_inferral
+    remove_if_exists,
+    remove_by_pattern,
+    remove_by_regex,
+    remove_by_var,
+    remove_by_uniqueness,
+    remove_constants,
+    remove_dates,
+    remove_nulls,
+    infer_invalid_numeric,
+    infer_conti,
+    infer_emails,
+    infer_nulls,
 ) # and a lot more!
 
 ```

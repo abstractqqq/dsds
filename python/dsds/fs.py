@@ -1,5 +1,5 @@
 from .prescreen import (
-    discrete_inferral
+    infer_discretes
     , check_binary_target
     , get_numeric_cols
     , get_unique_count
@@ -12,12 +12,13 @@ from .type_alias import (
     PolarsFrame
     , MRMRStrategy
     , BinaryModels
+    , SimpleDtypes
     , CPU_M1
     , clean_strategy_str
     , ClassifModel
 )
 from .blueprint import( # Need this for Polars extension to work
-    Blueprint
+    Blueprint  # noqa: F401
 )
 from .sample import (
     train_test_split
@@ -26,21 +27,38 @@ from .metrics import (
     logloss
     , roc_auc
 )
-import polars as pl
-import numpy as np
-from typing import Any, Optional, Tuple, Union
+from typing import (
+    Any,
+    Optional, 
+    Tuple, 
+    Union,
+    Callable
+)
+from itertools import combinations
+from tqdm import tqdm
 from scipy.spatial import KDTree
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
-from tqdm import tqdm
+import polars as pl
+import numpy as np
 import math
-from itertools import combinations
 
 logger = logging.getLogger(__name__)
 
-# todo()!
-# 
+
+def feature_selector(
+    func: Callable
+    , target: str
+    , dtype: Union[SimpleDtypes, list[SimpleDtypes]]
+    , top_k: int
+    , /
+    , **kwargs
+) -> list[str]:
+    # todo()!
+    # A generic method that will replace all method_selectors in the future
+    # Then I can use functool's partials to create alias for wrapped selectors.
+    pass 
 
 def corr(
     df: PolarsFrame
@@ -106,7 +124,7 @@ def discrete_ig(
     if isinstance(cols, list):
         discretes = cols
     else: # If discrete_cols is not passed, infer it.
-        discretes = discrete_inferral(df, exclude=[target])
+        discretes = infer_discretes(df, exclude=[target])
 
     # Compute target entropy. This only needs to be done once.
     target_entropy = df.groupby(target).agg(
@@ -163,7 +181,7 @@ def discrete_ig_selector(
     '''
 
     input_data:pl.DataFrame = df.lazy().collect()
-    discrete_cols = discrete_inferral(df, exclude=[target])
+    discrete_cols = infer_discretes(df, exclude=[target])
     complement = [f for f in df.columns if f not in discrete_cols]
     to_select = discrete_ig(input_data, target, discrete_cols)\
         .top_k(by="information_gain", k = top_k)["feature"].to_list()

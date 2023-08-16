@@ -56,11 +56,10 @@ CommonContiDist:TypeAlias = Literal["norm", "lognorm", "truncnorm", "uniform", "
 # --- Blueprint ---
 ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "add_func", "filter", "classif"
                                , "regression"]
-# --- Other ---
+# --- Types ---
 SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "list", "string", "other/unknown"]
 InnerDtypes:TypeAlias = Literal["int", "str"]
 Stemmer:TypeAlias = Literal["snowball", ""]
-
 
 # --- Utils ---
 def clean_strategy_str(s:str):

@@ -13,7 +13,7 @@ from .type_alias import (
 )
 from .prescreen import (
     type_checker, 
-    numeric_inferral
+    infer_nums_from_str
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
@@ -827,7 +827,7 @@ def extract_numbers(
         _ = type_checker(df, cols, "string", "extract_numbers")
         strs = cols
     else:
-        strs = numeric_inferral(df, ignore_comma)
+        strs = infer_nums_from_str(df, ignore_comma)
 
     expr = pl.col(strs)
     if ignore_comma:

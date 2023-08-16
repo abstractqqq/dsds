@@ -561,7 +561,7 @@ def duplicate_inferral():
     # Then check equality..
     pass
 
-def pattern_inferral(
+def infer_by_pattern(
     df: PolarsFrame
     , pattern:str
     , sample_frac:float = 0.75
@@ -615,7 +615,7 @@ def pattern_inferral(
 
     return list(matches)
 
-def pattern_removal(
+def remove_by_pattern(
     df: PolarsFrame
     , pattern:str
     , sample_pct:float = 0.75
@@ -625,7 +625,7 @@ def pattern_removal(
     , count_null:bool = False
 ) -> PolarsFrame:
     
-    remove_cols = pattern_inferral(
+    remove_cols = infer_by_pattern(
         df
         , pattern
         , sample_pct
@@ -640,7 +640,7 @@ def pattern_removal(
     
     return drop(df, remove_cols)
 
-def email_inferral(
+def infer_emails(
     df: PolarsFrame
     , sample_pct:float = 0.75
     , sample_count:int = 100_000
@@ -650,7 +650,7 @@ def email_inferral(
 ) -> list[str]:
     # Why does this regex not work?
     # r'([A-Za-z0-9]+[.-_])*[A-Za-z0-9]+@[A-Za-z0-9-]+(\.[A-Z|a-z]{2,})+'
-    return pattern_inferral(
+    return infer_by_pattern(
         df
         , r'\S+@\S+\.\S+'
         , sample_pct
@@ -660,7 +660,7 @@ def email_inferral(
         , count_null
     )
 
-def email_removal(
+def remove_emails(
     df: PolarsFrame
     , sample_pct:float = 0.75
     , sample_count:int = 100_000
@@ -669,7 +669,7 @@ def email_removal(
     , count_null:bool = False
 ) -> PolarsFrame:
     
-    emails = email_inferral(df, sample_pct, sample_count, sample_rounds, threshold, count_null)
+    emails = infer_emails(df, sample_pct, sample_count, sample_rounds, threshold, count_null)
     logger.info(f"The following columns are dropped because they are emails. {emails}.\n"
             f"Removed a total of {len(emails)} columns.")
     
@@ -677,16 +677,15 @@ def email_removal(
 
 # Check for columns that are US zip codes.
 # Might add options for other countries later.
-def zipcode_inferral():
+def infer_zipcodes():
     # Match string using pattern inferral
     # Take a look at integers too, are they always 5 digits? 
     pass
 
-def date_inferral(df:PolarsFrame) -> list[str]:
+def infer_dates(df:PolarsFrame) -> list[str]:
     '''Infers date columns in dataframe. This inferral is not perfect.'''
     logger.info("Date Inferral is error prone due to the huge variety of date formats. Please use with caution.")
-    
-    dates = [c for c,t in zip(df.columns, df.dtypes) if t in POLARS_DATETIME_TYPES]
+    dates = df.select(cs.datetime()).columns
     strings = get_string_cols(df)
     # MIGHT REWRITE THIS LOGIC
     # Might be memory intensive on big dataframes.
@@ -712,15 +711,15 @@ def date_inferral(df:PolarsFrame) -> list[str]:
     
     return dates
 
-def date_removal(df:PolarsFrame) -> PolarsFrame:
+def remove_dates(df:PolarsFrame) -> PolarsFrame:
     '''Removes all date columns from dataframe. This algorithm will try to infer if string column is date.'''
 
-    remove_cols = date_inferral(df) 
+    remove_cols = infer_dates(df) 
     logger.info(f"The following columns are dropped because they are dates. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
-def invalid_inferral(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> list[str]:
+def infer_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> list[str]:
     '''
     Infers numeric columns that have more than threshold pct of invalid (NaN) values.
     
@@ -743,14 +742,14 @@ def invalid_inferral(df:PolarsFrame, threshold:float=0.5, include_null:bool=Fals
     return (
         df_local.select(
             expr
-        ).select(~cs.by_name(["row_nr"]))
+        ).select(pl.col("*").exclude("row_nr"))
         .collect()
         .transpose(include_header=True, column_names=["nan_pct"])
         .filter(pl.col("nan_pct") >= threshold)["column"]
         .to_list()
     )
 
-def invalid_removal(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> PolarsFrame:
+def remove_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> PolarsFrame:
     '''
     Removes numeric columns that have more than threshold pct of invalid (NaN) values.
     
@@ -763,13 +762,13 @@ def invalid_removal(df:PolarsFrame, threshold:float=0.5, include_null:bool=False
     include_null
         If true, then null values will also be counted as invalid.
     '''
-    remove_cols = invalid_inferral(df, threshold, include_null) 
+    remove_cols = infer_invalid_numeric(df, threshold, include_null) 
     logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
                 f" not valid values. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
-def null_inferral(df:PolarsFrame, threshold:float=0.5) -> list[str]:
+def infer_nulls(df:PolarsFrame, threshold:float=0.5) -> list[str]:
     '''
     Infers columns that have more than threshold pct of null values.
     
@@ -783,7 +782,7 @@ def null_inferral(df:PolarsFrame, threshold:float=0.5) -> list[str]:
     return (df.lazy().null_count().collect()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
                     .filter(pl.col("null_pct") >= threshold)["column"].to_list()
 
-def null_removal(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
+def remove_nulls(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
     '''
     Removes columns with more than threshold pct of null values.
 
@@ -794,32 +793,32 @@ def null_removal(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
     threshold
         Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
     '''
-    remove_cols = null_inferral(df, threshold) 
+    remove_cols = infer_nulls(df, threshold) 
     logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
                 f" null values. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
-def var_inferral(df:PolarsFrame, threshold:float, target:str) -> list[str]:
+def infer_by_var(df:PolarsFrame, threshold:float, target:str) -> list[str]:
     '''Infers columns that have lower than threshold variance. Target will not be included.'''
     return df.lazy().select(
                 pl.col(x).var() for x in get_numeric_cols(df) if x != target
             ).collect().transpose(include_header=True, column_names=["var"])\
             .filter(pl.col("var") < threshold)["column"].to_list() 
 
-def var_removal(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
+def remove_by_var(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
     '''Removes features with low variance. Features with > threshold variance will be kept. 
         Threshold should be positive.'''
 
-    remove_cols = var_inferral(df, threshold, target) 
+    remove_cols = infer_by_var(df, threshold, target) 
     logger.info(f"The following columns are dropped because they have lower than {threshold} variance. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
 # Really this is just an alias
-regex_inferral = get_cols_regex
+infer_by_regex = get_cols_regex
 
-def regex_removal(df:PolarsFrame, pattern:str, lowercase:bool=False) -> PolarsFrame:
+def remove_by_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> PolarsFrame:
     '''
     Remove columns if their names satisfy the given regex rules. This is common when you want to remove columns 
     with certain prefixes that may not be allowed to use in models.
@@ -866,7 +865,7 @@ def get_unique_count(df:PolarsFrame, include_null_count:bool=False) -> pl.DataFr
         ).collect().transpose(include_header=True, column_names=["n_unique"])
 
 # Really this is just an alias
-def unique_inferral(df:PolarsFrame, threshold:float=0.9) -> list[str]:
+def infer_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> list[str]:
     '''
     Infers columns that have higher than threshold unique pct.
 
@@ -888,7 +887,7 @@ def unique_inferral(df:PolarsFrame, threshold:float=0.9) -> list[str]:
         .to_list()
     )
 
-def unique_removal(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
+def remove_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
     '''
     Remove columns that have higher than threshold pct of unique values. Usually this is done to filter
     out id-like columns
@@ -900,14 +899,14 @@ def unique_removal(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
     threshold
         The threshold for unique pct. Columns with higher than this threshold unique pct will be removed 
     '''
-    remove_cols = unique_inferral(df, threshold)
+    remove_cols = infer_by_uniqueness(df, threshold)
     logger.info(f"The following columns are dropped because more than {threshold*100:.2f}% of unique values."
                 f" {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
 # Once there is a config, add a discrete criterion config
-def discrete_inferral(df:PolarsFrame
+def infer_discretes(df:PolarsFrame
     , threshold:float=0.1
     , max_n_unique:int=100
     , exclude:Optional[list[str]]=None
@@ -938,7 +937,7 @@ def discrete_inferral(df:PolarsFrame
         & (~pl.col("column").is_in(exclude_list)) # is not in
     )["column"].to_list()
 
-def conti_inferral(
+def infer_conti(
     df:PolarsFrame
     , discrete_threshold:float = 0.1
     , discrete_max_n_unique:int = 100
@@ -958,12 +957,12 @@ def conti_inferral(
     exclude
         List of columns to exclude
     '''
-    exclude_list = discrete_inferral(df, discrete_threshold, discrete_max_n_unique)
+    exclude_list = infer_discretes(df, discrete_threshold, discrete_max_n_unique)
     if exclude is not None:
         exclude_list.extend(exclude)
     return df.select(cs.numeric() & ~cs.by_name(exclude_list)).columns
 
-def constant_inferral(df:PolarsFrame, include_null:bool=True) -> list[str]:
+def infer_constants(df:PolarsFrame, include_null:bool=True) -> list[str]:
     '''
     Returns a list of inferred constant columns.
     
@@ -982,7 +981,7 @@ def constant_inferral(df:PolarsFrame, include_null:bool=True) -> list[str]:
     else:
         return get_unique_count(df).filter(pl.col("n_unique") == 1)["column"].to_list()
 
-def constant_removal(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
+def remove_constants(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     '''
     Removes all constant columns from dataframe.
     
@@ -994,12 +993,12 @@ def constant_removal(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
         If true, then columns with two distinct values like [value_1, null] will be considered a 
         constant column
     '''
-    remove_cols = constant_inferral(df, include_null)
+    remove_cols = infer_constants(df, include_null)
     logger.info(f"The following columns are dropped because they are constants. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
-def numeric_inferral(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
+def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     '''
     Infers hidden numeric columns which are stored as strings like "$5.55" or "#123". If 
     ignire_comma = True, then it will first filter out all "," in the string.
@@ -1017,10 +1016,10 @@ def numeric_inferral(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     )
     return nums
 
-def coordinates_inferral(df:PolarsFrame):
+def infer_coordinates(df:PolarsFrame):
     pass
 
-def numeric_list_inferral(df:PolarsFrame):
+def infer_numlist_from_str(df:PolarsFrame):
     pass
 
 def remove_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
@@ -1063,7 +1062,7 @@ def ks_compare(
     distribution automatically, and it requires more examination to reach the conclusion.
     '''
     if test_cols is None:
-        nums = [f for f in get_numeric_cols(df) if f not in discrete_inferral(df)]
+        nums = [f for f in get_numeric_cols(df) if f not in infer_discretes(df)]
     else:
         nums = test_cols
 
