@@ -6,13 +6,15 @@ from typing import (
 from .type_alias import (
     WeightStrategy
     , InnerDtypes
-    , PolarsFrame
+    # , PolarsFrame
 )
 from dsds._rust import (
     rs_cosine_similarity
     , rs_self_cosine_similarity
     , rs_df_inner_list_jaccard
     , rs_series_jaccard
+    , rs_mse
+    , rs_mae
 )
 
 from dsds.text import snowball_stem
@@ -23,7 +25,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# No need to do length checking (len(y_1) == len(y_2)) because NumPy / Polars will complain for us.
+# Rule of thumb: all rust functions will take Array<f64> or ArrayView<f64>.
+# Always do a astype on numpy arrays with copy set to False to minimize copying.
 
 def get_sample_weight(
     y_actual:np.ndarray
@@ -59,13 +62,13 @@ def get_sample_weight(
     >>> me.get_sample_weight(y_actual)
     array([1.66666667, 0.55555556, 0.55555556, 0.55555556, 1.66666667])
     '''
-    out = np.ones(shape=y_actual.shape)
+    out = np.ones(shape=y_actual.shape, dtype=np.float64)
     if strategy == "none":
         return out
     elif strategy == "balanced":
         weights = len(y_actual) / (np.unique(y_actual).size * np.bincount(y_actual))
         for i, w in enumerate(weights):
-            out[y_actual == i] = w
+            out[y_actual == i] = np.float64(w)
         return out
     elif strategy == "custom":
         if weight_dict is None:
@@ -77,9 +80,9 @@ def get_sample_weight(
         for i in range(len(weight_dict)):
             w = weight_dict.get(i, None)
             if w is None:
-                raise ValueError("The input `weight_dict` must provide the weights for all class, with keys "
+                raise ValueError("The input `weight_dict` must provide the weights for all class, with integer keys "
                                  "ranging from 0 to n_classes-1.")
-            out[y_actual == i] = w
+            out[y_actual == i] = np.float64(w)
         return out
     else:
         raise TypeError(f"Unknown weight strategy: {strategy}.")
@@ -161,7 +164,7 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True)
         if not (0 in uniques and 1 in uniques):
             raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
-    tpr, fpr, _ = get_tp_fp(y_a.astype(np.int8), y_p, ratio=True)
+    tpr, fpr, _ = get_tp_fp(y_a.astype(np.int8, copy=False), y_p, ratio=True)
     return float(-np.trapz(tpr, fpr))
 
 def logloss(
@@ -272,7 +275,7 @@ def mse(
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
     '''
-    Computes average L2 loss of some regression model
+    Computes average mean square error of some regression model.
 
     Parameters
     ----------
@@ -283,14 +286,31 @@ def mse(
     sample_weights
         An array of size (len(y_actual), ) which provides weights to each sample
     '''
-    diff = y_actual - y_predicted
-    if sample_weights is None:
-        return diff.dot(diff)/len(diff)
-    else:
-        return (sample_weights).dot(np.power(diff, 2)) / len(diff)
+    return rs_mse(y_actual.astype(np.float64, copy=False), 
+                  y_predicted.astype(np.float64, copy=False), 
+                  sample_weights)
     
 l2_loss = mse
 brier_loss = mse
+
+def rmse(
+    y_actual:np.ndarray
+    , y_predicted:np.ndarray
+    , sample_weights:Optional[np.ndarray]=None
+) -> float:
+    '''
+    Computes RMSE of some regression model.
+
+    Parameters
+    ----------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    sample_weights
+        An array of size (len(y_actual), ) which provides weights to each sample
+    '''
+    return np.sqrt(mse(y_actual, y_predicted, sample_weights))
 
 def mae(
     y_actual:np.ndarray
@@ -309,11 +329,9 @@ def mae(
     sample_weights
         An array of size (len(y_actual), ) which provides weights to each sample
     '''
-    diff = np.abs(y_actual - y_predicted)
-    if sample_weights is None:
-        return np.mean(diff)
-    else:
-        return sample_weights.dot(diff) / len(diff)
+    return rs_mae(y_actual.astype(np.float64, copy=False), 
+                  y_predicted.astype(np.float64, copy=False), 
+                  sample_weights)
 
 l1_loss = mae
 

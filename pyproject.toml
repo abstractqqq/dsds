@@ -1,10 +1,10 @@
 [build-system]
-requires = ["maturin>=1.1,<2.0"]
+requires = ["maturin~=1.2.1"]
 build-backend = "maturin"
 
 [project]
 name = "dsds"
-version = "0.0.25"
+version = "0.0.26"
 requires-python = ">=3.9"
 authors = [
     {name = "Tianren Qin", email = "tq9695@gmail.com"}
@@ -35,7 +35,7 @@ dependencies = [
     "tqdm",
     "pyarrow>=12.0",
     "typing_extensions >= 4.0.1"
-]
+] # Drop tqdm?
 
 [project.optional-dependencies]
 scikit-learn = ["scikit-learn"]

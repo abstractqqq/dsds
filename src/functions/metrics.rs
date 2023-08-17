@@ -1,4 +1,4 @@
-use ndarray::{Axis, Array2};
+use ndarray::{Axis, ArrayView1, Array2};
 use ndarray::parallel::prelude::*;
 use rayon::prelude::*;
 use polars_core::utils::accumulate_dataframes_vertical;
@@ -10,6 +10,35 @@ use super::utils::split_offsets;
 // from a user experience point of view. But they are copied from Python input
 // and only serve this purpose. So I decided on these in place operations.
 
+#[inline]
+pub fn mae(
+    y_a:ArrayView1<f64>,
+    y_p:ArrayView1<f64>,
+    weights:Option<ArrayView1<f64>>
+)-> f64 {
+
+    let mut diff = (&y_a - &y_p).mapv(f64::abs);
+    if let Some(w) = weights {
+        diff = diff * w
+    }
+    diff.mean().unwrap()
+
+}
+
+#[inline]
+pub fn mse(
+    y_a:ArrayView1<f64>,
+    y_p:ArrayView1<f64>,
+    weights:Option<ArrayView1<f64>>
+) -> f64 {
+
+    let diff = &y_a - &y_p;
+    if let Some(w) = weights {
+        return (&diff * &w).dot(&diff) / y_a.len() as f64
+    } 
+    diff.dot(&diff) / y_a.len() as f64
+
+}
 
 #[inline]
 pub fn cosine_similarity(

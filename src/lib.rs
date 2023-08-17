@@ -1,11 +1,13 @@
 use pyo3::prelude::*;
+use pyo3::exceptions::PyValueError;
 mod functions;
 mod snowball;
 mod text;
 use numpy::{
+    // PyReadonlyArray1,
     PyReadonlyArray2, 
     PyArray2, 
-    IntoPyArray
+    IntoPyArray, PyReadonlyArray1
 };
 use crate::text::{
     rs_cnt_vectorizer,
@@ -22,7 +24,9 @@ use crate::functions::{
     rs_series_jaccard, 
     metrics::{  
         cosine_similarity,
-        self_cosine_similarity
+        self_cosine_similarity,
+        mae,
+        mse
     }
 };
 
@@ -63,6 +67,44 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     ) -> &'py PyArray2<f64> {
         self_cosine_similarity(mat1.as_array().to_owned(), normalize).into_pyarray(py)
     }
+
+    #[pyfn(m)]
+    fn rs_mae(
+        y_actual:PyReadonlyArray1<f64>,
+        y_predicted: PyReadonlyArray1<f64>,
+        weights:Option<PyReadonlyArray1<f64>>
+    ) -> f64 {
+        let y_a = y_actual.as_array();
+        let y_p = y_predicted.as_array();
+
+        match weights {
+            Some(we) => {
+                let w = we.as_array();
+                mae(y_a, y_p, Some(w))
+            },
+            _ => mae(y_a, y_p, None)
+        }
+    }
+
+    #[pyfn(m)]
+    fn rs_mse(
+        y_actual:PyReadonlyArray1<f64>,
+        y_predicted: PyReadonlyArray1<f64>,
+        weights:Option<PyReadonlyArray1<f64>>
+    ) -> f64 {
+        let y_a = y_actual.as_array();
+        let y_p = y_predicted.as_array();
+        match weights {
+            Some(we) => {
+                let w = we.as_array();
+                mse(y_a, y_p, Some(w))
+            },
+            _ => mse(y_a, y_p, None)
+        }
+    }
+
+
+
 
     Ok(())
 }

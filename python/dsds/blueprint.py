@@ -107,7 +107,7 @@ class Blueprint:
             elif s.action == "map_dict":
                 output += f"Encoder/Mapper for column: {s.map_dict.left_col}\n"
                 ref_table = pl.from_dict(s.map_dict.ref)
-                output += f"The encoding/map is:\n{ref_table.head(10)}\n"                
+                output += f"The encoding/map is (Showing only 10 rows):\n{ref_table.head(10)}\n"                
             else:
                 output += str(s.get_action_value())
             output += "\n\n"
