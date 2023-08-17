@@ -154,10 +154,7 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True)
     
     # This currently has difference of magnitude 1e-10 from the sklearn implementation, 
     # which is likely caused by sklearn adding zeros to the front? Not 100% sure
-    # This is about 50% faster than sklearn's implementation. I know. This does not matter
-    # that much, unless you are repeatedly computing roc_auc for some reasons.
     y_a, y_p = _flatten_input(y_actual, y_predicted)
-    # No need to check if length matches because Polars will complain for us
     if check_binary:
         uniques = np.unique(y_a)
         if uniques.size != 2:
@@ -457,8 +454,8 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
     x
         A Numpy 1d/2d array
     y
-        If none, perform cosine similarity with x and x. If not, will perform cosine similarity between x 
-        and y.
+        If none, perform cosine similarity with x and x. If provided, this will perform cosine similarity 
+        between x and y.
     normalize
         If the rows of the matrices are normalized already, set this to False.
     '''

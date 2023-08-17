@@ -13,7 +13,7 @@ pyo3 = {version = "0.19"}
 pyo3-polars = {version = "0.6.0", features = ["lazy"]}
 polars-core = {version = "0.32.1"}
 polars-lazy =  {version="0.32.1"}
-polars = {version = "0.32.1", features = ["fmt", "performant", "nightly"]}
+polars = {version = "0.32.1", features = ["fmt", "performant"]}
 rayon = "1.7.0"
 ndarray = {version = "0.15.6", features = ["rayon", "matrixmultiply-threading"]}
 numpy = "*"

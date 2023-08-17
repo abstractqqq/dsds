@@ -59,7 +59,6 @@ pub fn mape(
         summand.mean().unwrap()
     }
 
-
 }
 
 #[inline]
