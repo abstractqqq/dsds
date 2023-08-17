@@ -15,6 +15,7 @@ from dsds._rust import (
     , rs_series_jaccard
     , rs_mse
     , rs_mae
+    , rs_mape
 )
 
 from dsds.text import snowball_stem
@@ -218,7 +219,7 @@ def logloss(
             * (pl.col("y").dot(pl.col("l")) + pl.col("ny").dot(pl.col("o"))) / len(y_a)
         ).item(0,0)
     
-def binary_psi(
+def psi(
     new_score: Union[pl.Series, np.ndarray]
     , old_score: Union[pl.Series, np.ndarray]
     , n_bins: int = 10
@@ -236,12 +237,12 @@ def binary_psi(
         The number of bins used in the computation. By default it is 10, which means we are using deciles
     '''
     if isinstance(new_score, np.ndarray):
-        s1 = pl.Series(new_score)
+        s1 = pl.Series(new_score, dtype=pl.Float64)
     else:
         s1 = new_score
     
     if isinstance(old_score, np.ndarray):
-        s2 = pl.Series(old_score)
+        s2 = pl.Series(old_score, dtype=pl.Float64)
     else:
         s2 = old_score
 
@@ -275,7 +276,7 @@ def mse(
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
     '''
-    Computes average mean square error of some regression model.
+    Computes average mean square error of some regression model. Currently only supports 1d target.
 
     Parameters
     ----------
@@ -299,7 +300,7 @@ def rmse(
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
     '''
-    Computes RMSE of some regression model.
+    Computes RMSE of some regression model. Currently only supports 1d target.
 
     Parameters
     ----------
@@ -318,7 +319,7 @@ def mae(
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
     '''
-    Computes average L1 loss of some regression model
+    Computes average L1 loss of some regression model. Currently only supports 1d target.
 
     Parameters
     ----------
@@ -334,6 +335,29 @@ def mae(
                   sample_weights)
 
 l1_loss = mae
+
+def mape(
+    y_actual:np.ndarray
+    , y_predicted:np.ndarray
+    , weighted: bool
+) -> float:
+    '''
+    Computes the mean absolute percentage error commonly used in time series predictions.
+
+    Paramters
+    ---------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    weighted
+        If weighted, then it is the wMAPE defined as in the wikipedia page: 
+        https://en.wikipedia.org/wiki/Mean_absolute_percentage_error
+    '''
+    return rs_mape(y_actual.astype(np.float64, copy=False), 
+                   y_predicted.astype(np.float64, copy=False), 
+                   weighted)
+
 
 def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     '''

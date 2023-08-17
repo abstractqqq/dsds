@@ -17,9 +17,11 @@ pub fn mae(
     weights:Option<ArrayView1<f64>>
 )-> f64 {
 
-    let mut diff = (&y_a - &y_p).mapv(f64::abs);
+    let mut diff = &y_a - &y_p;
+    diff.mapv_inplace(f64::abs);
     if let Some(w) = weights {
-        diff = diff * w
+        diff = diff * w;
+        return diff.sum() / w.sum()
     }
     diff.mean().unwrap()
 
@@ -34,9 +36,29 @@ pub fn mse(
 
     let diff = &y_a - &y_p;
     if let Some(w) = weights {
-        return (&diff * &w).dot(&diff) / y_a.len() as f64
+        return (&diff * &w).dot(&diff) / w.sum()
     } 
     diff.dot(&diff) / y_a.len() as f64
+}
+
+#[inline]
+pub fn mape(
+    y_a:ArrayView1<f64>,
+    y_p:ArrayView1<f64>,
+    weighted: bool 
+) -> f64 {
+
+    if weighted {
+        let mut diff = &y_a - &y_p;
+        diff.mapv_inplace(f64::abs);
+        diff.sum() / y_a.fold(0., |acc, x| acc + x.abs())
+
+    } else {
+        let mut summand = 1.0 - (&y_p / &y_a);
+        summand.mapv_inplace(f64::abs);
+        summand.mean().unwrap()
+    }
+
 
 }
 
@@ -71,7 +93,8 @@ pub fn self_cosine_similarity(
 #[inline]
 fn normalize_in_place(mat:&mut Array2<f64>, axis:Axis) {
     mat.axis_iter_mut(axis).into_par_iter().for_each(|mut rc| {
-        let norm: f64 = rc.iter().fold(0., |acc, x| acc + x.powi(2)).sqrt();
+        // let norm: f64 = rc.fold(0., |acc, x| acc + x.powi(2)).sqrt();
+        let norm = rc.dot(&rc).sqrt();
         rc /= norm;
     });
 }

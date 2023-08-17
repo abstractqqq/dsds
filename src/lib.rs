@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::exceptions::PyValueError;
+//use pyo3::exceptions::PyValueError;
 mod functions;
 mod snowball;
 mod text;
@@ -26,7 +26,8 @@ use crate::functions::{
         cosine_similarity,
         self_cosine_similarity,
         mae,
-        mse
+        mse,
+        mape
     }
 };
 
@@ -103,8 +104,16 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
         }
     }
 
-
-
+    #[pyfn(m)]
+    fn rs_mape(
+        y_actual:PyReadonlyArray1<f64>,
+        y_predicted: PyReadonlyArray1<f64>,
+        weighted:bool
+    ) -> f64 {
+        let y_a = y_actual.as_array();
+        let y_p = y_predicted.as_array();
+        mape(y_a, y_p, weighted)
+    }
 
     Ok(())
 }
