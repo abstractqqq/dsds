@@ -1001,7 +1001,7 @@ def remove_constants(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
 def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     '''
     Infers hidden numeric columns which are stored as strings like "$5.55" or "#123". If 
-    ignire_comma = True, then it will first filter out all "," in the string.
+    ignore_comma = True, then it will first filter out all "," in the string.
     '''
     expr = pl.col(df.select(cs.string()).columns)
     if ignore_comma:

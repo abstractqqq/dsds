@@ -440,14 +440,91 @@ def log_transform(
     plus_one
         If plus_one is true, this will perform ln(1+x) and ignore the `base` input.
     suffix
-        Choice of a suffix to the transformed columns. If this is the empty string "", then the original column
-        will be replaced.
+        Choice of a suffix to the transformed columns. If you wish to drop the original ones, set suffix = "".
     '''
     _ = type_checker(df, cols, "numeric", "log_transform")
     if plus_one:
         exprs = [pl.col(cols).log1p().suffix(suffix)]
     else:
         exprs = [pl.col(cols).log(base).suffix(suffix)]
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
+def sqrt_transform(
+    df: PolarsFrame
+    , cols: list[str]
+    , suffix: str = "_sqrt"
+) -> PolarsFrame:
+    '''
+    Performs classical square root transform for the given columns. Negative numbers will be mapped to
+    NaN.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be numeric columns
+    suffix
+        The suffix to add to the transformed columns. If you wish to drop the original ones, set suffix = "".
+    '''
+    _ = type_checker(df, cols, "numeric", "sqrt_transform")
+    exprs = [pl.col(cols).sqrt().suffix(suffix)]
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
+def linear_transform(
+    df: PolarsFrame
+    , cols: list[str]
+    , coeffs: Union[float, list[float]]
+    , consts: Union[float, list[float]]
+    , suffix: str = ""
+) -> PolarsFrame:
+    '''
+    Performs a classical linear transform on the given columns. The formula is coeff*x + const.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be numeric columns
+    coeffs
+        The coefficient terms. Either one number, which will be used to all columns, or a list of numbers of 
+        the same size as cols, which will be applied to the corresponding column in cols
+    consts
+        The constant terms. Either one number, which will be used to all columns, or a list of numbers of 
+        the same size as cols, which will be applied to the corresponding column in cols
+    suffix
+        The suffix to add to the transformed columns. If you wish to drop the original ones, set suffix = "".
+    '''
+
+    _ = type_checker(df, cols, "numeric", "linear_transform")
+    if isinstance(coeffs, float):
+        coeff_list = [coeffs]*len(cols)
+    else:
+        coeff_list = coeffs
+
+    if isinstance(consts, float):
+        const_list = [consts]*len(cols)
+    else:
+        const_list = consts
+
+    if len(cols) != len(coeff_list) or len(cols) != len(const_list) or len(const_list) != len(coeff_list):
+        raise ValueError("The inputs `cols`, `coeffs` or `consts` must have the same length, or coeffs and consts must "
+                         "be one fixed value.")
+    
+    exprs = [
+        (pl.col(c) * pl.lit(a) + pl.lit(b)).suffix(suffix) 
+        for c, a, b in zip(cols, coeff_list, const_list)
+    ]
+    
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
@@ -727,7 +804,7 @@ def extract_from_str(
     ... df = pl.DataFrame({
     ...     "test_str": ["a_1", "x_2", "c_3", "x_22"]
     ... })
-    >>> t.extract_from_str(df, cols=["test_str"], extract=["len", "contains"], pattern="^(a_|x_)")
+    >>> t.extract_from_str(df, cols=["test_str"], extract=["len", "contains"], pattern="(a_|x_)")
     shape: (4, 2)
     ┌──────────────┬───────────────────────────┐
     │ test_str_len ┆ test_str_contains_(a_|x_) │
@@ -752,7 +829,7 @@ def extract_from_str(
     exprs = []
     for e in to_extract:
         if e == "len":
-            exprs.extend(pl.col(cols).str.lengths().suffix("_len"))
+            exprs.append(pl.col(cols).str.lengths().suffix("_len"))
         elif e == "starts_with":
             if use_bool:
                 exprs.append(pl.col(cols).str.starts_with(pattern).suffix(f"_starts_with_{pattern}"))
@@ -785,9 +862,10 @@ def extract_numbers(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
     , ignore_comma: bool = True
+    , dtype: pl.DataType = pl.Float64
 ) -> PolarsFrame:
     '''
-    Extracts the first number from the given columns.
+    Extracts the first number from the given columns. This will always replace original string columns.
 
     This will be remembered by blueprint by default.
 
@@ -800,6 +878,8 @@ def extract_numbers(
         string columns.
     ignore_comma
         If true, remove the "," in the string before matching for numbers
+    dtype
+        A valid Polars numeric type, like pl.Float64, that you want to cast the numbers to.
 
     Example
     -------
@@ -833,7 +913,7 @@ def extract_numbers(
     if ignore_comma:
         expr = expr.str.replace_all(",", "")
     
-    expr = expr.str.extract("(\d*\.?\d+)").cast(pl.Float64)
+    expr = expr.str.extract("(\d*\.?\d+)").cast(dtype)
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns([expr])
     return df.with_columns(expr)
@@ -892,15 +972,15 @@ def extract_list_features(
         if e == "min":
             exprs.append(pl.col(cols).list.min().suffix("_min"))
         elif e == "max":
-            exprs.extend(pl.col(cols).list.max().suffix("_max"))
+            exprs.append(pl.col(cols).list.max().suffix("_max"))
         elif e in ("mean", "avg"):
-            exprs.extend(pl.col(cols).list.mean().suffix("_mean"))
+            exprs.append(pl.col(cols).list.mean().suffix("_mean"))
         elif e == "len":
-            exprs.extend(pl.col(cols).list.lengths().suffix("_len"))
+            exprs.append(pl.col(cols).list.lengths().suffix("_len"))
         elif e == "first":
-            exprs.extend(pl.col(cols).list.first().suffix("_first"))
+            exprs.append(pl.col(cols).list.first().suffix("_first"))
         elif e == "last":
-            exprs.extend(pl.col(cols).list.last().suffix("_last"))
+            exprs.append(pl.col(cols).list.last().suffix("_last"))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid ListExtract value. Ignored.")
 

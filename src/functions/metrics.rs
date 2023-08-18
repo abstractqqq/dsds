@@ -23,7 +23,7 @@ pub fn mae(
         diff = diff * w;
         return diff.sum() / w.sum()
     }
-    diff.mean().unwrap()
+    diff.mean().unwrap_or(0.)
 
 }
 
@@ -56,7 +56,7 @@ pub fn mape(
     } else {
         let mut summand = 1.0 - (&y_p / &y_a);
         summand.mapv_inplace(f64::abs);
-        summand.mean().unwrap()
+        summand.mean().unwrap_or(0.)
     }
 
 }
