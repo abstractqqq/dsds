@@ -1,6 +1,5 @@
 use crate::snowball::{SnowballEnv, algorithms};
 use crate::text::consts::EN_STOPWORDS;
-use polars_core::series::IsSorted;
 use polars_lazy::dsl::GetOutput;
 use rayon::prelude::*;
 use polars_core::prelude::*;

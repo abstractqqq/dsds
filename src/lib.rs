@@ -27,7 +27,8 @@ use crate::functions::{
         self_cosine_similarity,
         mae,
         mse,
-        mape
+        mape,
+        huber_loss
     }
 };
 
@@ -113,6 +114,21 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
         let y_a = y_actual.as_array();
         let y_p = y_predicted.as_array();
         mape(y_a, y_p, weighted)
+    }
+
+    #[pyfn(m)]
+    fn rs_huber_loss(
+        y_actual:PyReadonlyArray1<f64>,
+        y_predicted: PyReadonlyArray1<f64>,
+        delta: f64,
+        weights:Option<PyReadonlyArray1<f64>>
+    ) -> f64 {
+        let y_a = y_actual.as_array();
+        let y_p = y_predicted.as_array();
+        match weights {
+            Some(we) => huber_loss(y_a, y_p, delta, Some(we.as_array())),
+            _ => huber_loss(y_a, y_p, delta, None)
+        }
     }
 
     Ok(())

@@ -633,12 +633,14 @@ def segmentation(
     , segments: list[list[str]]
 ) -> Iterator[Tuple[str, pl.DataFrame]]:
     '''
-    Returns an iterator of (segment name, eager sub-dataframes).
+    Returns an iterator of (segment name, eager sub-dataframes). This generally is slower for lazy frames
+    because we are repeatedly collecting non-overlapping rows. If it is possible, it is highly recommended 
+    to use an eager frame for this.
 
     Parameters
     ----------
     df
-        Either a lazy or an eager Polars dataframe
+        Either a lazy or an eager Polars dataframe. Eager recommended.
     segments
         A list of lists, where each element list represents the columns which you want to use as segments
     
@@ -653,11 +655,10 @@ def segmentation(
     ...     "value": [100,200,300,-50]
     ... })
     ... segments = [["group"],["group", "state"]]
-    ... for segment, sub_df in sa.segmentation(df, segments=segments):
-    ...     print(segment)
+    >>> for segment, sub_df in sa.segmentation(df, segments=segments):
+    >>>     print(segment)
     >>>     print(sub_df)
-    INFO:dsds.sample:The segment group == 1,state == NY has no record. Skipped.
-    group==1 
+    ('group',) = (1,)
     shape: (2, 4)
     ┌───────┬───────┬─────┬───────┐
     │ group ┆ state ┆ id  ┆ value │
@@ -667,7 +668,7 @@ def segmentation(
     │ 1     ┆ TX    ┆ 1   ┆ 100   │
     │ 1     ┆ TX    ┆ 2   ┆ 200   │
     └───────┴───────┴─────┴───────┘
-    group==2 
+    ('group',) = (2,)
     shape: (2, 4)
     ┌───────┬───────┬─────┬───────┐
     │ group ┆ state ┆ id  ┆ value │
@@ -677,7 +678,7 @@ def segmentation(
     │ 2     ┆ TX    ┆ 3   ┆ 300   │
     │ 2     ┆ NY    ┆ 4   ┆ -50   │
     └───────┴───────┴─────┴───────┘
-    group==1, state==TX 
+    ('group', 'state') = (1, 'TX')
     shape: (2, 4)
     ┌───────┬───────┬─────┬───────┐
     │ group ┆ state ┆ id  ┆ value │
@@ -687,7 +688,7 @@ def segmentation(
     │ 1     ┆ TX    ┆ 1   ┆ 100   │
     │ 1     ┆ TX    ┆ 2   ┆ 200   │
     └───────┴───────┴─────┴───────┘
-    group==2, state==NY 
+    ('group', 'state') = (2, 'NY')
     shape: (1, 4)
     ┌───────┬───────┬─────┬───────┐
     │ group ┆ state ┆ id  ┆ value │
@@ -696,7 +697,7 @@ def segmentation(
     ╞═══════╪═══════╪═════╪═══════╡
     │ 2     ┆ NY    ┆ 4   ┆ -50   │
     └───────┴───────┴─────┴───────┘
-    group==2, state==TX 
+    ('group', 'state') = (2, 'TX')
     shape: (1, 4)
     ┌───────┬───────┬─────┬───────┐
     │ group ┆ state ┆ id  ┆ value │
@@ -706,21 +707,24 @@ def segmentation(
     │ 2     ┆ TX    ┆ 3   ┆ 300   │
     └───────┴───────┴─────┴───────┘
     '''
+    is_lazy = isinstance(df, pl.LazyFrame)
     for seg in segments:
-        temp = df.lazy().unique(subset=seg).select(seg)
-        for comb in product(*temp.collect().get_columns()):
-            expr = pl.lit(True)
-            to_str = []
-            # Construct the expr
-            for se, v in zip(seg, comb):
-                expr = expr & pl.col(se).eq(v)
-                to_str.append(f"{se}=={v}")
-            
-            output = df.lazy().filter(expr).collect()
-            seg_name = ", ".join(to_str)
-            
-            if len(output) > 0:
-                yield seg_name, output
-            else:
-                logger.info(f"The segment {seg_name} has no record. Skipped.")
+        seg_name = str(tuple(seg))
+        if is_lazy:
+            reference = df.lazy().groupby(seg).count().sort(seg).collect()
+            temp = df.lazy().sort(seg)
+            offset = 0
+            for row in reference.iter_rows():
+                count = row[-1]
+                seg_specific = seg_name + " = " + str(row[:-1])
+                frame = temp.slice(offset, count).collect()
+                offset += count
+                yield seg_specific, frame
+        else:
+            for name, frame in df.groupby(seg, maintain_order=True):
+                seg_specific = seg_name + " = " + str(name)
+                yield seg_specific, frame
+
+
+
     

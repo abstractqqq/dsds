@@ -16,6 +16,7 @@ from dsds._rust import (
     , rs_mse
     , rs_mae
     , rs_mape
+    , rs_huber_loss
 )
 
 from dsds.text import snowball_stem
@@ -355,7 +356,6 @@ def mape(
                    y_predicted.astype(np.float64, copy=False), 
                    weighted)
 
-
 def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     '''
     Computes R square metric for some regression model
@@ -401,7 +401,7 @@ def huber_loss(
     , sample_weights:Optional[np.ndarray]=None  
 ) -> float:
     '''
-    Computes huber loss of some regression model
+    Computes huber loss of some regression model.
 
     See: https://en.wikipedia.org/wiki/Huber_loss
 
@@ -416,20 +416,9 @@ def huber_loss(
     sample_weights
         An array of size (len(y_actual), ) which provides weights to each sample
     '''
-    y_a = y_actual.ravel()
-    y_p = y_predicted.ravel()
-    
-    abs_diff = np.abs(y_a - y_p)
-    mask = abs_diff <= delta
-    not_mask = ~mask
-    loss = np.zeros(shape=abs_diff.shape)
-    loss[mask] = 0.5 * (abs_diff[mask]**2)
-    loss[not_mask] = delta * (abs_diff[not_mask] - 0.5 * delta)
-
-    if sample_weights is None:
-        return np.mean(loss)
-    else:
-        return sample_weights.dot(loss) / len(loss)
+    return rs_huber_loss(y_actual.astype(np.float64, copy=False), 
+                         y_predicted.astype(np.float64, copy=False), 
+                         delta, sample_weights)
 
 def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=True) -> np.ndarray:
     '''
@@ -498,54 +487,41 @@ def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
 def jaccard_similarity(
     s1:Union[pl.Series,list,np.ndarray],
     s2:Union[pl.Series,list,np.ndarray],
-    include_null:bool=True,
+    include_null:bool=False,
     stem:bool = False,
     parallel:bool=True
 ) -> float:
     '''
-    Computes jaccard similarity between the two input lists. Internally, both will be turned into Polars Series.
-    The lists must contain either integer or str values. 
+    Computes jaccard similarity between the two input list of strings or integers. Internally, both will be turned 
+    into Polars Series. 
 
     Parameters
     ----------
     s1
-        The first list
+        The first list/series/array
     s2
-        The second list
+        The second list/series/array
     include_null
-        If true, null/none will be counted as common. If false, they will not.
+        If true, null will be counted as common. If false, they will not.
     stem
         If true and inner values are strings, then perform snowball stemming on the words. This is only useful 
         when the lists are lists of words
     parallel
-        Whether to hash values in lists in parallel. The difference only gets significant for large string lists
-        because it only parallelizes the hashing of the two lists. For small integer lists, it is better to set 
-        this to false.
+        Whether to hash values in the lists in parallel. For small integer lists, it is better to set 
+        this to false. It is faster when we have string lists that are large.s
     '''
     
     if len(s1) == 0 or len(s2) == 0:
         return 0.
 
     t1 = type(s1[0]).__name__
-    if t1 not in ("int", "str"):
-        raise TypeError(f"Input s1 must have values of type int or str, not {t1}.")
     t2 = type(s2[0]).__name__
-    if t2 not in ("int", "str"):
-        raise TypeError(f"Input s2 must have values of type int or str, not {t2}.")
+    if t1 not in ("int", "str") or t2 not in ("int", "str") or t1 != t2:
+        raise TypeError("Input must have values of type int or str and they must be both int "
+                        f"or both strings, not {t1} and {t2}.")
     
-    if t1 != t2:
-        raise TypeError("Input s1 and s2 must have the same type for their values.")
-    
-    if isinstance(s1, pl.Series):
-        ss1 = s1
-    else:
-        ss1 = pl.Series(s1)
-    
-    if isinstance(s2, pl.Series):
-        ss2 = s2
-    else:
-        ss2 = pl.Series(s2)
-
+    ss1 = pl.Series(s1)
+    ss2 = pl.Series(s2)
     if stem and t1 == "str":
         ss1 = ss1.apply(snowball_stem, return_dtype=pl.Utf8)
         ss2 = ss2.apply(snowball_stem, return_dtype=pl.Utf8)

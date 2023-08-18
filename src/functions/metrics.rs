@@ -58,7 +58,32 @@ pub fn mape(
         summand.mapv_inplace(f64::abs);
         summand.mean().unwrap_or(0.)
     }
+}
 
+#[inline]
+pub fn huber_loss(
+    y_a:ArrayView1<f64>,
+    y_p:ArrayView1<f64>,
+    delta: f64,
+    weights:Option<ArrayView1<f64>>
+) -> f64 {
+
+    let mut diff = &y_a - &y_p;
+    let half_delta: f64 = 0.5 * delta;
+    diff.mapv_inplace(|x| {
+        let abs_x: f64 = x.abs();
+        if abs_x < delta {
+            0.5 * abs_x.powi(2)
+        } else {
+            delta * (abs_x - half_delta)
+        }
+    });
+
+    if let Some(w) = weights {
+        diff = diff * w;
+        return diff.sum() / w.sum()
+    }
+    diff.mean().unwrap_or(0.)
 }
 
 #[inline]
