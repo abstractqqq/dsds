@@ -6,7 +6,6 @@ from typing import (
     , Union
     , Optional
 )
-
 from .type_alias import (
     PolarsFrame
     , ActionType
@@ -43,6 +42,37 @@ class Step:
     drop: Optional[list[str]] = None
     model_step: Optional[dict[str, Any]] = None
 
+    def __str__(self) -> str:
+        output = ""
+        if self.action == "with_columns":
+            output += "Details: \n"
+            for i,expr in enumerate(self.with_columns):
+                output += f"({i+1}) {expr}\n"
+        elif self.action == "add_func":
+            d:dict = self.add_func
+            output += f"Function Module: {d['module']}, Function Name: {d['name']}\n"
+            output += "Parameters:\n"
+            for key,value in d["kwargs"].items():
+                output += f"{key} = {value},\n"
+        elif self.action == "filter":
+            output += f"By condition: {self.filter}\n"
+        elif self.action in ("classif", "regression"):
+            output += f"Model: {self.model_step['model'].__class__}\n"
+            features = self.model_step.get('features', None)
+            if features is None:
+                output += "Using all non-target columns as features.\n"
+            else:
+                output += f"Using the features {features}\n"
+            output += f"Appends {self.model_step['score_col']} to dataframe."
+        elif self.action == "map_dict":
+            output += f"Encoder/Mapper for column: {self.map_dict.left_col}\n"
+            ref_table = pl.from_dict(self.map_dict.ref)
+            output += f"The encoding/map is (Showing only 10 rows):\n{ref_table.head(10)}\n"
+        else:
+            output += str(self.value())
+
+        return output
+
     def validate(self) -> bool:
         not_nones:list[str] = []
         for field in fields(self):
@@ -64,7 +94,7 @@ class Step:
             logger.warning(f"The step {self.action} has two action values associated with it: {not_nones}")
             return False
         
-    def get_action_value(self) -> Any:
+    def value(self) -> Any:
         for field in fields(self):
             value = getattr(self, field.name)
             if field.name != "action" and value is not None:
@@ -76,6 +106,15 @@ class Blueprint:
         self._ldf = ldf
         self.steps:list[Step] = []
 
+    def get_step(self, n:int) -> Step:
+        return self.steps[n]
+    
+    def get_steps(self, indices:list[int]) -> list[Step]:
+        return [self.steps[i] for i in indices]
+    
+    def get_idx_by_action_type(self, action_type:ActionType) -> list[int]:
+        return [i for i,s in enumerate(self.steps) if s.action == action_type]
+
     def as_str(self, n:int) -> str:
         output = ""
         start = max(len(self.steps) + n, 0) if n < 0 else 0
@@ -84,33 +123,7 @@ class Blueprint:
             if k < start:
                 continue
             output += f"Step {k} | Action: {s.action}\n"
-            if s.action == "with_columns":
-                output += "Details: \n"
-                for i,expr in enumerate(s.with_columns):
-                    output += f"({i+1}) {expr}\n"
-            elif s.action == "add_func":
-                d:dict = s.add_func
-                output += f"Function Module: {d['module']}, Function Name: {d['name']}\n"
-                output += "Parameters:\n"
-                for key,value in d["kwargs"].items():
-                    output += f"{key} = {value},\n"
-            elif s.action == "filter":
-                output += f"By condition: {s.filter}\n"
-            elif s.action in ("classif", "regression"):
-                output += f"Model: {s.model_step['model'].__class__}\n"
-                features = s.model_step.get('features', None)
-                if features is None:
-                    output += "Using all non-target columns as features.\n"
-                else:
-                    output += f"Using the features {features}\n"
-                output += f"Appends {s.model_step['score_col']} to dataframe."
-            elif s.action == "map_dict":
-                output += f"Encoder/Mapper for column: {s.map_dict.left_col}\n"
-                ref_table = pl.from_dict(s.map_dict.ref)
-                output += f"The encoding/map is (Showing only 10 rows):\n{ref_table.head(10)}\n"                
-            else:
-                output += str(s.get_action_value())
-            output += "\n\n"
+            output += str(s) + "\n\n"
             if k > till:
                 break
         return output
