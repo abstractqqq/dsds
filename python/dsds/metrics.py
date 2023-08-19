@@ -5,7 +5,7 @@ from typing import (
 )
 from .type_alias import (
     WeightStrategy
-    , InnerDtypes
+    , HashableDtypes
     # , PolarsFrame
 )
 from dsds._rust import (
@@ -17,8 +17,8 @@ from dsds._rust import (
     , rs_mae
     , rs_mape
     , rs_huber_loss
+    , rs_snowball_stem_series
 )
-
 from dsds.text import snowball_stem
 from dsds.prescreen import type_checker
 import numpy as np 
@@ -481,12 +481,11 @@ def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
 #         pl.lit(2.0, dtype=pl.Float64)
 #         * (pl.col("sin_lat") + pl.col("sin_long") * pl.col("cos")).sqrt().arcsin().alias(out_name)
 #     )
-
-
     
 def jaccard_similarity(
     s1:Union[pl.Series,list,np.ndarray],
     s2:Union[pl.Series,list,np.ndarray],
+    expected_dtype: HashableDtypes = "string",
     include_null:bool=False,
     stem:bool = False,
     parallel:bool=True
@@ -501,38 +500,39 @@ def jaccard_similarity(
         The first list/series/array
     s2
         The second list/series/array
+    expected_dtype
+        Either "string" or "int". Dtype of s1 and s2.
     include_null
         If true, null will be counted as common. If false, they will not.
     stem
         If true and inner values are strings, then perform snowball stemming on the words. This is only useful 
         when the lists are lists of words
     parallel
-        Whether to hash values in the lists in parallel. For small integer lists, it is better to set 
-        this to false. It is faster when we have string lists that are large.s
+        Whether to hash values in the lists in parallel. Only applies when internal data type is string.
     '''
+    try:
+        if expected_dtype in ("string", "str"):
+            ss1 = pl.Series(s1, dtype=pl.Utf8)
+            ss2 = pl.Series(s2, dtype=pl.Utf8)
+        elif expected_dtype == "int":
+            ss1 = pl.Series(s1, dtype=pl.Int64)
+            ss2 = pl.Series(s2, dtype=pl.Int64)
+        else:
+            raise TypeError(f"The argument `expected_dtype` must be either string or int. Not {expected_dtype}.")
+    except Exception as e:
+        logger.error(e)
     
-    if len(s1) == 0 or len(s2) == 0:
-        return 0.
+    if stem and expected_dtype == "string":
+        ss1 = rs_snowball_stem_series(ss1, True)
+        ss2 = rs_snowball_stem_series(ss2, True)
 
-    t1 = type(s1[0]).__name__
-    t2 = type(s2[0]).__name__
-    if t1 not in ("int", "str") or t2 not in ("int", "str") or t1 != t2:
-        raise TypeError("Input must have values of type int or str and they must be both int "
-                        f"or both strings, not {t1} and {t2}.")
-    
-    ss1 = pl.Series(s1)
-    ss2 = pl.Series(s2)
-    if stem and t1 == "str":
-        ss1 = ss1.apply(snowball_stem, return_dtype=pl.Utf8)
-        ss2 = ss2.apply(snowball_stem, return_dtype=pl.Utf8)
-
-    return rs_series_jaccard(ss1, ss2, t1, include_null, parallel)
+    return rs_series_jaccard(ss1, ss2, expected_dtype, include_null, parallel)
 
 def df_jaccard_similarity(
     df: pl.DataFrame
     , c1: str
     , c2: str
-    , inner_dtype:InnerDtypes
+    , inner_dtype:HashableDtypes
     , include_null:bool = True
     , append:bool = False
 ) -> pl.DataFrame:
@@ -549,7 +549,7 @@ def df_jaccard_similarity(
     s2
         Name of the second column
     inner_dtype
-        The inner dtype of the list columns. Must be either int or str
+        The inner dtype of the list columns. Must be either int or string
     include_null
         If true, null/none will be counted as common. If false, they will not.
     append

@@ -121,19 +121,17 @@ pub fn rs_snowball_stem(word:&str, no_stopwords:bool) -> PyResult<String> {
 }
 
 #[pyfunction]
-pub fn rs_snowball_stem_series(words:PySeries) -> PyResult<PySeries>{
+pub fn rs_snowball_stem_series(words:PySeries, no_stopwords:bool) -> PyResult<PySeries>{
     
     let words: Series = words.into();
     let out = words.utf8()
     .map_err(PyPolarsErr::from)?
     .par_iter()
     .map(|word| {
-        snowball_stem(word, true)
+        snowball_stem(word, no_stopwords)
     }).collect::<ChunkedArray<Utf8Type>>();
 
-    Ok(
-        PySeries(out.into_series())
-    )
+    Ok(PySeries(out.into_series()))
 }
 
 #[pyfunction]

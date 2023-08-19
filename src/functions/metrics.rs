@@ -125,17 +125,17 @@ fn normalize_in_place(mat:&mut Array2<f64>, axis:Axis) {
 
 // 
 
-pub enum InnerType {
+pub enum HashableType {
     STRING,
     INTEGER
 }
 
-impl InnerType {
+impl HashableType {
 
-    pub fn from_str(s:&str) -> Option<InnerType> {
+    pub fn from_str(s:&str) -> Option<HashableType> {
         match s {
-            "str" => Some(InnerType::STRING),
-            "int" => Some(InnerType::INTEGER),
+            "string"|"str" => Some(HashableType::STRING),
+            "int" => Some(HashableType::INTEGER),
             _ => None
         }
     }
@@ -144,7 +144,7 @@ impl InnerType {
 fn compute_jaccard_similarity(
     sa: &Series, 
     sb: &Series, 
-    st: &InnerType, 
+    st: &HashableType, 
     include_null:bool
 ) -> PolarsResult<Series> {
     let sa: &ChunkedArray<ListType> = sa.list()?;
@@ -154,13 +154,13 @@ fn compute_jaccard_similarity(
         match (a, b) {
             (Some(a), Some(b)) => {
                 let (mut s3_len, s1_len, s2_len) = match st {
-                    InnerType::INTEGER => {
+                    HashableType::INTEGER => {
                         let (a, b) = (a.i64()?, b.i64()?);
                         let s1 = a.into_iter().collect::<PlHashSet<_>>();
                         let s2 = b.into_iter().collect::<PlHashSet<_>>();
                         (s1.intersection(&s2).count(), s1.len(), s2.len())
                     },
-                    InnerType::STRING => {
+                    HashableType::STRING => {
                         let (a, b) = (a.utf8()?, b.utf8()?);
                         let s1 = a.into_iter().collect::<PlHashSet<_>>();
                         let s2 = b.into_iter().collect::<PlHashSet<_>>();
@@ -183,7 +183,7 @@ pub fn list_jaccard_similarity(
     df:DataFrame, 
     col_a: &str, 
     col_b: &str, 
-    st: InnerType, 
+    st: HashableType, 
     include_null:bool
 ) -> PolarsResult<DataFrame> {
 
@@ -195,18 +195,16 @@ pub fn list_jaccard_similarity(
         let b: &Series = sub_df.column(col_b)?;
         let name = format!("{}_{}_jaccard", col_a, col_b);
         let out: Series = compute_jaccard_similarity(a, b, &st, include_null)?;
-        df!(
-            name.as_str() => out
-        )
+        df!(name.as_str() => out)
     }).collect::<PolarsResult<Vec<_>>>()?;
     accumulate_dataframes_vertical(dfs)
 }
 
 #[inline]
 pub fn series_jaccard_similarity(
-    a: Series, 
-    b: Series, 
-    st: InnerType, 
+    a: Series,
+    b: Series,
+    st: HashableType, 
     include_null:bool,
     parallel: bool
 ) -> PolarsResult<f64> {
@@ -215,24 +213,13 @@ pub fn series_jaccard_similarity(
     let na: usize = a.null_count();
     let nb: usize = b.null_count();
     let (mut s3_len, s1_len, s2_len) = match st {
-        InnerType::INTEGER => {
-            if parallel {
-                let cas: [&ChunkedArray<Int64Type>; 2] = [a.i64()?, b.i64()?];
-                let mut sets: Vec<PlHashSet<Option<i64>>> = Vec::with_capacity(2);
-                cas.into_par_iter().map(|s| s.into_iter().collect::<PlHashSet<_>>())
-                .collect_into_vec(&mut sets);
-                let (s1, s2) = unsafe {
-                    (sets.get_unchecked(0), sets.get_unchecked(1))
-                };
-                (s1.intersection(s2).count(), s1.len(), s2.len())
-            } else {
-                let (a, b) = (a.i64()?, b.i64()?);
-                let s1 = a.into_iter().collect::<PlHashSet<_>>();
-                let s2 = b.into_iter().collect::<PlHashSet<_>>();
-                (s1.intersection(&s2).count(), s1.len(), s2.len())
-            }
+        HashableType::INTEGER => {
+            let (a, b) = (a.i64()?, b.i64()?);
+            let s1 = a.into_iter().collect::<PlHashSet<_>>();
+            let s2 = b.into_iter().collect::<PlHashSet<_>>();
+            (s1.intersection(&s2).count(), s1.len(), s2.len())
         },
-        InnerType::STRING => {
+        HashableType::STRING => {
             let (a, b) = (a.utf8()?, b.utf8()?);
             if parallel {
                 let cas: [&ChunkedArray<Utf8Type>; 2] = [a, b];
@@ -242,7 +229,7 @@ pub fn series_jaccard_similarity(
                 let (s1, s2) = unsafe {
                     (sets.get_unchecked(0), sets.get_unchecked(1))
                 };
-                (s1.intersection(s2).count(), s1.len(), s2.len())
+                (s1.intersection(&s2).count(), s1.len(), s2.len())
             } else {
                 let s1 = a.into_iter().collect::<PlHashSet<_>>();
                 let s2 = b.into_iter().collect::<PlHashSet<_>>();

@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use polars_core::prelude::*;
 use polars_lazy::prelude::*;
 use std::iter::zip;
+use std::borrow::Cow;
 
 pub enum STEMMER {
     SNOWBALL
@@ -50,10 +51,10 @@ pub fn hamming_dist(s1:&str, s2:&str) -> Option<u32> {
 
 #[inline]
 pub fn snowball_stem(word:Option<&str>, no_stopwords:bool) -> Option<String> {
-
+    
     match word {
         Some(w) => {
-            if (no_stopwords) & (EN_STOPWORDS.contains(&w)) {
+            if (no_stopwords) & (EN_STOPWORDS.binary_search(&w).is_ok()) {
                 None
             } else if w.parse::<f64>().is_ok() {
                 None

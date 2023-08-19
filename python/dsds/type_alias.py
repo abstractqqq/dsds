@@ -58,7 +58,8 @@ ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "ad
                                , "regression"]
 # --- Types ---
 SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "list", "string", "other/unknown"]
-InnerDtypes:TypeAlias = Literal["int", "str"]
+InnerDtypes:TypeAlias = Literal["int", "string"]
+HashableDtypes:TypeAlias = Literal["int", "string", "str"]
 Stemmer:TypeAlias = Literal["snowball", ""]
 
 # --- Utils ---

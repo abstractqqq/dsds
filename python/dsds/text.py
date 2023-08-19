@@ -3,40 +3,38 @@ from .type_alias import (
     PolarsFrame
     , Stemmer
 )
-import polars as pl
 from dsds._rust import (
     rs_ref_table, 
-    rs_snowball_stem, 
+    rs_snowball_stem,
     rs_levenshtein_dist,
-    rs_hamming_dist
+    rs_hamming_dist,
 )
+import polars as pl
 
 # Right now, only English. 
 # Only snowball stemmer is availabe because I can only find snonball stemmer's implementation in Rust.
 # It will take too much effort on my part to add other languages. So the focus is only English for now.
 
-STOPWORDS:Final[pl.Series] = pl.Series(['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves'
-             , "you're", "you've", "you'll", "you'd", 'your', 'yours', 'yourself'
-             , 'yourselves', 'he', 'him', 'his', 'himself', 'she', "she's", 'her'
-             , 'hers', 'herself', 'it', "it's", 'its', 'itself', 'they', 'them'
-             , 'their', 'theirs', 'themselves', 'what', 'which', 'who', 'whom'
-             , 'this', 'that', "that'll", 'these', 'those', 'am', 'is', 'are'
-             , 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having'
-             , 'do', 'does', 'did', 'doing', 'a', 'an', 'the', 'and', 'but'
-             , 'if', 'or', 'because', 'as', 'until', 'while', 'of', 'at', 'by'
-             , 'for', 'with', 'about', 'against', 'between', 'into', 'through'
-             , 'during', 'before', 'after', 'above', 'below', 'to', 'from', 'up'
-             , 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further'
-             , 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all'
-             , 'any', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such'
-             , 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very'
-             , 's', 't', 'can', 'will', 'just', 'don', "don't", 'should', "should've"
-             , 'now', 'd', 'll', 'm', 'o', 're', 've', 'y', 'ain', 'aren', "aren't"
-             , 'couldn', "couldn't", 'didn', "didn't", 'doesn', "doesn't", 'hadn'
-             , "hadn't", 'hasn', "hasn't", 'haven', "haven't", 'isn', "isn't", 'ma'
-             , 'mightn', "mightn't", 'mustn', "mustn't", 'needn', "needn't", 'shan'
-             , "shan't", 'shouldn', "shouldn't", 'wasn', "wasn't", 'weren', "weren't"
-             , 'won', "won't", 'wouldn', "wouldn't", 'you'])
+STOPWORDS:Final[pl.Series] = pl.Series(["a", "about", "above", "after", "again", "against", "ain", 
+            "all", "am", "an", "and", "any", "are", "aren", "aren't", "as", 
+            "at", "be", "because", "been", "before", "being", "below", "between", 
+            "both", "but", "by", "can", "couldn", "couldn't", "d", "did", "didn", 
+            "didn't", "do", "does", "doesn", "doesn't", "doing", "don", "don't", 
+            "down", "during", "each", "few", "for", "from", "further", "had", "hadn", 
+            "hadn't", "has", "hasn", "hasn't", "have", "haven", "haven't", "having", 
+            "he", "her", "here", "hers", "herself", "him", "himself", "his", "how", 
+            "i", "if", "in", "into", "is", "isn", "isn't", "it", "it's", "its", "itself", 
+            "just", "ll", "m", "ma", "me", "mightn", "mightn't", "more", "most", "mustn", 
+            "mustn't", "my", "myself", "needn", "needn't", "no", "nor", "not", "now", "o", 
+            "of", "off", "on", "once", "only", "or", "other", "our", "ours", "ourselves", 
+            "out", "over", "own", "re", "s", "same", "shan", "shan't", "she", "she's", 
+            "should", "should've", "shouldn", "shouldn't", "so", "some", "such", "t", 
+            "than", "that", "that'll", "the", "their", "theirs", "them", "themselves", 
+            "then", "there", "these", "they", "this", "those", "through", "to", "too", 
+            "under", "until", "up", "ve", "very", "was", "wasn", "wasn't", "we", "were", 
+            "weren", "weren't", "what", "when", "where", "which", "while", "who", "whom", 
+            "why", "will", "with", "won't", "wouldn", "wouldn't", "y", "you", "you'd", 
+            "you'll", "you're", "you've", "your", "yours", "yourself", "yourselves"])
 
 def snowball_stem(word:str, no_stopword:bool=True, language="english") -> str:
     '''
@@ -103,9 +101,9 @@ def clean_str_cols(
         str_cols = cols
     
     if lowercase:
-        exprs = [pl.col(c).str.to_lowercase().str.replace_all(pattern, value) for c in str_cols]
+        exprs = [pl.col(str_cols).str.to_lowercase().str.replace_all(pattern, value)]
     else:
-        exprs = [pl.col(c).str.replace_all(pattern, value) for c in str_cols]
+        exprs = [pl.col(str_cols).str.replace_all(pattern, value) for c in str_cols]
 
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
@@ -166,7 +164,7 @@ def get_ref_table(
     length <= 2, numerics, and stopwords will not be counted. All words sharing the stem will be counted 
     as the stem word. The table has 4 columns:
 
-    (1) A column representing all stems found in the documents in df[c], called "ref"
+    (1) A column representing all stems/words found in the documents in df[c], called "ref"
 
     (2) A column representing all words that are mapped to these stems, called "captures"
 
@@ -178,12 +176,15 @@ def get_ref_table(
     ----------
     See `dsds.text.count_vectorizer`
     '''
+
     if lowercase:
-        return rs_ref_table(df.lazy().with_columns(pl.col(c).str.to_lowercase()).collect(), c, stemmer, min_dfreq
-                            , max_dfreq, max_word_per_doc, max_features).sort("ref")
+        df_local = df.lazy().with_columns(pl.col(c).str.to_lowercase()).collect()
     else:
-        return rs_ref_table(df.lazy().select(c).collect(), c, stemmer, min_dfreq
-                            , max_dfreq, max_word_per_doc, max_features).sort("ref")
+        df_local = df.lazy().select(c).collect()
+
+    return rs_ref_table(df_local, c, stemmer, min_dfreq, max_dfreq, 
+                        max_word_per_doc, max_features).sort("ref")
+
 
 def count_vectorizer(
     df: PolarsFrame
@@ -194,7 +195,6 @@ def count_vectorizer(
     , max_word_per_doc: int = 3000
     , max_features: int = 500
     , lowercase: bool = True
-    , persist:bool = False
 ) -> PolarsFrame:
     '''
     A word count vectorizer similar to sklearn's. In addition, 
@@ -206,10 +206,11 @@ def count_vectorizer(
     this, it does not perform row-wise normalization. So the weights for each document do not mean the same.
 
     If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
-    also that Words of length <=2 will not be counted.Turn off lowercase to improve performance if
-    documents are already lowercased. See Rust source code for more comment on performance. Because 
-    this works directly with dataframes, unlike sparse matrices, memory consumption might be larger
-    upfront.
+    also that words of length <=2 will not be counted. Turn off lowercase to improve performance if
+    documents are already lowercased. This works directly with dataframes, unlike sparse matrices, so 
+    memory consumption might be larger upfront.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -234,18 +235,20 @@ def count_vectorizer(
     persist
         If df is lazy, this step can be optionally persisted as part of the pipeline (saved in blueprint).
     '''
+    expr = pl.col(c)
     if lowercase:
         df_local = df.lazy().with_columns(pl.col(c).str.to_lowercase()).collect()
+        expr = expr.str.to_lowercase()
     else:
         df_local = df.lazy().select(pl.col(c)).collect()
-    ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq
-                                    , max_dfreq, max_word_per_doc, max_features).sort("ref")
+    ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq, 
+                                     max_dfreq, max_word_per_doc, max_features).sort("ref")
 
     exprs = [
-        pl.col(c).str.count_match(p).suffix(f"::cnt_{s}")
+        expr.str.count_match(p).suffix(f"::cnt_{s}")
         for s, p in zip(ref["ref"], ref["captures"])
     ]
-    if persist and isinstance(df, pl.LazyFrame):
+    if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs).blueprint.drop([c])
     return df.with_columns(exprs).drop(c)
 
@@ -258,7 +261,6 @@ def tfidf_vectorizer(
     , max_word_per_doc: int = 3000
     , max_features: int = 500
     , lowercase: bool = True
-    , persist:bool = False
 ) -> PolarsFrame:
     '''
     A TFIDF vectorizer similar to sklearn's. In addition, 
@@ -274,9 +276,10 @@ def tfidf_vectorizer(
 
     If counting for a given list of words is desired, see `dsds.transform.extract_word_count`. Note 
     also that Words of length <=2 will not be counted. Turn off lowercase to improve performance if
-    documents are already lowercased. See Rust source code for more comment on performance. Because 
-    this works directly with dataframes, unlike sparse matrices, memory consumption might be larger
-    upfront.
+    documents are already lowercased. This works directly with dataframes, unlike sparse matrices, so 
+    memory consumption might be larger upfront.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -301,32 +304,24 @@ def tfidf_vectorizer(
     persist
         If df is lazy, this step can be optionally persisted as part of the pipeline (saved in blueprint).
     '''
-    is_lazy = isinstance(df, pl.LazyFrame)
+    expr = pl.col(c)
     if lowercase:
-        if persist and is_lazy:
-            # In this case, persist the lowercase step
-            df = df.blueprint.with_columns([
-                pl.col(c).str.to_lowercase()
-            ])
-            # Create local
-            df_local = df.select(pl.col(c)).collect()
-        else: # just lowercase
-            df = df.with_columns(pl.col(c).str.to_lowercase())
-            df_local = df.lazy().select(pl.col(c)).collect()
-    else: 
+        df_local = df.lazy().with_columns(pl.col(c).str.to_lowercase()).collect()
+        expr = expr.str.to_lowercase()
+    else:
         df_local = df.lazy().select(pl.col(c)).collect()
 
-    ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq
-                                    , max_dfreq, max_word_per_doc, max_features).sort("ref")
+    ref: pl.DataFrame = rs_ref_table(df_local, c, stemmer, min_dfreq, 
+                                     max_dfreq, max_word_per_doc, max_features).sort("ref")
 
     exprs = [
-        (   pl.lit(idf, dtype=pl.Float64)
-            * pl.col(c).str.count_match(p).cast(pl.Float64)
-            / pl.col("__doc_len__").cast(pl.Float64)
+        (pl.lit(idf, dtype=pl.Float64)
+            * expr.str.count_match(p).cast(pl.Float64)
+            / pl.col("__doc_len__")
         ).suffix(f"::tfidf_{s}")
         for s, p, idf in zip(ref["ref"], ref["captures"], ref["smooth_idf"])
     ]
-    if persist and is_lazy:
+    if isinstance(df, pl.LazyFrame):
         return (
             df.blueprint.with_columns([
                 pl.col(c).str.extract_all(pl.lit(r"(?u)\b\w\w+\b")).list.lengths().cast(pl.Float64).alias("__doc_len__")
