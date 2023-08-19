@@ -234,15 +234,8 @@ def psi(
     n_bins
         The number of bins used in the computation. By default it is 10, which means we are using deciles
     '''
-    if isinstance(new_score, np.ndarray):
-        s1 = pl.Series(new_score, dtype=pl.Float64)
-    else:
-        s1 = new_score
-    
-    if isinstance(old_score, np.ndarray):
-        s2 = pl.Series(old_score, dtype=pl.Float64)
-    else:
-        s2 = old_score
+    s1 = pl.Series(new_score, dtype=pl.Float64)
+    s2 = pl.Series(old_score, dtype=pl.Float64)
 
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
     s1_cuts:pl.DataFrame = s1.qcut(qcuts, series=False)
@@ -367,7 +360,7 @@ def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     y_predicted
         Predicted target
     '''
-    # This is trivial, and we won't really have any performance gain by using Polars' or other stuff.
+    # This is trivial, and we won't really have any performance gain by using Rust or other stuff.
     # This is here just for completeness
     d1 = y_actual - y_predicted
     d2 = y_actual - np.mean(y_actual)
@@ -481,18 +474,18 @@ def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
 #         pl.lit(2.0, dtype=pl.Float64)
 #         * (pl.col("sin_lat") + pl.col("sin_long") * pl.col("cos")).sqrt().arcsin().alias(out_name)
 #     )
-    
+
 def jaccard_similarity(
-    s1:Union[pl.Series,list,np.ndarray],
-    s2:Union[pl.Series,list,np.ndarray],
-    expected_dtype: HashableDtypes = "string",
-    include_null:bool=False,
-    stem:bool = False,
-    parallel:bool=True
+    s1:Union[pl.Series,list,np.ndarray]
+    , s2:Union[pl.Series,list,np.ndarray]
+    , expected_dtype: HashableDtypes = "string"
+    , include_null:bool=False
+    , stem:bool = False
+    , parallel:bool=True
 ) -> float:
     '''
     Computes jaccard similarity between the two input list of strings or integers. Internally, both will be turned 
-    into Polars Series. 
+    into Polars Series.
 
     Parameters
     ----------
@@ -506,21 +499,18 @@ def jaccard_similarity(
         If true, null will be counted as common. If false, they will not.
     stem
         If true and inner values are strings, then perform snowball stemming on the words. This is only useful 
-        when the lists are lists of words
+        when the lists are lists of words. All stopwords will also be removed.
     parallel
         Whether to hash values in the lists in parallel. Only applies when internal data type is string.
     '''
-    try:
-        if expected_dtype in ("string", "str"):
-            ss1 = pl.Series(s1, dtype=pl.Utf8)
-            ss2 = pl.Series(s2, dtype=pl.Utf8)
-        elif expected_dtype == "int":
-            ss1 = pl.Series(s1, dtype=pl.Int64)
-            ss2 = pl.Series(s2, dtype=pl.Int64)
-        else:
-            raise TypeError(f"The argument `expected_dtype` must be either string or int. Not {expected_dtype}.")
-    except Exception as e:
-        logger.error(e)
+    if expected_dtype in ("str", "string"):
+        ss1 = pl.Series(s1, dtype=pl.Utf8)
+        ss2 = pl.Series(s2, dtype=pl.Utf8)
+    elif expected_dtype == "int":
+        ss1 = pl.Series(s1, dtype=pl.Int64)
+        ss2 = pl.Series(s2, dtype=pl.Int64)
+    else:
+        raise TypeError(f"The argument `expected_dtype` must be either string or int. Not {expected_dtype}.")
     
     if stem and expected_dtype == "string":
         ss1 = rs_snowball_stem_series(ss1, True)
