@@ -721,7 +721,8 @@ def remove_dates(df:PolarsFrame) -> PolarsFrame:
 
 def infer_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> list[str]:
     '''
-    Infers numeric columns that have more than threshold pct of invalid (NaN) values.
+    Infers numeric columns that have more than threshold pct of invalid (NaN) values. Inf and -Inf values
+    are considered as NaN.
     
     Parameters
     ----------
@@ -735,19 +736,21 @@ def infer_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool
     nums = get_numeric_cols(df)
     df_local = df.lazy().select(nums).with_row_count(offset=1).set_sorted("row_nr")
     if include_null:
-        expr = (pl.all().is_nan().sum() + pl.all().is_null().sum())/pl.col("row_nr").max()
+        expr = ((pl.col(nums).is_nan())|(pl.col(nums).is_infinite())|(pl.col(nums).is_null())).sum()/pl.col("row_nr").max()
     else:
-        expr = pl.all().is_nan().sum()/pl.col("row_nr").max()
+        expr = ((pl.col(nums).is_nan())|(pl.col(nums).is_infinite())).sum()/pl.col("row_nr").max()
     
-    return (
-        df_local.select(
-            expr
-        ).select(pl.col("*").exclude("row_nr"))
-        .collect()
-        .transpose(include_header=True, column_names=["nan_pct"])
-        .filter(pl.col("nan_pct") >= threshold)["column"]
-        .to_list()
-    )
+    temp = df_local.select(expr).collect()
+    cols = temp.columns
+    return [c for c, pct in zip(cols, temp.row(0)) if pct >= threshold]
+
+def infer_nan(df: PolarsFrame) -> list[str]:
+    '''
+    Returns all columns that contain NaN or infinite values.
+    '''
+    nums = get_numeric_cols(df)
+    nan_counts = df.lazy().select(((pl.col(nums).is_nan()) | (pl.col(nums).is_infinite())).sum()).collect().row(0)
+    return [col for col, cnt in zip(nums, nan_counts) if cnt > 0]
 
 def remove_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> PolarsFrame:
     '''
@@ -764,13 +767,14 @@ def remove_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:boo
     '''
     remove_cols = infer_invalid_numeric(df, threshold, include_null) 
     logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
-                f" not valid values. {remove_cols}.\n"
+                f" invalid values. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
 
 def infer_nulls(df:PolarsFrame, threshold:float=0.5) -> list[str]:
     '''
-    Infers columns that have more than threshold pct of null values.
+    Infers columns that have more than threshold pct of null values. Use infer_invalid_numeric with 
+    include_null = True if you want to find high NaN + Null columns.
     
     Parameters
     ----------
@@ -779,12 +783,19 @@ def infer_nulls(df:PolarsFrame, threshold:float=0.5) -> list[str]:
     threshold
         Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
     '''
-    return (df.lazy().null_count().collect()/len(df)).transpose(include_header=True, column_names=["null_pct"])\
-                    .filter(pl.col("null_pct") >= threshold)["column"].to_list()
+    temp = df.lazy().with_row_count(offset=1).select(
+        pl.all().exclude("row_nr").null_count(),
+        pl.col("row_nr").max()
+    ).collect()
+    len_df = temp.drop_in_place("row_nr")[0]
+    cols = temp.columns
+    t = len_df * threshold
+    return [c for c, cnt in zip(cols, temp.row(0)) if cnt >= t]
 
 def remove_nulls(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
     '''
-    Removes columns with more than threshold pct of null values.
+    Removes columns with more than threshold pct of null values. Use remove_invalid_numeric with 
+    include_null = True if you want to drop high NaN + Null columns.
 
     Parameters
     ----------
@@ -801,10 +812,9 @@ def remove_nulls(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
 
 def infer_by_var(df:PolarsFrame, threshold:float, target:str) -> list[str]:
     '''Infers columns that have lower than threshold variance. Target will not be included.'''
-    return df.lazy().select(
-                pl.col(x).var() for x in get_numeric_cols(df) if x != target
-            ).collect().transpose(include_header=True, column_names=["var"])\
-            .filter(pl.col("var") < threshold)["column"].to_list() 
+    vars = df.lazy().select(pl.col("*").exclude(target).var()).collect()
+    cols = vars.columns
+    return [c for c, v in zip(cols, vars.row(0)) if v < threshold]
 
 def remove_by_var(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
     '''Removes features with low variance. Features with > threshold variance will be kept. 
@@ -974,12 +984,11 @@ def infer_constants(df:PolarsFrame, include_null:bool=True) -> list[str]:
         If true, then columns with two distinct values like [value_1, null] will be considered a 
         constant column
     '''
+    condition = (pl.col("n_unique") == 1)
     if include_null:
-        return get_unique_count(df, include_null_count=True).filter(
-            ((pl.col("n_unique") == 1) | ((pl.col("n_unique") == 2) & (pl.col("null_count") > 0)))
-        )["column"].to_list()
-    else:
-        return get_unique_count(df).filter(pl.col("n_unique") == 1)["column"].to_list()
+        condition = condition | ((pl.col("n_unique") == 2) & (pl.col("null_count") > 0))
+
+    return get_unique_count(df).filter(condition)["column"].to_list()
 
 def remove_constants(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     '''
@@ -1007,14 +1016,11 @@ def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     if ignore_comma:
         expr = expr.str.replace_all(",", "")
 
-    nums = (
-        df.lazy().select(
-            expr.str.count_match("\d*\.?\d+").mean()
-        ).collect()
-        .transpose(include_header=True, column_names=["avg_num_cnt"])
-        .filter(pl.col("avg_num_cnt").is_between(0.95, 1))["column"].to_list()
-    )
-    return nums
+    temp = df.lazy().select(
+        expr.str.count_match("\d*\.?\d+").mean()
+    ).collect()
+    cols = temp.columns
+    return [c for c, avg_num_cnt in zip(cols, temp.row(0)) if avg_num_cnt <= 1 and avg_num_cnt >= 0.95]
 
 def infer_coordinates(df:PolarsFrame):
     pass

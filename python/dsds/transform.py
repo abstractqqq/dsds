@@ -13,7 +13,8 @@ from .type_alias import (
 )
 from .prescreen import (
     type_checker, 
-    infer_nums_from_str
+    infer_nums_from_str,
+    infer_nan
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
@@ -52,8 +53,11 @@ def impute(
     cols
         The columns to impute
     strategy
-        One of 'median', 'mean', 'const' or 'mode'. If 'const', the const argument should be provided. Note that
-        if strategy is mode and if two values occur the same number of times, a random one will be picked.
+        One of 'median', 'mean', 'const', 'mode' or 'coalease'. If 'const', the const argument 
+        must be provided. Note that if strategy is mode and if two values occur the same number 
+        of times, a random one will be picked. If strategy is coalease, it is not guaranteed that
+        all nulls will be filled, and the first non-null values in cols will be used to construct a new
+        column aliased by cols[0]'s name and all the rest cols[1:] will be dropped.
     const
         The constant value to impute by if strategy = 'const'
     '''
@@ -68,12 +72,76 @@ def impute(
     elif strategy in ("mode", "most_frequent"):
         all_modes = df.lazy().select(pl.col(cols).mode().first()).collect().row(0)
         exprs = [pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols)]
+    elif strategy == "coalease":
+        exprs = [pl.coalesce(cols).alias(cols[0])]
+        if isinstance(df, pl.LazyFrame):
+            return df.blueprint.with_columns(exprs).blueprint.drop(cols[1:])
+        return df.with_columns(exprs).drop(cols[1:])
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
 
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
+
+def impute_nan(
+    df: PolarsFrame
+    , cols: Optional[list[str]] = None
+    , by: Optional[float] = None
+) -> PolarsFrame:
+    '''
+    Maps all NaN or infinite values to the given value.
+    
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If none, this will infer all columns that contains NaN or infinity
+    by
+        If this is None, this will map all NaNs/infinity value to null. If this is a valid float,
+        this will impute NaN/infinity by this value.
+    '''
+    if cols is None:
+        to_map = infer_nan(df)
+    else:
+        _ = type_checker(df, cols, "numeric", "impute_nan")
+        to_map = cols
+
+    exprs = [pl.when((pl.col(c).is_infinite()) | pl.col(c).is_nan()).then(by).otherwise(pl.col(c)).alias(c) 
+             for c in to_map]
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
+def coalesce(
+    df: PolarsFrame
+    , exprs: list[pl.Expr]
+    , new_col_name: str
+) -> PolarsFrame:
+    '''
+    A coalease passthrough that coaleases using the given expressions in exprs. Unlike coalease in 
+    impute, this does not drop any columns because it is impossible to infer the right column names 
+    for expressions in exprs. If dropping original columns is intended, please follow this up by a 
+    drop statement.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    exprs
+        The expressions which we will use to perform the coalease
+    new_col_name
+        Name of the new coaleased column
+    '''
+    expr = [pl.coalesce(exprs).alias(new_col_name)]
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(expr)
+    return df.with_columns(expr)
 
 def scale(
     df:PolarsFrame
