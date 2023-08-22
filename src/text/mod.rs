@@ -76,24 +76,23 @@ pub fn rs_hamming_dist_series(series_a:PySeries, series_b:PySeries) -> PyResult<
     Ok(
         PySeries(out.into_series())
     )
-
 }
 
 #[pyfunction]
-pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> usize {
+pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> u32 {
 
     // https://en.wikipedia.org/wiki/Wagner%E2%80%93Fischer_algorithm
 
     let (len1, len2) = (s1.len(), s2.len());
-    let mut dp: Vec<Vec<usize>> = vec![vec![0; len2 + 1]; len1 + 1];
+    let mut dp: Vec<Vec<u32>> = vec![vec![0; len2 + 1]; len1 + 1];
 
     // Initialize the first row and first column
     for i in 0..=len1 {
-        dp[i][0] = i;
+        dp[i][0] = i as u32;
     }
 
     for j in 0..=len2 {
-        dp[0][j] = j;
+        dp[0][j] = j as u32;
     }
 
     // Fill the dp matrix using dynamic programming

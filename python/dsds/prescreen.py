@@ -23,6 +23,7 @@ from scipy.stats import (
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 from math import comb
+from dsds._rust import rs_levenshtein_dist
 import re
 import polars.selectors as cs
 import polars as pl
@@ -741,8 +742,7 @@ def infer_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool
         expr = ((pl.col(nums).is_nan())|(pl.col(nums).is_infinite())).sum()/pl.col("row_nr").max()
     
     temp = df_local.select(expr).collect()
-    cols = temp.columns
-    return [c for c, pct in zip(cols, temp.row(0)) if pct >= threshold]
+    return [c for c, pct in zip(temp.columns, temp.row(0)) if pct >= threshold]
 
 def infer_nan(df: PolarsFrame) -> list[str]:
     '''
@@ -784,13 +784,9 @@ def infer_nulls(df:PolarsFrame, threshold:float=0.5) -> list[str]:
         Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
     '''
     temp = df.lazy().with_row_count(offset=1).select(
-        pl.all().exclude("row_nr").null_count(),
-        pl.col("row_nr").max()
+        pl.all().exclude("row_nr").null_count() / pl.col("row_nr").max()
     ).collect()
-    len_df = temp.drop_in_place("row_nr")[0]
-    cols = temp.columns
-    t = len_df * threshold
-    return [c for c, cnt in zip(cols, temp.row(0)) if cnt >= t]
+    return [c for c, pct in zip(temp.columns, temp.row(0)) if pct >= threshold]
 
 def remove_nulls(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
     '''
@@ -817,8 +813,10 @@ def infer_by_var(df:PolarsFrame, threshold:float, target:str) -> list[str]:
     return [c for c, v in zip(cols, vars.row(0)) if v < threshold]
 
 def remove_by_var(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
-    '''Removes features with low variance. Features with > threshold variance will be kept. 
-        Threshold should be positive.'''
+    '''
+    Removes features with low variance. Features with > threshold variance will be kept. 
+    Threshold should be positive.
+    '''
 
     remove_cols = infer_by_var(df, threshold, target) 
     logger.info(f"The following columns are dropped because they have lower than {threshold} variance. {remove_cols}.\n"
@@ -874,7 +872,6 @@ def get_unique_count(df:PolarsFrame, include_null_count:bool=False) -> pl.DataFr
             pl.all().n_unique()
         ).collect().transpose(include_header=True, column_names=["n_unique"])
 
-# Really this is just an alias
 def infer_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> list[str]:
     '''
     Infers columns that have higher than threshold unique pct.
@@ -884,18 +881,12 @@ def infer_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> list[str]:
     df
         Either a lazy or eager Polars dataframe
     threshold
-        Every column with unique pct higher than this threshold will be returned. Note that 
-        threshold will be clipped between 0.01 and 0.99.
+        Every column with unique pct higher than this threshold will be returned.
     '''
-    clipped_threshold = min(0.99, max(threshold, 0.01))
-    temp = get_unique_count(df.with_row_count(offset=1))
-    len_df:int = temp.filter(pl.col("column") == "row_nr").item(0,1)
-    return (
-        temp.with_columns(
-            (pl.col("n_unique")/len_df).alias("unique_pct")
-        ).filter((pl.col("unique_pct") >= clipped_threshold) & (pl.col("column") != "row_nr"))["column"]
-        .to_list()
-    )
+    temp = df.lazy().with_row_count(offset=1).select(
+        pl.all().exclude("row_nr").n_unique() / pl.col("row_nr").max()
+    ).collect()
+    return [c for c, pct in zip(temp.columns, temp.row(0)) if pct > threshold]
 
 def remove_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
     '''
@@ -988,7 +979,73 @@ def infer_constants(df:PolarsFrame, include_null:bool=True) -> list[str]:
     if include_null:
         condition = condition | ((pl.col("n_unique") == 2) & (pl.col("null_count") > 0))
 
-    return get_unique_count(df).filter(condition)["column"].to_list()
+    return get_unique_count(df, True).filter(condition)["column"].to_list()
+
+def infer_binary(df:PolarsFrame, include_null:bool=True) -> list[str]:
+    '''
+    Returns a list of inferred binary columns. (Columns with 2 values).
+    
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    include_null
+        If true, then columns with three distinct values like ['Y', 'N', null] will be considered a 
+        binary column
+    '''
+    condition = (pl.col("n_unique") == 2)
+    if include_null:
+        condition = condition | ((pl.col("n_unique") == 3) & (pl.col("null_count") > 0))
+
+    return get_unique_count(df, True).filter(condition)["column"].to_list()
+
+def infer_n_unique(df:PolarsFrame, n:int, include_null:bool=True, leq:bool=False) -> list[str]:
+    ''' 
+    Returns a list of columns with exactly n unique values. If leq = True, this returns a list
+    of columns with <= n unique values.
+    
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    n
+        The number of distinct values
+    include_null
+        If true, this will return columns with n+1 distinct values where one of them is null.
+    leq
+        If true, this will return columns with <= n unique values
+    '''
+    if leq:
+        condition1 = (pl.col("n_unique").le(n))
+        condition2 = (pl.col("n_unique").le(n+1))
+    else:
+        condition1 = (pl.col("n_unique").eq(n))
+        condition2 = (pl.col("n_unique").eq(n+1))
+
+    if include_null:
+        condition = condition1 | (condition2 & (pl.col("null_count") > 0))
+
+    return get_unique_count(df, True).filter(condition)["column"].to_list()
+
+def get_complement(
+    df: PolarsFrame,
+    cols: list[str]
+) -> list[str]:
+    '''
+    A convenience method that returns all columns in df but not in cols.
+    '''
+    return [c for c in df.columns if c not in cols]
+
+def get_similar_names(
+    df: PolarsFrame,
+    ref: str,
+    distance:int = 3
+) -> list[str]:
+    '''
+    Returns columns whose name is within `distance` Levenshtein distance from the reference string. This 
+    is useful when there is a typo in certain column names, e.g. "count" vs. "counts". 
+    '''
+    return [c for c in df.columns if rs_levenshtein_dist(c, ref) <= distance]
 
 def remove_constants(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     '''
@@ -1019,8 +1076,8 @@ def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     temp = df.lazy().select(
         expr.str.count_match("\d*\.?\d+").mean()
     ).collect()
-    cols = temp.columns
-    return [c for c, avg_num_cnt in zip(cols, temp.row(0)) if avg_num_cnt <= 1 and avg_num_cnt >= 0.95]
+    # On average, about 1 occurrence of number in the values.
+    return [c for c, avg in zip(temp.columns, temp.row(0)) if avg <= 1 and avg >= 0.95]
 
 def infer_coordinates(df:PolarsFrame):
     pass
