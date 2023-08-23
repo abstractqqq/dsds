@@ -46,6 +46,7 @@ def boolean_encode(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
 def missing_indicator(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
+    , include_nan:bool = True
     , suffix: str = "_missing"
 ) -> PolarsFrame:
     '''
@@ -59,6 +60,8 @@ def missing_indicator(
         Either a lazy or eager Polars DataFrame
     cols
         If not provided, will create missing indicators for all columns
+    include_nan
+        If true, NaN and Inf values will be treated as missing
     suffix
         The suffix given to the missing indicator columns
     '''
@@ -68,7 +71,12 @@ def missing_indicator(
         to_add = cols
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
-    exprs = [pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add]
+    if include_nan:
+        exprs = [pl.when((pl.col(c).is_nan())|(pl.col(c).is_infinite())|(pl.col(c).is_null()))
+                 .then(one).otherwise(zero).suffix(suffix) 
+                 for c in to_add]
+    else:
+        exprs = [pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add]
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
@@ -324,7 +332,6 @@ def multicat_one_hot_encode(
         return df.blueprint.with_columns(exprs).blueprint.drop(cols)
     return df.with_columns(exprs).drop(cols)
 
-
 def ordinal_auto_encode(
     df:PolarsFrame
     , cols:Optional[list[str]]=None
@@ -358,17 +365,15 @@ def ordinal_auto_encode(
     temp = df.lazy().select(
         pl.col(ordinal_list).unique().implode().list.sort(descending=descending)
     )
+    mappings = []
     for t in temp.collect().get_columns():
         uniques:pl.Series = t[0]
-        mapping = {t.name: uniques, "to": list(range(len(uniques)))}
-        if isinstance(df, pl.LazyFrame):
-            df = df.blueprint.map_dict(t.name, mapping, "to", None)
-        else:
-            map_tb = pl.DataFrame(mapping)
-            df = df.join(map_tb, on = t.name).with_columns(
-                pl.col("to").alias(t.name)
-            ).drop("to")
-    return df
+        mapping = dict(zip(uniques, range(len(uniques))))
+        mappings.append(pl.col(t.name).map_dict(mapping))
+    
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(mappings)
+    return df.with_columns(mappings)
 
 def ordinal_encode(
     df:PolarsFrame
@@ -389,21 +394,17 @@ def ordinal_encode(
     default
         Default value for values not mentioned in the ordinal_mapping dict.
     '''
+    mappings = []
     for c in ordinal_mapping:
         if c in df.columns:
             mapping = ordinal_mapping[c]
-            if isinstance(df, pl.LazyFrame):
-                # This relies on the fact that dicts in Python is ordered
-                mapping = {c: mapping.keys(), "to": mapping.values()}
-                df = df.blueprint.map_dict(c, mapping, "to", default)
-            else:
-                mapping = pl.DataFrame((mapping.keys(), mapping.values()), schema=[c, "to"])
-                df = df.join(mapping, on = c, how="left").with_columns(
-                    pl.col("to").fill_null(default).alias(c)
-                ).drop("to")
+            mappings.append(pl.col(c).map_dict(mapping, default=default))
         else:
             logger.warning(f"Found that column {c} is not in df. Skipped.")
-    return df
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.map_dict(mappings)
+    return df.with_columns(mappings)
 
 def smooth_target_encode(
     df:PolarsFrame
@@ -412,6 +413,7 @@ def smooth_target_encode(
     , min_samples_leaf:int = 20
     , smoothing:float = 10.
     , check_binary:bool=True
+    , default: Optional[float] = None
 ) -> PolarsFrame:
     '''
     Smooth target encoding for binary classification. Currently only implemented for binary target.
@@ -434,6 +436,8 @@ def smooth_target_encode(
         The f of the smoothing factor equation 
     check_binary
         Checks if target is binary. If not, throw an error
+    default
+        If at transform time an unseen value orruces, it will be mapped to default
     '''
     if isinstance(cols, list):
         _ = type_checker(df, cols, "string", "smooth_target_encode")
@@ -449,10 +453,11 @@ def smooth_target_encode(
 
     # probability of target = 1
     p = df.lazy().select(pl.col(target).mean()).collect().item(0,0)
-    is_lazy = isinstance(df, pl.LazyFrame)
+    mappings = []
+
     # If c has null, null will become a group when we group by.
-    for c in str_cols:
-        ref = df.groupby(c).agg(
+    lazy_references:list[pl.LazyFrame] = [
+        df.lazy().groupby(c).agg(
             pl.count().alias("cnt"),
             pl.col(target).mean().alias("cond_p")
         ).with_columns(
@@ -460,14 +465,16 @@ def smooth_target_encode(
         ).select(
             pl.col(c),
             to = pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)
-        ) # If df is lazy, ref is lazy. If df is eager, ref is eager
-        if is_lazy:
-            df = df.blueprint.map_dict(c, ref.collect().to_dict(), "to", None)
-        else: # It is ok to do inner join because all values of c are present in ref.
-            df = df.join(ref, on = c).with_columns(
-                pl.col("to").alias(c)
-            ).drop("to")
-    return df
+        )
+        for c in str_cols
+    ]
+    for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references)):
+        mapping = dict(zip(*ref.get_columns()))
+        mappings.append(pl.col(str_cols[i]).map_dict(mapping, default=default))
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.map_dict(mappings)
+    return df.with_columns(mappings)
 
 def _when_then_repl(c:str, repl_map:dict):
     expr = pl.col(c)
@@ -711,12 +718,13 @@ def woe_cat_encode(
     , target:str
     , cols:Optional[list[str]]=None
     , min_count:float = 1.
-    , default: float = -10.
     , check_binary:bool = True
+    , default: float = -10.
 ) -> PolarsFrame:
     '''
     Performs WOE encoding for categorical features. To WOE encode numerical columns, first bin them using
-    custom_binning or quantile_binning. This only works for binary target.
+    custom_binning or quantile_binning. This only works for binary target. Nulls will be grouped as a category
+    and mapped the WOE value for Nulls.
 
     This will be remembered by blueprint by default.
 
@@ -730,10 +738,10 @@ def woe_cat_encode(
         If not provided, all string columns will be used
     min_count
         A numerical factor that prevents values like infinity to occur when taking log
-    default
-        Null values will be mapped to default
     check_binary
         Whether to check target is binary or not.
+    default
+        Unseen values at transform time will be mapped to default
     '''
     if isinstance(cols, list):
         _ = type_checker(df, cols, "string", "woe_cat_encode")
@@ -745,9 +753,9 @@ def woe_cat_encode(
         if not check_binary_target(df, target):
             raise ValueError("Target is not binary or not properly encoded or contains nulls.")
 
-    is_lazy = isinstance(df, pl.LazyFrame)
-    for s in str_cols:
-        ref = df.lazy().groupby(s).agg(
+    mappings = []
+    lazy_references = [
+        df.lazy().groupby(s).agg(
             ev = pl.col(target).sum()
             , nonev = (pl.lit(1) - pl.col(target)).sum()
         ).with_columns(
@@ -758,12 +766,13 @@ def woe_cat_encode(
         ).select(
             pl.col(s)
             , pl.col("woe")
-        ).collect()
-        if is_lazy:
-            df = df.blueprint.map_dict(s, ref.to_dict(), "woe", default)
-        else:
-            df = df.join(ref, on = s, how="left").with_columns(
-                pl.col("woe").fill_null(default).alias(s)
-            ).drop("woe")
+        )
+        for s in str_cols
+    ]
+    for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references)):
+        mapping = dict(zip(*ref.get_columns()))
+        mappings.append(pl.col(str_cols[i]).map_dict(mapping, default=default))
 
-    return df
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.map_dict(mappings)
+    return df.with_columns(mappings)

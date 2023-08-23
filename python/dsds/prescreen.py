@@ -808,9 +808,9 @@ def remove_nulls(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
 
 def infer_by_var(df:PolarsFrame, threshold:float, target:str) -> list[str]:
     '''Infers columns that have lower than threshold variance. Target will not be included.'''
-    vars = df.lazy().select(pl.col("*").exclude(target).var()).collect()
-    cols = vars.columns
-    return [c for c, v in zip(cols, vars.row(0)) if v < threshold]
+    nums = get_numeric_cols(df, exclude=[target])
+    vars = df.lazy().select(pl.col(nums).var()).collect()
+    return [c for c, v in zip(vars.columns, vars.row(0)) if v < threshold]
 
 def remove_by_var(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
     '''

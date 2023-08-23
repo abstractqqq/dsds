@@ -23,19 +23,12 @@ logger = logging.getLogger(__name__)
 
 # P = ParamSpec("P")
 
-@dataclass
-class MapDict:
-    left_col: str # Join on this column, and this column will be replaced by right and dropped.
-    ref: dict # The right table as a dictionary
-    right_col: str
-    default: Optional[Any]
-
 # action + the only non-None field name is a unique identifier for this Step (fully classifies all steps)
 @dataclass
 class Step:
     action:ActionType
     with_columns: Optional[list[pl.Expr]] = None
-    map_dict: Optional[MapDict] = None
+    map_dict: list[pl.Expr] = None
     add_func: Optional[dict[str, Any]] = None
     filter: Optional[pl.Expr] = None
     select: Optional[list[str]] = None
@@ -65,9 +58,7 @@ class Step:
                 output += f"Using the features {features}\n"
             output += f"Appends {self.model_step['score_col']} to dataframe."
         elif self.action == "map_dict":
-            output += f"Encoder/Mapper for column: {self.map_dict.left_col}\n"
-            ref_table = pl.from_dict(self.map_dict.ref)
-            output += f"The encoding/map is (Showing only 10 rows):\n{ref_table.head(10)}\n"
+            output += "Encoder/Mapper for columns. This is unprintable for now.\n"
         else:
             output += str(self.value())
 
@@ -139,21 +130,6 @@ class Blueprint:
     
     def _ipython_display_(self):
         print(self)
-
-    @staticmethod
-    def _map_dict(df:PolarsFrame, map_dict:MapDict) -> PolarsFrame:
-        temp = pl.from_dict(map_dict.ref) # Always an eager read
-        if isinstance(df, pl.LazyFrame):
-            temp = temp.lazy()
-        
-        if map_dict.default is None:
-            return df.join(temp, on = map_dict.left_col).with_columns(
-                pl.col(map_dict.right_col).alias(map_dict.left_col)
-            ).drop(map_dict.right_col)
-        else:
-            return df.join(temp, on = map_dict.left_col, how = "left").with_columns(
-                pl.col(map_dict.right_col).fill_null(map_dict.default).alias(map_dict.left_col)
-            ).drop(map_dict.right_col)
         
     @staticmethod
     def _process_classif(
@@ -200,18 +176,6 @@ class Blueprint:
             return output.lazy()
         return output
 
-    # Feature Transformations that requires a 1-1 mapping as given by the ref dict. This will be
-    # carried out using a join logic. This is a special case of how map_dict works because I need
-    # to preserve this mapping.
-    def map_dict(self, left_col:str, ref:dict, right_col:str, default:Optional[Any]) -> LazyFrame:
-        map_dict = MapDict(left_col = left_col, ref = ref, right_col = right_col, default = default)
-        output = Blueprint._map_dict(self._ldf, map_dict)
-        output.blueprint.steps = self.steps.copy() 
-        output.blueprint.steps.append(
-            Step(action = "map_dict", map_dict = map_dict)
-        )
-        return output
-    
     # Shallow copy should work
     # Just make sure exprs are not lazy structures like generators
     
@@ -221,6 +185,15 @@ class Blueprint:
         output.blueprint.steps = self.steps.copy() # Shallow copy should work
         output.blueprint.steps.append(
             Step(action = "with_columns", with_columns = exprs)
+        )
+        return output
+    
+    # Map dict is just the same as with_columns, but I want to differentiate them in name..
+    def map_dict(self, exprs:list[pl.Expr]) -> LazyFrame:
+        output = self._ldf.with_columns(exprs)
+        output.blueprint.steps = self.steps.copy() # Shallow copy should work
+        output.blueprint.steps.append(
+            Step(action = "map_dict", map_dict = exprs)
         )
         return output
     
@@ -376,7 +349,7 @@ class Blueprint:
                 elif s.action == "with_columns":
                     df = df.with_columns(s.with_columns)
                 elif s.action == "map_dict":
-                    df = self._map_dict(df, s.map_dict)
+                    df = df.with_columns(s.map_dict)
                 elif s.action == "select":
                     df = df.select(s.select)
                 elif s.action == "filter":

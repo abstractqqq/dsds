@@ -187,6 +187,29 @@ def scale(
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
+def custom_transform(
+    df: PolarsFrame
+    , exprs: list[pl.Expr]
+) -> PolarsFrame:
+    '''
+    A passthrough that performs all expressions given. For example, a typical use case is that you might want 
+    to use pl.col("a")/pl.col("b") as a feature. Unlike Scikit-learn pipeline, you do not need any transformer
+    for this task. Just pass in your Polars expressions.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    exprs
+        List of Polars expressions
+    '''
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+    
+
 def merge_infreq_values(
     df: PolarsFrame
     , cols: list[str]
@@ -195,7 +218,8 @@ def merge_infreq_values(
     , separator: str = '|'
 ) -> PolarsFrame:
     '''
-    Combines infrequent categories in string columns together.
+    Combines infrequent categories in string columns together. Note this does not guarantee similar
+    categories should be combined. This method is purely based on frequency.
 
     This will be remembered by blueprint by default.
 
