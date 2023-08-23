@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from .type_alias import (
     PolarsFrame
-    , ImputationStrategy
+    , SimpleImputeStrategy
+    , HotDeckImputeStrategy
     , ScalingStrategy
     , PowerTransformStrategy
     , DateExtract
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 def impute(
     df:PolarsFrame
     , cols:list[str]
-    , strategy:ImputationStrategy = 'median'
+    , strategy:SimpleImputeStrategy = 'median'
     , const:float = 1.
 ) -> PolarsFrame:
     '''
@@ -64,7 +65,7 @@ def impute(
     if strategy == "median":
         all_medians = df.lazy().select(pl.col(cols).median()).collect().row(0)
         exprs = [pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols)]
-    elif strategy in ("mean", "avg", "average"):
+    elif strategy in ("mean", "avg"):
         all_means = df.lazy().select(pl.col(cols).mean()).collect().row(0)
         exprs = [pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
@@ -116,16 +117,88 @@ def impute_nan(
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
+def hot_deck_impute(
+    df: PolarsFrame
+    , c: str
+    , groupby: list[str]
+    , strategy:HotDeckImputeStrategy = 'mean'
+) -> PolarsFrame:
+    '''
+    Imputes column c according to the segment it is in. Performance will hurt if columns in groupby has 
+    too many segments.
+    
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    c
+        Column to be imputed name
+    groupby
+        Computes value to impute with according to the segments.
+    strategy
+        One of ['mean', 'avg', 'median', 'mode', 'most_frequent', 'min', 'max'], which can be
+        computed as aggregated stats.
+
+    Example
+    -------
+    >>> df = pl.DataFrame({
+    ...     "a": [None, 1,2,3,4, None,],
+    ...     "b": ["cat", "cat", "cat", "dog", "dog", "dog"],
+    ...     "c": [0,0,0,0,1,1]
+    ... })
+    >>> print(t.hot_deck_impute(df, "a", groupby=["b", "c"], strategy="mean"))
+    shape: (6, 3)
+    ┌─────┬─────┬─────┐
+    │ a   ┆ b   ┆ c   │
+    │ --- ┆ --- ┆ --- │
+    │ f64 ┆ str ┆ i64 │
+    ╞═════╪═════╪═════╡
+    │ 1.5 ┆ cat ┆ 0   │
+    │ 1.0 ┆ cat ┆ 0   │
+    │ 2.0 ┆ cat ┆ 0   │
+    │ 3.0 ┆ dog ┆ 0   │
+    │ 4.0 ┆ dog ┆ 1   │
+    │ 4.0 ┆ dog ┆ 1   │
+    └─────┴─────┴─────┘
+    '''
+    alias = c + "_" + strategy
+    if strategy in ("mean", "avg"):
+        agg = pl.col(c).mean().alias(alias)
+    elif strategy == "median":
+        agg = pl.col(c).median().alias(alias)
+    elif strategy == "max":
+        agg = pl.col(c).max().alias(alias)
+    elif strategy == "min":
+        agg = pl.col(c).min().alias(alias)
+    elif strategy == ("mode", "most_frequent"):
+        agg = pl.col(c).mode().first().alias(alias)
+    else:
+        raise TypeError(f"Unknown hot deck imputation strategy: {strategy}")
+
+    ref = df.lazy().groupby(groupby).agg(agg).collect()
+    expr = pl.col(c)
+    for row_dict in ref.iter_rows(named=True):
+        impute = row_dict.pop(alias)
+        expr = pl.when(pl.col(c).is_null().and_(
+            *(pl.col(k) == pl.lit(v) for k,v in row_dict.items())
+        )).then(impute).otherwise(expr)
+
+    expr = expr.alias(c)
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns([expr])
+    return df.with_columns(expr)
+
 def coalesce(
     df: PolarsFrame
     , exprs: list[pl.Expr]
     , new_col_name: str
 ) -> PolarsFrame:
     '''
-    A coalease passthrough that coaleases using the given expressions in exprs. Unlike coalease in 
-    impute, this does not drop any columns because it is impossible to infer the right column names 
-    for expressions in exprs. If dropping original columns is intended, please follow this up by a 
-    drop statement.
+    Coaleases using the given expressions in exprs. Unlike coalease in impute, this does not drop any 
+    columns because it is impossible to infer the right column names for the given expressions in exprs. 
+    If dropping original columns is intended, please follow this up with `dsds.prescreen.drop`.
 
     This will be remembered by blueprint by default.
 
@@ -208,7 +281,6 @@ def custom_transform(
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
-    
 
 def merge_infreq_values(
     df: PolarsFrame
