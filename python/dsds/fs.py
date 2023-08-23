@@ -983,8 +983,8 @@ def permutation_importance(
     , k:int = 5
 ) -> pl.DataFrame:
     '''
-    Computes permutation importance for every non-target column in df. Please make sure all columns are properly encoded
-    or transformed before calling this.
+    Computes permutation importance for every non-target column in df. Please make sure all columns are properly 
+    encoded or transformed before calling this.
     
     Only works for binary classification and score = roc_auc for now.
 

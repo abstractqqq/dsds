@@ -6,6 +6,7 @@ from .type_alias import (
     , ClassifModel
     , RegressionModel
 )
+from dsds._rust import rs_gcc_proba_est
 from dataclasses import dataclass
 import polars as pl
 import numpy as np
@@ -263,3 +264,29 @@ def linear_passthrough(
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns([expr])
     return df.with_columns(expr)    
+
+
+# ------------------------------------------------------
+
+def gcc_proba_est(
+    total: int,
+    subsample_amt:int,
+    n_times: int = 1,
+    start_at: int = 10,
+    threshold:float = 0.9,
+    n_trials: int = 1000
+) -> int:
+    '''
+    Estimates the probablity of a Generalized Coupon Collector's problem:
+    There are `total` number of coupons, say each time we are subsampling `subsample_amt` of them. How many
+    times do we need to subsample (`subsample_times`) so that we are at least `threshold` sure that we 
+    will see all coupons for at least `n_times`?
+
+    The algorithm will run a Monte-Carlo simulation with `n_trials` to estimate the probablity and increment 
+    `subsample_times` until the estimated probability >= threshold. It is not yet fully optimized.
+
+    Notice that the minimum `subsample_times` the algorithm will return is always `start_at`, but in reality 
+    this number may be smaller. It is designed this way so that for larger input values, the user can supply
+    a heuristic for a lower bound and the algorithm can get a head start and converge faster.
+    '''
+    return rs_gcc_proba_est(n_trials, total, subsample_amt, n_times, start_at, threshold)

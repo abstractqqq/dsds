@@ -17,4 +17,5 @@ polars = {version = "0.32.1", features = ["fmt", "performant"]}
 rayon = "1.7.0"
 ndarray = {version = "0.15.6", features = ["rayon", "matrixmultiply-threading"]}
 numpy = "*"
+rand = "0.8.5"
 # rustfft = "6.1.0"

@@ -3,11 +3,11 @@ use pyo3::prelude::*;
 mod functions;
 mod snowball;
 mod text;
-use numpy::{
-    // PyReadonlyArray1,
+pub use numpy::{
+    PyReadonlyArray1,
     PyReadonlyArray2, 
     PyArray2, 
-    IntoPyArray, PyReadonlyArray1
+    IntoPyArray
 };
 use crate::text::{
     rs_cnt_vectorizer,
@@ -21,14 +21,15 @@ use crate::text::{
 };
 use crate::functions::{
     rs_df_inner_list_jaccard,
-    rs_series_jaccard, 
+    rs_series_jaccard,
+    rs_gcc_proba_est,
+    rs_mape,
+    rs_mse,
+    rs_mae,
+    rs_huber_loss,
     metrics::{  
         cosine_similarity,
         self_cosine_similarity,
-        mae,
-        mse,
-        mape,
-        huber_loss
     }
 };
 
@@ -46,6 +47,11 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rs_hamming_dist, m)?)?;
     m.add_function(wrap_pyfunction!(rs_snowball_stem_series, m)?)?;
     m.add_function(wrap_pyfunction!(rs_hamming_dist_series, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_gcc_proba_est, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_mape, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_mae, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_mse, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_huber_loss, m)?)?;
 
     #[pyfn(m)]
     fn rs_cosine_similarity<'py>(
@@ -68,67 +74,6 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
         normalize: bool
     ) -> &'py PyArray2<f64> {
         self_cosine_similarity(mat1.as_array().to_owned(), normalize).into_pyarray(py)
-    }
-
-    #[pyfn(m)]
-    fn rs_mae(
-        y_actual:PyReadonlyArray1<f64>,
-        y_predicted: PyReadonlyArray1<f64>,
-        weights:Option<PyReadonlyArray1<f64>>
-    ) -> f64 {
-        let y_a = y_actual.as_array();
-        let y_p = y_predicted.as_array();
-
-        match weights {
-            Some(we) => {
-                let w = we.as_array();
-                mae(y_a, y_p, Some(w))
-            },
-            _ => mae(y_a, y_p, None)
-        }
-    }
-
-    #[pyfn(m)]
-    fn rs_mse(
-        y_actual:PyReadonlyArray1<f64>,
-        y_predicted: PyReadonlyArray1<f64>,
-        weights:Option<PyReadonlyArray1<f64>>
-    ) -> f64 {
-        let y_a = y_actual.as_array();
-        let y_p = y_predicted.as_array();
-        match weights {
-            Some(we) => {
-                let w = we.as_array();
-                mse(y_a, y_p, Some(w))
-            },
-            _ => mse(y_a, y_p, None)
-        }
-    }
-
-    #[pyfn(m)]
-    fn rs_mape(
-        y_actual:PyReadonlyArray1<f64>,
-        y_predicted: PyReadonlyArray1<f64>,
-        weighted:bool
-    ) -> f64 {
-        let y_a = y_actual.as_array();
-        let y_p = y_predicted.as_array();
-        mape(y_a, y_p, weighted)
-    }
-
-    #[pyfn(m)]
-    fn rs_huber_loss(
-        y_actual:PyReadonlyArray1<f64>,
-        y_predicted: PyReadonlyArray1<f64>,
-        delta: f64,
-        weights:Option<PyReadonlyArray1<f64>>
-    ) -> f64 {
-        let y_a = y_actual.as_array();
-        let y_p = y_predicted.as_array();
-        match weights {
-            Some(we) => huber_loss(y_a, y_p, delta, Some(we.as_array())),
-            _ => huber_loss(y_a, y_p, delta, None)
-        }
     }
 
     Ok(())
