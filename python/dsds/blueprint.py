@@ -215,6 +215,9 @@ class Blueprint:
         return output
     
     # Transformations that drops, used mostly in removal functions
+    # I am not sure if Polars internally optimizes for this.
+    # Say I have 2 consecutive drops, then I should be able to merge them into one drop
+    # which may be more efficient. 
     def drop(self, drop_cols:list[str]) -> LazyFrame:
         output = self._ldf.drop(drop_cols)
         output.blueprint.steps = self.steps.copy() 
