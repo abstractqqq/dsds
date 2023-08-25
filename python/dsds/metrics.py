@@ -16,6 +16,7 @@ from dsds._rust import (
     , rs_mse
     , rs_mae
     , rs_mape
+    , rs_smape
     , rs_huber_loss
     , rs_snowball_stem_series
 )
@@ -330,7 +331,7 @@ l1_loss = mae
 def mape(
     y_actual:np.ndarray
     , y_predicted:np.ndarray
-    , weighted: bool
+    , weighted: bool = False
 ) -> float:
     '''
     Computes the mean absolute percentage error commonly used in time series predictions.
@@ -348,6 +349,28 @@ def mape(
     return rs_mape(y_actual.astype(np.float64, copy=False), 
                    y_predicted.astype(np.float64, copy=False), 
                    weighted)
+
+def smape(
+    y_actual:np.ndarray
+    , y_predicted: np.ndarray
+    , double_sum: bool = False
+) -> float:
+    '''
+    Computes SMAPE: https://en.wikipedia.org/wiki/Symmetric_mean_absolute_percentage_error
+
+    Parameters
+    ----------
+    y_actual
+        Actual target
+    y_predicted
+        Predicted target
+    double_sum
+        If true, uses the third formulation of SMAPE in the wiki. If denominator is 0, f64::MAX is returned.
+        If false, uses the formulation that is always between 0% and 100%.
+    '''
+    return rs_smape(y_actual.astype(np.float64, copy=False), 
+                   y_predicted.astype(np.float64, copy=False), 
+                   double_sum)
 
 def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     '''

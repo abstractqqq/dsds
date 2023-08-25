@@ -16,6 +16,7 @@ use self::metrics::{
     mae,
     mse,
     mape,
+    smape,
     huber_loss,
     HashableType
 };
@@ -98,6 +99,17 @@ pub fn rs_mape(
     let y_a = y_actual.as_array();
     let y_p = y_predicted.as_array();
     mape(y_a, y_p, weighted)
+}
+
+#[pyfunction]
+pub fn rs_smape(
+    y_actual:PyReadonlyArray1<f64>,
+    y_predicted: PyReadonlyArray1<f64>,
+    double_sum:bool
+) -> f64 {
+    let y_a = y_actual.as_array();
+    let y_p = y_predicted.as_array();
+    smape(y_a, y_p, double_sum)
 }
 
 #[pyfunction]

@@ -61,6 +61,35 @@ pub fn mape(
 }
 
 #[inline]
+pub fn smape(
+    y_a:ArrayView1<f64>,
+    y_p:ArrayView1<f64>,
+    double_sum: bool
+) -> f64 {
+
+    if double_sum {
+        let (nom, denom) = y_a.into_iter().zip(y_p.into_iter())
+            .fold((0.,0.), |acc,(a,f)| (acc.0 + (a-f).abs(), acc.1 + a + f));
+        if denom == 0. {
+            return f64::MAX
+        }
+        nom / denom
+    } else {
+        let factor: f64 = 100.0 / y_a.len() as f64; 
+        let sum: f64 = y_a.into_iter().zip(y_p.into_iter()).fold(0., |acc, (a, f)| {
+            let denom: f64 = a.abs() + f.abs();
+            if denom > 0. {
+                acc + (a-f).abs() / denom 
+            } else {
+                acc 
+            }
+        });
+        factor * sum
+    }
+
+}
+
+#[inline]
 pub fn huber_loss(
     y_a:ArrayView1<f64>,
     y_p:ArrayView1<f64>,

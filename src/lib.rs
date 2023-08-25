@@ -24,6 +24,7 @@ use crate::functions::{
     rs_series_jaccard,
     rs_gcc_proba_est,
     rs_mape,
+    rs_smape,
     rs_mse,
     rs_mae,
     rs_huber_loss,
@@ -49,6 +50,7 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rs_hamming_dist_series, m)?)?;
     m.add_function(wrap_pyfunction!(rs_gcc_proba_est, m)?)?;
     m.add_function(wrap_pyfunction!(rs_mape, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_smape, m)?)?;
     m.add_function(wrap_pyfunction!(rs_mae, m)?)?;
     m.add_function(wrap_pyfunction!(rs_mse, m)?)?;
     m.add_function(wrap_pyfunction!(rs_huber_loss, m)?)?;
