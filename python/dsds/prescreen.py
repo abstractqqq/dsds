@@ -541,7 +541,8 @@ def describe_str_categories(
 # -----------------------------------------------------------------------------------------------
 def non_numeric_removal(df:PolarsFrame, include_bools:bool=False) -> PolarsFrame:
     '''
-    Removes all non-numeric columns. If include_bools = True, then keep boolean columns.
+    Removes all non-numeric columns. If include_bools = True, then keep boolean columns. This will 
+    be remembered by blueprint by default.
     '''
     if include_bools:
         selector = ~(cs.numeric()|cs.by_dtype(pl.Boolean))
@@ -625,6 +626,9 @@ def remove_by_pattern(
     , threshold:float = 0.9
     , count_null:bool = False
 ) -> PolarsFrame:
+    '''
+    Calls infer_by_pattern and removes those columns that are inferred. This will be remembered by blueprint by default.
+    '''
     
     remove_cols = infer_by_pattern(
         df
@@ -669,6 +673,9 @@ def remove_emails(
     , threshold:float = 0.9
     , count_null:bool = False
 ) -> PolarsFrame:
+    '''
+    Calls infer_emails and removes those columns that are inferred. This will be remembered by blueprint by default.
+    '''
     
     emails = infer_emails(df, sample_pct, sample_count, sample_rounds, threshold, count_null)
     logger.info(f"The following columns are dropped because they are emails. {emails}.\n"
@@ -713,7 +720,10 @@ def infer_dates(df:PolarsFrame) -> list[str]:
     return dates
 
 def remove_dates(df:PolarsFrame) -> PolarsFrame:
-    '''Removes all date columns from dataframe. This algorithm will try to infer if string column is date.'''
+    '''
+    Removes all date columns from dataframe. This algorithm will try to infer if string column is date. 
+    This will be remembered by blueprint by default.
+    '''
 
     remove_cols = infer_dates(df) 
     logger.info(f"The following columns are dropped because they are dates. {remove_cols}.\n"
@@ -754,8 +764,10 @@ def infer_nan(df: PolarsFrame) -> list[str]:
 
 def remove_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> PolarsFrame:
     '''
-    Removes numeric columns that have more than threshold pct of invalid (NaN) values.
+    Removes numeric columns that have more than threshold pct of invalid (NaN) values. 
     
+    This will be remembered by blueprint by default.
+
     Parameters
     ----------
     df
@@ -791,7 +803,9 @@ def infer_nulls(df:PolarsFrame, threshold:float=0.5) -> list[str]:
 def remove_nulls(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
     '''
     Removes columns with more than threshold pct of null values. Use remove_invalid_numeric with 
-    include_null = True if you want to drop high NaN + Null columns.
+    include_null = True if you want to drop columns with high (NaN + Null)%.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -815,7 +829,7 @@ def infer_by_var(df:PolarsFrame, threshold:float, target:str) -> list[str]:
 def remove_by_var(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
     '''
     Removes features with low variance. Features with > threshold variance will be kept. 
-    Threshold should be positive.
+    Threshold should be positive. This will be remembered by blueprint by default.
     '''
 
     remove_cols = infer_by_var(df, threshold, target) 
@@ -830,6 +844,8 @@ def remove_by_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> Polars
     '''
     Remove columns if their names satisfy the given regex rules. This is common when you want to remove columns 
     with certain prefixes that may not be allowed to use in models.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -891,7 +907,9 @@ def infer_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> list[str]:
 def remove_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
     '''
     Remove columns that have higher than threshold pct of unique values. Usually this is done to filter
-    out id-like columns
+    out id-like columns.
+
+    This will be remembered by blueprint by default.
 
     Parameters
     ----------
@@ -1043,13 +1061,13 @@ def get_similar_names(
 ) -> list[str]:
     '''
     Returns columns whose name is within `distance` Levenshtein distance from the reference string. This 
-    is useful when there is a typo in certain column names, e.g. "count" vs. "counts". 
+    is useful when there is a typo in certain column names, e.g. "count" vs. "coutn". 
     '''
     return [c for c in df.columns if rs_levenshtein_dist(c, ref) <= distance]
 
 def remove_constants(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     '''
-    Removes all constant columns from dataframe.
+    Removes all constant columns from dataframe. This will be remembered by blueprint by default.
     
     Parameters
     ----------
@@ -1086,10 +1104,39 @@ def infer_numlist_from_str(df:PolarsFrame):
     pass
 
 def remove_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
-    '''Removes the given columns if they exist in the dataframe.'''
+    '''Removes the given columns if they exist in the dataframe. This will be remembered by blueprint by default.'''
     remove_cols = list(set(cols).intersection(df.columns))
     logger.info(f"The following columns are dropped. {remove_cols}.\nRemoved a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
+
+def shrink_dtype(
+    df:PolarsFrame,
+    cols: Optional[list[str]] = None
+) -> PolarsFrame:
+    '''
+    A pipeline compatible shrink dtype for numeric columns to help lower pressure on memory. The shrinked dtype
+    will be the smallest possible to hold all values in the columns. Note that for really big dataframes, 
+    it is still better to preemptively specify the dtypes in the scan/read statement.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        List of numeric columns which we want to shrink. If provided, they must all be numeric columns. 
+        If not, will infer all numeric columns.
+    '''
+    if cols is None:
+        to_shrink = get_numeric_cols(df)
+    else:
+        _ = type_checker(df, cols, "numeric", "shrink_dtype")
+        to_shrink = cols
+
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(pl.col(to_shrink).shrink_dtype())
+    return df.with_columns(pl.col(to_shrink).shrink_dtype())
 
 #----------------------------------------------------------------------------------------------#
 # More statistical Methods
@@ -1105,32 +1152,45 @@ def _ks_compare(
 
 def ks_compare(
     df:PolarsFrame
-    , target:Optional[str] = None
-    , smaple_frac:float = 0.75
     , test_cols:Optional[list[str]] = None
     , alt: Alternatives = "two-sided"
+    , smaple_frac:float = 0.75
     , skip:int = 0
     , max_comp:int = 1000
 ) -> pl.DataFrame:
     '''
-    Run ks-stats on all non-discrete columns in the dataframe. If test_cols is None, it will infer non-discrete 
-    continuous columns. See docstring of discrete_inferral to see what is considered discrete. Provide the target 
-    so that it will not be included in the comparisons. Since ks 2 sample comparison is relatively expensive, we will
-    always sample 75% of the dataset, unless the user specifies a different sample_frac.
+    Run ks-stats on all non-discrete columns in the dataframe. If test_cols is None, it will infer
+    continuous columns. See docstring of discrete_inferral to see what is considered discrete. Continuous is 
+    considered to be non-discrete. Since ks 2 sample comparison is relatively expensive, we will
+    always sample 75% of the dataset, unless the user specifies a different sample_frac. This function will
+    collect lazy frames at the sample_fraction rate.
 
     Note: this will only run on all 2 combinations of columns, starting from skip and end at skip + max_comp.
 
     Note: The null hypothesis is that the two columns come from the same distribution. Therefore a small p-value means
     that they do not come from the same distribution. Having p-value > threshold does not mean they have the same 
     distribution automatically, and it requires more examination to reach the conclusion.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        List of numeric columns which we want to test. If none, will use all non-discrete numeric columns.
+    alt
+        The alternative for the statistic test. One of `two-sided`, `greater` or `less`
+    sample_frac
+        Sampling fraction to run the test.
+    skip
+        The number of comparisons to skip
+    max_comp
+        The total number of comparisons to make in this run. A strict upper bound is len(test_cols) choose 2.
     '''
     if test_cols is None:
         nums = [f for f in get_numeric_cols(df) if f not in infer_discretes(df)]
     else:
+        _ = type_checker(df, test_cols, "numeric", "ks_compare")
         nums = test_cols
-
-    if target in nums:
-        nums.remove(target)
 
     nums.sort()
     if isinstance(df, pl.LazyFrame):
@@ -1160,14 +1220,13 @@ def dist_test(
     df: PolarsFrame
     , which_dist:CommonContiDist
     , smaple_frac:float = 0.75
-    , target: Optional[str] = None
 ) -> pl.DataFrame:
     '''
-    Tests if the numeric columns follow the given distribution by using the KS test. If
-    target is provided it will be excluded. The null hypothesis is that the columns follow the given distribution. 
-    We sample 75% of data because ks test is relatively expensive.
+    Tests if the numeric columns follow the given distribution by using the KS test. The null 
+    hypothesis is that the columns follow the given distribution. We sample 75% of data because 
+    ks test is relatively expensive.
     '''
-    nums = get_numeric_cols(df, exclude=[target])
+    nums = get_numeric_cols(df)
     if isinstance(df, pl.LazyFrame):
         df_test = lazy_sample(df.select(nums).lazy(), sample_frac=smaple_frac).collect()
     else:
@@ -1185,43 +1244,37 @@ def dist_test(
 
 def suggest_normal(
     df:PolarsFrame
-    , target: Optional[str] = None
+
     , threshold:float = 0.05
 ) -> list[str]:
     '''
     Suggests which columns are normally distributed. This takes the columns for which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, "norm", target=target)\
-        .filter(pl.col("p_value") > threshold)["feature"].to_list()
+    return dist_test(df, "norm").filter(pl.col("p_value") > threshold)["feature"].to_list()
 
 def suggest_uniform(
     df:PolarsFrame
-    , target: Optional[str] = None
     , threshold:float = 0.05
 ) -> list[str]:
     '''
     Suggests which columns are uniformly distributed. This takes the columns for which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, "uniform", target=target)\
-        .filter(pl.col("p_value") > threshold)["feature"].to_list()
+    return dist_test(df, "uniform").filter(pl.col("p_value") > threshold)["feature"].to_list()
 
 def suggest_lognormal(
     df:PolarsFrame
-    , target: Optional[str] = None
     , threshold:float = 0.05
 ) -> list[str]:
     '''
     Suggests which columns are log-normally distributed. This takes the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, "lognorm", target=target)\
-        .filter(pl.col("p_value") > threshold)["feature"].to_list()
+    return dist_test(df, "lognorm").filter(pl.col("p_value") > threshold)["feature"].to_list()
 
 def suggest_dist(
     df:PolarsFrame
-    , target: Optional[str] = None
     , threshold:float = 0.05
     , dist: CommonContiDist = "norm"
 ) -> list[str]:
@@ -1229,4 +1282,4 @@ def suggest_dist(
     Suggests which columns follow the given distribution. This returns the columns which the null hypothesis
     cannot be rejected in the dist_test (KS test).
     '''
-    return dist_test(df, dist, target=target).filter(pl.col("p_value") > threshold)["feature"].to_list()
+    return dist_test(df, dist).filter(pl.col("p_value") > threshold)["feature"].to_list()
