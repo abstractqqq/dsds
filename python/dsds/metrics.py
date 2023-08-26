@@ -20,7 +20,7 @@ from dsds._rust import (
     , rs_huber_loss
     , rs_snowball_stem_series
 )
-from dsds.text import snowball_stem
+
 from dsds.prescreen import type_checker
 import numpy as np 
 import polars as pl
@@ -219,12 +219,13 @@ def logloss(
         ).item(0,0)
     
 def psi(
-    new_score: Union[pl.Series, np.ndarray]
-    , old_score: Union[pl.Series, np.ndarray]
+    new: Union[pl.Series, np.ndarray]
+    , old: Union[pl.Series, np.ndarray]
     , n_bins: int = 10
 ) -> pl.DataFrame:
     '''
-    Computes the Population Stability Index of a binary model by binning the new score into n_bins using quantiles.
+    Computes the Population Stability Index of a new continuous variable vs. an old continuous variable by
+    binning new series into n_bins using quantiles.
 
     Parameters
     ----------
@@ -235,8 +236,8 @@ def psi(
     n_bins
         The number of bins used in the computation. By default it is 10, which means we are using deciles
     '''
-    s1 = pl.Series(new_score, dtype=pl.Float64)
-    s2 = pl.Series(old_score, dtype=pl.Float64)
+    s1 = pl.Series(new, dtype=pl.Float64)
+    s2 = pl.Series(old, dtype=pl.Float64)
 
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
     s1_cuts:pl.DataFrame = s1.qcut(qcuts, series=False)
@@ -261,6 +262,28 @@ def psi(
     ).with_columns(
         psi = pl.col("a_minus_b") * pl.col("ln_a_on_b")
     ).sort("category").rename({"category":"score_range"}).collect()
+
+# def psi_cat(
+#     new: PolarsFrame
+#     , old: PolarsFrame
+#     , col: str
+# ) -> pl.DataFrame:
+    
+#     _ = type_checker(new, [col], "string", "psi_cat")
+#     _ = type_checker(old, [col], "string", "psi_cat")
+    
+#     s1_summary = new.groupby(col).agg(pl.count().alias("a"))
+#     s2_summary = old.groupby(col).agg(pl.count().alias("b"))
+
+#     return s1_summary.join(s2_summary, on=col, how="left").with_columns(
+#         a = pl.max_horizontal(pl.col("a"), pl.lit(0.00001))/pl.col("a").sum(),
+#         b = pl.max_horizontal(pl.col("b"), pl.lit(0.00001))/pl.col("b").sum()
+#     ).with_columns(
+#         a_minus_b = pl.col("a") - pl.col("b"),
+#         ln_a_on_b = (pl.col("a")/pl.col("b")).log()
+#     ).with_columns(
+#         psi = pl.col("a_minus_b") * pl.col("ln_a_on_b")
+#     ).sort("category").rename({"category":"score_range"}).collect()
 
 def mse(
     y_actual:np.ndarray

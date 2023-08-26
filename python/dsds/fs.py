@@ -858,7 +858,6 @@ def _fc_fi(
     # fc_rec feature comb record, fi_rec feature importance record
     return fc_rec, fi_rec
 
-# ebfs: stands for Exhaustive Binary Feature Selection
 def ebfs(
     df:pl.DataFrame
     , target:str
@@ -868,6 +867,8 @@ def ebfs(
     , train_frac:float = 0.75
 ) -> Tuple[pl.DataFrame, pl.DataFrame]:
     '''
+    Exhaustive Binary Feature Selection. 
+    
     Suppose we have n features and n_comb = 2. This method will select all (n choose 2) 
     combinations of features, split dataset into a train and a test for each combination, 
     train a model on train, and compute feature importance and roc_auc and logloss, and 
@@ -902,7 +903,7 @@ def ebfs(
     features = get_numeric_cols(df, exclude=[target])
     fi = {f:[] for f in features}
     records = []
-    pbar = tqdm(total=math.comb(len(features), n_comb), desc="Tested Combinations")
+    pbar = tqdm(total=math.comb(len(features), n_comb), desc="Combinations")
     df_keep = df.select(features + [target])
     for comb in combinations(features, r=n_comb):
         train, test = train_test_split(df_keep, train_frac)

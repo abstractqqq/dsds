@@ -863,7 +863,10 @@ def remove_by_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> Polars
     
     return drop(df, remove_cols)
 
-def get_unique_count(df:PolarsFrame, include_null_count:bool=False) -> pl.DataFrame:
+def get_unique_count(
+    df:PolarsFrame, 
+    include_null_count:bool=False,
+    estimate:bool=False) -> pl.DataFrame:
     '''
     Gets unique counts for columns and returns a dataframe with schema = ["column", "n_unique"]. Null count
     is useful in knowing if null is one of the unique values and thus is included as an option. Note that
@@ -875,20 +878,27 @@ def get_unique_count(df:PolarsFrame, include_null_count:bool=False) -> pl.DataFr
         Either a lazy or eager Polars dataframe
     include_null_count
         If true, this will return a dataframe with schema = ["column", "n_unique", "null_count"]
+    estimate
+        If true, use HyperLogLog algorithm to estimate n_unique
     '''
+    if estimate:
+        n_unique = pl.all().approx_n_unique().suffix("_n_unique")
+    else:
+        n_unique = pl.all().n_unique().suffix("_n_unique")
+    
     if include_null_count:
         temp = df.lazy().select(
-            pl.all().n_unique().suffix("_n_unique"),
+            n_unique,
             pl.all().null_count().suffix("_null_count")
         ).collect().row(0)
         n = len(df.columns)
         return pl.from_records((df.columns, temp[:n], temp[n:]), schema=["column", "n_unique", "null_count"])
     else:
         return df.lazy().select(
-            pl.all().n_unique()
+            n_unique
         ).collect().transpose(include_header=True, column_names=["n_unique"])
 
-def infer_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> list[str]:
+def infer_highly_unique(df:PolarsFrame, threshold:float=0.9, estimate:bool=False) -> list[str]:
     '''
     Infers columns that have higher than threshold unique pct.
 
@@ -898,9 +908,16 @@ def infer_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> list[str]:
         Either a lazy or eager Polars dataframe
     threshold
         Every column with unique pct higher than this threshold will be returned.
+    estimate
+        If true, use HyperLogLog algorithm to estimate n_uniques. This is only recommended
+        when dataframe is absolutely large.
     '''
-    temp = df.lazy().with_row_count(offset=1).select(
-        pl.all().exclude("row_nr").n_unique() / pl.col("row_nr").max()
+    if estimate:
+        unique_pct = pl.all().exclude("row_nr").approx_n_unique() / pl.col("row_nr").max()
+    else:
+        unique_pct = pl.all().exclude("row_nr").n_unique() / pl.col("row_nr").max()
+    temp = df.lazy().with_row_count(offset=1).set_sorted("row_nr").select(
+        unique_pct
     ).collect()
     return [c for c, pct in zip(temp.columns, temp.row(0)) if pct > threshold]
 
@@ -918,7 +935,7 @@ def remove_by_uniqueness(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
     threshold
         The threshold for unique pct. Columns with higher than this threshold unique pct will be removed 
     '''
-    remove_cols = infer_by_uniqueness(df, threshold)
+    remove_cols = infer_highly_unique(df, threshold)
     logger.info(f"The following columns are dropped because more than {threshold*100:.2f}% of unique values."
                 f" {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
@@ -1108,6 +1125,25 @@ def remove_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
     remove_cols = list(set(cols).intersection(df.columns))
     logger.info(f"The following columns are dropped. {remove_cols}.\nRemoved a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
+
+def estimate_n_unique(
+    df: PolarsFrame,
+    cols: list[str]
+) -> pl.DataFrame:
+    '''
+    Applies the HyperLogLog algorithm to estimate unique count. This is only recommended for absolutely 
+    large dataframes.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Columns to estimate n_uniques
+    '''
+    return df.lazy().select(
+        pl.col(cols).approx_n_unique().suffix("_n_unique_est")
+    ).collect()
 
 def shrink_dtype(
     df:PolarsFrame,

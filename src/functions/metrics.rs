@@ -75,7 +75,6 @@ pub fn smape(
         }
         nom / denom
     } else {
-        let factor: f64 = 100.0 / y_a.len() as f64; 
         let sum: f64 = y_a.into_iter().zip(y_p.into_iter()).fold(0., |acc, (a, f)| {
             let denom: f64 = a.abs() + f.abs();
             if denom > 0. {
@@ -84,7 +83,7 @@ pub fn smape(
                 acc 
             }
         });
-        factor * sum
+        (100.0 / y_a.len() as f64) * sum
     }
 
 }
