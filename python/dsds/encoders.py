@@ -190,40 +190,6 @@ def selective_one_hot_encode(
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.with_columns(exprs).blueprint.drop(str_cols) 
     return df.with_columns(exprs).drop(str_cols) 
-    
-def binary_encode(
-    df:PolarsFrame
-    , cols:Optional[list[str]]=None
-    , separator: str = "_"
-    , exclude:Optional[list[str]]=None
-) -> PolarsFrame:
-    '''
-    Encode binary string columns as 0s and 1s depending on the order of the 2 unique strings. E.g. if the two unique 
-    values are 'N' and 'Y', then 'N' will be mapped to 0 and 'Y' to 1 because 'N' < 'Y'. This is essentially 
-    one-hot-encode for binary string columns with drop_first = True.
-
-    This will be remembered by blueprint by default.
-
-    Parameters
-    ----------
-    df
-        Either a lazy or eager Polars DataFrame
-    cols
-        If not provided, will use all string columns
-    separator
-        The separator used in the names of the new columns
-    '''
-    if cols is None:
-        str_cols = get_string_cols(df)
-        exclude = [] if exclude is None else exclude
-        binary_list = get_unique_count(df)\
-            .filter( # Binary + Not Exclude + Only String
-                (pl.col("n_unique") == 2) & (~pl.col("column").is_in(exclude)) & (pl.col("column").is_in(str_cols))
-            )["column"].to_list()
-    else:
-        binary_list = cols
-    
-    return one_hot_encode(df, cols=binary_list, drop_first=True, separator=separator)
 
 def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''

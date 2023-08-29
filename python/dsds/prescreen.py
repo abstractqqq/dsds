@@ -82,7 +82,7 @@ def rename(df:PolarsFrame, rename_dict:dict[str, str], persist:bool=False) -> Po
     '''
     A wrapper function for df.rename() so that it works with pipeline.
 
-    Set persist = True if this needs to be remembered by the blueprint.
+    Set persist = True so that this will be remembered by the blueprint.
     '''
     d = {}
     for k, v in rename_dict.items():
@@ -120,7 +120,7 @@ def select(
     '''
     A select wrapper that makes it pipeline compatible.
 
-    Set persist = True if this needs to be remembered by the blueprint.
+    Set persist = True so that this will be remembered by the blueprint.
     '''
     if isinstance(df, pl.LazyFrame) and persist:
         return df.blueprint.select(selector)
@@ -144,7 +144,7 @@ def drop_nulls(
     A wrapper function for Polars' drop_nulls so that it can be used in pipeline. Equivalent to
     filter by pl.all_horizontal([pl.col(c).is_null() for c in subset]).
 
-    Set persist = True if this needs to be remembered by the blueprint.
+    Set persist = True so that this will be remembered by the blueprint.
     '''
     if isinstance(df, pl.LazyFrame) and persist:
         if subset is None:
@@ -165,7 +165,7 @@ def filter(
     ''' 
     A wrapper function for Polars' filter so that it can be used in pipeline.
 
-    This will be remembered by blueprint by default.
+    Set persist = True so that this will be remembered by the blueprint.
     '''
     if isinstance(df, pl.LazyFrame) and persist:
         return df.blueprint.filter(condition)
@@ -181,7 +181,7 @@ def order_by(
     '''
     A wrapper function for Polars' sort so that it can be used in pipeline.
 
-    Set persist = True if this needs to be remembered by the blueprint.
+    Set persist = True so that this will be remembered by the blueprint.
     '''
     output = df.sort(by=by, descending=descending, nulls_last=nulls_last)
     if isinstance(df, pl.LazyFrame) and persist:
@@ -882,9 +882,9 @@ def get_unique_count(
         If true, use HyperLogLog algorithm to estimate n_unique
     '''
     if estimate:
-        n_unique = pl.all().approx_n_unique().suffix("_n_unique")
+        n_unique = pl.all().approx_n_unique()
     else:
-        n_unique = pl.all().n_unique().suffix("_n_unique")
+        n_unique = pl.all().n_unique()
     
     if include_null_count:
         temp = df.lazy().select(
@@ -1143,7 +1143,7 @@ def estimate_n_unique(
     '''
     return df.lazy().select(
         pl.col(cols).approx_n_unique().suffix("_n_unique_est")
-    ).collect()
+    ).collect().transpose(include_header=True, column_names=["estimated_n_uniques"])
 
 def shrink_dtype(
     df:PolarsFrame,

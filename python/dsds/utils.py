@@ -79,7 +79,8 @@ def checkpoint(
     df:PolarsFrame
     , temp_file_path:Union[str,Path]
     , limit:int = -1
-    , **kwargs) -> PolarsFrame:
+    , **kwargs
+) -> PolarsFrame:
     '''
     A wrapper to save a temp copy of the data so far in either parquet or csv format at the given path. This
     is purely a side effect. The difference between this and sink is that this gives you the option to save 
@@ -265,8 +266,7 @@ def linear_passthrough(
         return df.blueprint.with_columns([expr])
     return df.with_columns(expr)    
 
-
-# ------------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------------------
 
 def gcc_proba_est(
     total: int,
