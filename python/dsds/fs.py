@@ -127,7 +127,7 @@ def discrete_ig(
         discretes = infer_discretes(df, exclude=[target])
 
     # Compute target entropy. This only needs to be done once.
-    target_entropy = df.groupby(target).agg(
+    target_entropy = df.group_by(target).agg(
                         (pl.count()).alias("prob(target)") / len(df)
                     )["prob(target)"].entropy()
 
@@ -137,7 +137,7 @@ def discrete_ig(
     ).rename({"column":"feature"})
 
     conditional_entropy = [
-        df.lazy().groupby(target, pred).agg(
+        df.lazy().group_by(target, pred).agg(
             pl.count()
         ).with_columns(
             (pl.col("count").sum().over(pred) / len(df)).alias("prob(predictive)"),
@@ -340,7 +340,7 @@ def _f_score(
         )
 
     ref = (
-        df.lazy().groupby(target).agg(step_one_expr)
+        df.lazy().group_by(target).agg(step_one_expr)
         .select(
             pl.col("cnt").sum().alias("n_samples")
             , pl.col(target).count().alias("n_classes")
@@ -395,7 +395,7 @@ def f_classif(
         )
 
     ref = (
-        df.lazy().groupby(target).agg(step_one_expr)
+        df.lazy().group_by(target).agg(step_one_expr)
         .select(
             pl.col("cnt").sum().alias("n_samples")
             , pl.col(target).len().alias("n_classes")
@@ -762,7 +762,7 @@ def woe_iv(
             raise ValueError("Target is not binary or not properly encoded or contains nulls.")
 
     results = (
-        df.lazy().groupby(s).agg(
+        df.lazy().group_by(s).agg(
             ev = pl.col(target).sum()
             , nonev = (pl.lit(1) - pl.col(target)).sum()
         ).with_columns(

@@ -423,7 +423,7 @@ def smooth_target_encode(
 
     # If c has null, null will become a group when we group by.
     lazy_references:list[pl.LazyFrame] = [
-        df.lazy().groupby(c).agg(
+        df.lazy().group_by(c).agg(
             pl.count().alias("cnt"),
             pl.col(target).mean().alias("cond_p")
         ).with_columns(
@@ -721,7 +721,7 @@ def woe_cat_encode(
 
     mappings = []
     lazy_references = [
-        df.lazy().groupby(s).agg(
+        df.lazy().group_by(s).agg(
             ev = pl.col(target).sum()
             , nonev = (pl.lit(1) - pl.col(target)).sum()
         ).with_columns(

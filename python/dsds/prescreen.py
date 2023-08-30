@@ -206,7 +206,7 @@ def check_target_cardinality(df:PolarsFrame, target:str, raise_null:bool=True) -
     Returns a dataframe showing the cardinality of different target values. If raise_null = True, raise 
     an exception if target column has any null values.
     '''
-    output = df.lazy().groupby(target).count().sort(target).with_columns(
+    output = df.lazy().group_by(target).count().sort(target).with_columns(
         pct = pl.col("count")/pl.col("count").sum()
     ).collect()
     if raise_null and output[target].null_count() > 0:
@@ -518,7 +518,7 @@ def describe_str_categories(
 
     strs = get_string_cols(df)
     stats = [
-        df.lazy().groupby(s).agg(
+        df.lazy().group_by(s).agg(
             pl.count()
         ).sort(by=[pl.col("count"), pl.col(s)]).select(
             pl.lit(s).alias("feature"),

@@ -137,7 +137,7 @@ def simple_upsample(
 
     Examples
     --------
-    >>> df.groupby("One_Hot_Test").count()
+    >>> df.group_by("One_Hot_Test").count()
     shape: (3, 2)
     ┌──────────────┬───────┐
     │ One_Hot_Test ┆ count │
@@ -149,7 +149,7 @@ def simple_upsample(
     │ A            ┆ 783   │
     └──────────────┴───────┘
     >>> upsampled = simple_upsample(df, subgroup={"One_Hot_Test":["B", "C"]}, count=200, exclude=["Clicked on Ad"])
-    >>> upsampled.groupby("One_Hot_Test").count()
+    >>> upsampled.group_by("One_Hot_Test").count()
     shape: (3, 2)
     ┌──────────────┬───────┐
     │ One_Hot_Test ┆ count │
@@ -338,7 +338,7 @@ def train_test_split(
         p1, p2 = df.with_columns(pl.all().shuffle(seed=seed))\
                     .with_row_count()\
                     .set_sorted("row_nr")\
-                    .groupby(
+                    .group_by(
                         pl.col("row_nr") >= len(df) * train_frac
                     )
         # Sometimes p1 is true, p2 is false, sometimes otherwise
@@ -711,7 +711,7 @@ def segmentation(
     for seg in segments:
         seg_name = str(tuple(seg))
         if is_lazy:
-            reference = df.lazy().groupby(seg).count().sort(seg).collect()
+            reference = df.lazy().group_by(seg).count().sort(seg).collect()
             temp = df.lazy().sort(seg)
             offset = 0
             for row in reference.iter_rows():
@@ -721,7 +721,7 @@ def segmentation(
                 offset += count
                 yield seg_specific, frame
         else:
-            for name, frame in df.groupby(seg, maintain_order=True):
+            for name, frame in df.group_by(seg, maintain_order=True):
                 seg_specific = seg_name + " = " + str(name)
                 yield seg_specific, frame
 

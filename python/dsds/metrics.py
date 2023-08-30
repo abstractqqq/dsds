@@ -119,7 +119,7 @@ def get_tp_fp(
     df = pl.from_records((y_predicted, y_actual), schema=["predicted", "actual"])
     all_positives = pl.lit(np.sum(y_actual))
     n = len(df)
-    temp = df.lazy().groupby("predicted").agg(
+    temp = df.lazy().group_by("predicted").agg(
         pl.count().alias("cnt")
         , pl.col("actual").sum().alias("true_positive")
     ).sort("predicted").with_columns(
@@ -241,14 +241,14 @@ def psi(
 
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
     s1_cuts:pl.DataFrame = s1.qcut(qcuts, series=False)
-    s1_summary = s1_cuts.lazy().groupby(pl.col("category").cast(pl.Utf8)).agg(
+    s1_summary = s1_cuts.lazy().group_by(pl.col("category").cast(pl.Utf8)).agg(
         a = pl.count()
     )
 
     s2_base:pl.DataFrame = s2.cut(bins = s1_cuts.get_column("break_point").unique().sort().head(len(qcuts)), 
                                   series = False)
 
-    s2_summary:pl.DataFrame = s2_base.lazy().groupby(
+    s2_summary:pl.DataFrame = s2_base.lazy().group_by(
         pl.col("category").cast(pl.Utf8)
     ).agg(
         b = pl.count()
@@ -272,8 +272,8 @@ def psi(
 #     _ = type_checker(new, [col], "string", "psi_cat")
 #     _ = type_checker(old, [col], "string", "psi_cat")
     
-#     s1_summary = new.groupby(col).agg(pl.count().alias("a"))
-#     s2_summary = old.groupby(col).agg(pl.count().alias("b"))
+#     s1_summary = new.group_by(col).agg(pl.count().alias("a"))
+#     s2_summary = old.group_by(col).agg(pl.count().alias("b"))
 
 #     return s1_summary.join(s2_summary, on=col, how="left").with_columns(
 #         a = pl.max_horizontal(pl.col("a"), pl.lit(0.00001))/pl.col("a").sum(),

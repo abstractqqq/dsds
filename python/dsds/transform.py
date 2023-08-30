@@ -120,11 +120,11 @@ def impute_nan(
 def hot_deck_impute(
     df: PolarsFrame
     , c: str
-    , groupby: list[str]
+    , group_by: list[str]
     , strategy:HotDeckImputeStrategy = 'mean'
 ) -> PolarsFrame:
     '''
-    Imputes column c according to the segment it is in. Performance will hurt if columns in groupby has 
+    Imputes column c according to the segment it is in. Performance will hurt if columns in group_by has 
     too many segments.
     
     This will be remembered by blueprint by default.
@@ -135,7 +135,7 @@ def hot_deck_impute(
         Either a lazy or eager Polars DataFrame
     c
         Column to be imputed name
-    groupby
+    group_by
         Computes value to impute with according to the segments.
     strategy
         One of ['mean', 'avg', 'median', 'mode', 'most_frequent', 'min', 'max'], which can be
@@ -148,7 +148,7 @@ def hot_deck_impute(
     ...     "b": ["cat", "cat", "cat", "dog", "dog", "dog"],
     ...     "c": [0,0,0,0,1,1]
     ... })
-    >>> print(t.hot_deck_impute(df, "a", groupby=["b", "c"], strategy="mean"))
+    >>> print(t.hot_deck_impute(df, "a", group_by=["b", "c"], strategy="mean"))
     shape: (6, 3)
     ┌─────┬─────┬─────┐
     │ a   ┆ b   ┆ c   │
@@ -177,7 +177,7 @@ def hot_deck_impute(
     else:
         raise TypeError(f"Unknown hot deck imputation strategy: {strategy}")
 
-    ref = df.lazy().groupby(groupby).agg(agg).collect()
+    ref = df.lazy().group_by(group_by).agg(agg).collect()
     expr = pl.col(c)
     for row_dict in ref.iter_rows(named=True):
         impute = row_dict.pop(alias)
@@ -363,7 +363,7 @@ def merge_infreq_values(
 
     exprs = []
     for c in cols:
-        infreq = df.lazy().groupby(c).count().filter(
+        infreq = df.lazy().group_by(c).count().filter(
             comp
         ).select(pl.col(c)).collect()[c]
         value = separator.join(infreq)
@@ -479,7 +479,7 @@ def power_transform(
     _ = type_checker(df, cols, "numeric", "power_transform")
     exprs:list[pl.Expr] = []
     if strategy in ("yeo_johnson", "yeojohnson"):
-        lmaxs = df.lazy().select(cols).groupby(pl.lit(1)).agg(
+        lmaxs = df.lazy().select(cols).group_by(pl.lit(1)).agg(
             pl.col(c)
             .apply(yeojohnson_normmax, strategy="threading", return_dtype=pl.Float64).alias(c)
             for c in cols
@@ -501,7 +501,7 @@ def power_transform(
             )
     elif strategy in ("box_cox", "boxcox"):
         bc_normmax = partial(boxcox_normmax, method="mle")
-        lmaxs = df.lazy().select(cols).groupby(pl.lit(1)).agg(
+        lmaxs = df.lazy().select(cols).group_by(pl.lit(1)).agg(
             pl.col(c)
             .apply(bc_normmax, strategy="threading", return_dtype=pl.Float64).alias(c)
             for c in cols
