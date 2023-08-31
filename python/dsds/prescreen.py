@@ -10,6 +10,7 @@ from .type_alias import (
 from .sample import (
     lazy_sample
 )
+from polars.type_aliases import CorrelationMethod
 from .blueprint import(
     Blueprint  # noqa: F401
 )
@@ -383,6 +384,50 @@ def dtype_mapping(d: Any) -> SimpleDtypes:
 # Prescreen Inferral, Removal Methods                                                          #
 #----------------------------------------------------------------------------------------------#
 
+def corr_table(
+    df: PolarsFrame
+    , features: list[str]
+    , targets: list[str]
+    , method:CorrelationMethod = "pearson"
+) -> pl.DataFrame:
+    '''
+    A quick prescreen method to check the correlation between columns in cols and columns in corr_with.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    features
+        Features you want to check correlation with targets
+    targets
+        Target columns you want to check correlation with features
+    method
+        Either `pearson` or `spearman`
+
+    Example
+    -------
+    >>> import dsds.prescreen as ps
+    ... df = pl.read_csv("../data/advertising.csv") # The dataset in data folder in the repo
+    >>> print(ps.corr_table(df, features=["Age", "Daily Internet Usage"], targets=["Clicked on Ad", "Age Band"]))
+    shape: (2, 3)
+    ┌──────────────────────┬───────────────┬──────────┐
+    │ features             ┆ Clicked on Ad ┆ Age Band │
+    │ ---                  ┆ ---           ┆ ---      │
+    │ str                  ┆ f64           ┆ f64      │
+    ╞══════════════════════╪═══════════════╪══════════╡
+    │ Age                  ┆ 0.492531      ┆ 0.950884 │
+    │ Daily Internet Usage ┆ -0.786276     ┆ -0.33626 │
+    └──────────────────────┴───────────────┴──────────┘
+    '''
+    temp = (
+        df.lazy().select(
+            pl.lit(f).alias("features"),
+            *(pl.corr(f, t, method=method).alias(t) for t in targets)
+        )
+        for f in features
+    )
+    return pl.concat(pl.collect_all(temp))
+
 # Add a slim option that returns fewer stats? This is generic describe.
 def describe(
     df:PolarsFrame
@@ -458,23 +503,35 @@ def describe(
 
 # String only describe. Be more detailed about interesting string stats.
 
-def describe_str(
+def describe_str_meta(
     df:PolarsFrame
+    , cols: Optional[list[str]] = None
     , words_to_count:Optional[list[str]]=None
-    , sample_frac:float = 0.75
 ) -> pl.DataFrame:
     '''
-    Computes some statistics about the string columns. Optionally you may pass a list
-    of strings to compute the total occurrences of each of the words in the string columns. If input is a LazyFrame, 
-    a sample of sample_pct will be used, and sample_pct will only be used in the lazy case. 
-    '''
-    strs = get_string_cols(df)
-    df_str = df.select(strs)
-    if isinstance(df, pl.LazyFrame):
-        df_str = lazy_sample(df_str, sample_frac=sample_frac).collect()
+    Computes some meta statistics about the string columns. Optionally you may pass a list
+    of strings to compute the total occurrences of each of the words in the string columns. Meta
+    stats inclues average, min, max, median byte length, avg count of white spaces, avg count of 
+    digits, average count of capitalized letters, average count of lowercase letters and word counts 
 
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        If not provided, will compute for all string columns
+    words_to_count
+        If provided, word counts will be computed
+    '''
+    if cols is None:
+        strs = get_string_cols(df)
+    else:
+        _ = type_checker(df, cols, "string", "describe_str_meta")
+        strs = cols
+        
+    df_str = df.lazy().select(strs)
     nstrs = len(strs)
-    stats = df.select(strs).select(
+    stats = df_str.select(
         pl.all().null_count().prefix("nc:"),
         pl.all().max().prefix("max:"),
         pl.all().min().prefix("min:"),
@@ -487,7 +544,7 @@ def describe_str(
         pl.all().str.count_match(r"[0-9]").mean().prefix("avg_digit_cnt:"),
         pl.all().str.count_match(r"[A-Z]").mean().prefix("avg_cap_cnt:"),
         pl.all().str.count_match(r"[a-z]").mean().prefix("avg_lower_cnt:")
-    ).row(0)
+    ).collect().row(0)
     output = {
         "features":strs,
         "null_count": stats[:nstrs],
@@ -508,24 +565,41 @@ def describe_str(
         for w in words_to_count:
             output["total_"+ w + "_count"] = df_str.select(
                                                 pl.all().str.count_match(w).sum().prefix("wc:")
-                                            ).row(0)
+                                            ).collect().row(0)
 
     return pl.from_dict(output)
 
-def describe_str_categories(
+def describe_categories(
     df:PolarsFrame
+    , cols: Optional[list[str]] = None
 ) -> pl.DataFrame:
+    '''
+    Describes the string categories by looking at the count for each category. Some stats include min/max/avg 
+    successive difference in term of count for the categories.
 
-    strs = get_string_cols(df)
-    stats = [
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        If not provided, will compute for all string columns
+    '''
+    if cols is None:
+        strs = get_string_cols(df)
+    else:
+        _ = type_checker(df, cols, "string", "describe_categories")
+        strs = cols
+
+    stats = (
         df.lazy().group_by(s).agg(
             pl.count()
         ).sort(by=[pl.col("count"), pl.col(s)]).select(
             pl.lit(s).alias("feature"),
             pl.col(s).count().alias("n_unique"),
-            pl.col(s).first().alias("min_cat"),
+            pl.when(pl.col(s).null_count() > 0).then(True).otherwise(False).alias("has_null"),
+            pl.col(s).first().alias("category_w_min_count"),
             pl.col("count").min().alias("min_count"),
-            pl.col(s).last().alias("max_cat"),
+            pl.col(s).last().alias("category_w_max_count"),
             pl.col("count").max().alias("max_count"),
             pl.col("count").mean().alias("avg_count"),
             pl.col("count").diff().min().alias("min_successive_diff"),
@@ -533,7 +607,7 @@ def describe_str_categories(
             pl.col("count").diff().max().alias("max_successive_diff"),
         )
         for s in strs
-    ]
+    )
     return pl.concat(pl.collect_all(stats))
 
 # Add an outlier description
