@@ -148,13 +148,13 @@ def drop_nulls(
     Set persist = True so that this will be remembered by the blueprint.
     '''
     if isinstance(df, pl.LazyFrame) and persist:
-        if subset is None:
-            by = df.columns
-        elif isinstance(subset, str):
+        if isinstance(subset, str):
             by = [subset]
-        else:
+        elif isinstance(subset, list):
             by = subset
-        expr = pl.all_horizontal([pl.col(c).is_null() for c in by])
+        else:
+            by = df.columns
+        expr = pl.all_horizontal([pl.col(by).is_null()])
         return df.blueprint.filter(expr)
     return df.drop_nulls(subset)
 

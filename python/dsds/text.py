@@ -321,6 +321,7 @@ def tfidf_vectorizer(
         ).suffix(f"::tfidf_{s}")
         for s, p, idf in zip(ref["ref"], ref["captures"], ref["smooth_idf"])
     ]
+    
     if isinstance(df, pl.LazyFrame):
         return (
             df.blueprint.with_columns([

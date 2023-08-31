@@ -8,15 +8,19 @@ from typing import (
 from abc import ABC, abstractmethod
 import polars as pl
 import sys
+
 if sys.version_info >= (3, 10):
     from typing import TypeAlias, Concatenate, ParamSpec
     P = ParamSpec('P')
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[Concatenate[PolarsFrame, P], PolarsFrame]
+    WithColumnsFunc = Callable[Concatenate[PolarsFrame, P], tuple[PolarsFrame, list[pl.Expr]]]
+
 else: # 3.9
     from typing_extensions import TypeAlias
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
-    PipeFunction = Callable
+    PipeFunction = Callable[..., PolarsFrame]
+    WithColumnsFunc = Callable[..., tuple[PolarsFrame, list[pl.Expr]]]
 
 import os
 import numpy as np
@@ -31,7 +35,7 @@ POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date)
 # --- Strategies ---
 MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf", "random_forest", "mis"
                                 , "mutual_info_score", "lgbm", "lightgbm"]
-ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant"]
+ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant", "robust"]
 SimpleImputeStrategy:TypeAlias = Literal["mean", "avg", "median", "const", 
                                        "constant", "mode", "most_frequent", "coalease"]
 HotDeckImputeStrategy:TypeAlias = Literal["mean", "avg", "median", "mode", "most_frequent", "min", "max"]

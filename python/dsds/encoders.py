@@ -4,12 +4,12 @@ from .type_alias import (
     PolarsFrame
 )
 from .prescreen import (
-    get_bool_cols
-    , get_string_cols
+    get_string_cols
     , get_unique_count
     , check_binary_target
     , type_checker
 )
+from .transform import with_columns
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
@@ -20,35 +20,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def boolean_encode(df:PolarsFrame, keep_null:bool=True) -> PolarsFrame:
-    '''
-    Converts all boolean columns into binary 0, 1 columns.
-
-    This will be remembered by blueprint by default.
-
-    Parameters
-    ----------
-    df
-        Either a lazy or eager Polars DataFrame
-    keep_null
-        If true, null will be kept. If false, null will be mapped to 0.
-    '''
-    bool_cols = get_bool_cols(df)
-    if keep_null: # Directly cast. If null, then cast will also return null
-        exprs = [pl.col(bool_cols).cast(pl.UInt8)]
-    else: # Cast. Then fill null to 0s.
-        exprs = [pl.col(bool_cols).cast(pl.UInt8).fill_null(0)]
-
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
-
+@with_columns
 def missing_indicator(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
     , include_nan:bool = True
     , suffix: str = "_missing"
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Add one-hot columns for missing values in the given columns.
 
@@ -77,9 +55,8 @@ def missing_indicator(
                  for c in to_add]
     else:
         exprs = [pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+
+    return df, exprs
 
 def one_hot_encode(
     df:PolarsFrame
@@ -132,7 +109,7 @@ def one_hot_encode(
         return df.blueprint.with_columns(exprs).blueprint.drop(str_cols)
     else:
         return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
-    
+
 def selective_one_hot_encode(
     df:PolarsFrame,
     selected: dict[str, list[str]],
@@ -191,7 +168,8 @@ def selective_one_hot_encode(
         return df.blueprint.with_columns(exprs).blueprint.drop(str_cols) 
     return df.with_columns(exprs).drop(str_cols) 
 
-def force_binary(df:PolarsFrame) -> PolarsFrame:
+@with_columns
+def force_binary(df:PolarsFrame) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Force every binary column, no matter what data type, into 0s and 1s according to the order of the 
     elements. If a column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
@@ -216,22 +194,20 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
             pl.when(pl.col(t.name) == u[0]).then(zero).otherwise(one).alias(t.name)
         )
 
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
 def multicat_one_hot_encode(
     df:PolarsFrame
     , cols: list[str]
     , delimiter: str = "|"
-    , drop_first: bool = False
+    , drop_first: bool = True
 ) -> PolarsFrame:
     '''
     Expands multicategorical columns into several one-hot-encoded columns respectively. A multicategorical column is a 
     column with strings like `aaa|bbb|ccc`, which means this row belongs to categories aaa, bbb, and ccc. Typically, 
     such a column will contain strings separated by a delimiter. This method will collect all unique strings separated 
-    by the delimiter and one hot encode the corresponding column, e.g. by checking if `aaa` is contained in values of this
-    column. Nulls will be mapped to 0 in the generated one-hot columns. If you wish to have a null mask, take a look 
+    by the delimiter and one hot encode the corresponding column, e.g. by checking if `aaa` is contained in values of 
+    this column. Nulls will be mapped to 0 in the generated one-hot columns. If you wish to have a null mask, take a look 
     at `dsds.encoders.missing_indicator`.
 
     This will be remembered by blueprint by default.
@@ -278,7 +254,7 @@ def multicat_one_hot_encode(
     '''
     _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
     temp = df.lazy().select(
-        pl.col(cols).str.split("|").explode().unique().implode().list.sort()
+        pl.col(cols).str.split(delimiter).explode().unique().implode().list.sort()
     )
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
@@ -538,12 +514,13 @@ def feature_mapping(
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
+@with_columns
 def custom_binning(
     df:PolarsFrame
     , cols:list[str]
     , cuts:list[float]
     , suffix:str = ""
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Bins according to the cuts provided. The same cuts will be applied to all columns in cols.
 
@@ -560,19 +537,16 @@ def custom_binning(
     suffix
         If you don't want to replace the original columns, you have the option to give the binned column a suffix
     '''
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(
-            [pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix)]
-        )
-    else:
-        return df.with_columns(pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix))
-    
+    exprs = [pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix)]
+    return df, exprs
+
+@with_columns
 def fixed_sized_binning(
     df:PolarsFrame
     , cols:list[str]
     , interval: float
     , suffix:str = ""
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Bins according to fixed interval size. The same cuts will be applied to all columns in cols. Bin will 
     start from min(feature) to max(feature) + interval with step length = interval.
@@ -600,9 +574,7 @@ def fixed_sized_binning(
         cut = np.arange(bounds[i], bounds[n+i] + interval, step=interval).tolist()
         exprs.append(pl.col(c).cut(cut).cast(pl.Utf8).suffix(suffix))
 
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
 def quantile_binning(
     df:PolarsFrame

@@ -11,11 +11,11 @@ from .type_alias import (
     , StrExtract
     , HorizontalExtract
     , ZeroOneCombineStrategy
+    , WithColumnsFunc
 )
 from .prescreen import (
     type_checker, 
-    infer_nums_from_str,
-    infer_nan
+    infer_nums_from_str
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
@@ -36,12 +36,32 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
+def with_columns(func: WithColumnsFunc):
+    '''
+    A convenience function used as a decorator for functions that has return type
+    (PolarsFrame, list[pl.Expr]). It will automatically dump the list of expressions 
+    in the blueprint if df is lazy. 
+    '''
+    def wrapper(*args, **kwargs) -> PolarsFrame:
+
+        df, exprs = func(*args, **kwargs)
+        if isinstance(df, pl.LazyFrame):
+            output = df.blueprint.with_columns(exprs)
+        else:
+            output = df.with_columns(exprs)
+
+        return output
+    
+    return wrapper
+
+@with_columns
 def impute(
     df:PolarsFrame
     , cols:list[str]
+    , *
     , strategy:SimpleImputeStrategy = 'median'
     , const:float = 1.
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Impute the given columns with the given strategy.
 
@@ -58,7 +78,7 @@ def impute(
         must be provided. Note that if strategy is mode and if two values occur the same number 
         of times, a random one will be picked. If strategy is coalease, it is not guaranteed that
         all nulls will be filled, and the first non-null values in cols will be used to construct a new
-        column aliased by cols[0]'s name and all the rest cols[1:] will be dropped.
+        column with the same name as cols[0]'s name.
     const
         The constant value to impute by if strategy = 'const'
     '''
@@ -75,21 +95,18 @@ def impute(
         exprs = [pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols)]
     elif strategy == "coalease":
         exprs = [pl.coalesce(cols).alias(cols[0])]
-        if isinstance(df, pl.LazyFrame):
-            return df.blueprint.with_columns(exprs).blueprint.drop(cols[1:])
-        return df.with_columns(exprs).drop(cols[1:])
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
 
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def impute_nan(
     df: PolarsFrame
-    , cols: Optional[list[str]] = None
+    , cols: list[str]
+    , *
     , by: Optional[float] = None
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Maps all NaN or infinite values to the given value.
     
@@ -105,24 +122,20 @@ def impute_nan(
         If this is None, this will map all NaNs/infinity value to null. If this is a valid float,
         this will impute NaN/infinity by this value.
     '''
-    if cols is None:
-        to_map = infer_nan(df)
-    else:
-        _ = type_checker(df, cols, "numeric", "impute_nan")
-        to_map = cols
 
+    _ = type_checker(df, cols, "numeric", "impute_nan")
     exprs = [pl.when((pl.col(c).is_infinite()) | pl.col(c).is_nan()).then(by).otherwise(pl.col(c)).alias(c) 
-             for c in to_map]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+             for c in cols]
+    return df, exprs
 
+@with_columns
 def hot_deck_impute(
     df: PolarsFrame
     , c: str
     , group_by: list[str]
+    , *
     , strategy:HotDeckImputeStrategy = 'mean'
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Imputes column c according to the segment it is in. Performance will hurt if columns in group_by has 
     too many segments.
@@ -186,19 +199,16 @@ def hot_deck_impute(
         )).then(impute).otherwise(expr)
 
     expr = expr.alias(c)
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns([expr])
-    return df.with_columns(expr)
+    return df, [expr]
 
+@with_columns
 def coalesce(
     df: PolarsFrame
     , exprs: list[pl.Expr]
     , new_col_name: str
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
-    Coaleases using the given expressions in exprs. Unlike coalease in impute, this does not drop any 
-    columns because it is impossible to infer the right column names for the given expressions in exprs. 
-    If dropping original columns is intended, please follow this up with `dsds.prescreen.drop`.
+    Coaleases using the given expressions in exprs.
 
     This will be remembered by blueprint by default.
 
@@ -211,17 +221,18 @@ def coalesce(
     new_col_name
         Name of the new coaleased column
     '''
-    expr = [pl.coalesce(exprs).alias(new_col_name)]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(expr)
-    return df.with_columns(expr)
+    expr = pl.coalesce(exprs).alias(new_col_name)
+    return df, [expr]
 
+@with_columns
 def scale(
     df:PolarsFrame
     , cols:list[str]
+    , *
     , strategy:ScalingStrategy="standard"
     , const:float = 1.0
-) -> PolarsFrame:
+    , qcuts:tuple[float, float, float] = (0.25, 0.5, 0.75)
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Scale the given columns with the given strategy.
 
@@ -234,9 +245,12 @@ def scale(
     cols
         The columns to scale
     strategy
-        One of 'standard', 'min_max', 'const'. If 'const', the const argument should be provided
+        One of `standard`, `min_max`, `const` or `robust`. If 'const', the const argument should be provided
     const
-        The constant value to scale by if strategy = 'const'    
+        The constant value to scale by if strategy = 'const'
+    qcuts
+        The quantiles used in robust scaling. Must be three increasing numbers between 0 and 1. The formula is 
+        (X - qcuts[1]) / (qcuts[2] - qcuts[0]) for each column X.
     '''
     _ = type_checker(df, cols, "numeric", "scale")
     if strategy == "standard":
@@ -251,14 +265,20 @@ def scale(
             pl.col(cols).max().prefix("max:")
         ).collect().row(0) # All mins come first, then maxs
         exprs = [(pl.col(c) - min_max[i])/((min_max[i + len(cols)] - min_max[i])) for i,c in enumerate(cols)]
+    elif strategy == "robust":        
+        quantiles = df.lazy().select(
+            pl.col(cols).quantile(qcuts[0]).suffix("_1"),
+            pl.col(cols).quantile(qcuts[1]).suffix("_2"),
+            pl.col(cols).quantile(qcuts[2]).suffix("_3")
+        ).collect().row(0)
+        exprs = [(pl.col(c) - quantiles[len(cols) + i])/((quantiles[2*len(cols) + i] - quantiles[i])) 
+                 for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
         exprs = [pl.col(cols) / const]
     else:
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
 def custom_transform(
     df: PolarsFrame
@@ -282,13 +302,15 @@ def custom_transform(
         return df.blueprint.with_columns(exprs)
     return df.with_columns(exprs)
 
+@with_columns
 def merge_infreq_values(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , min_count: Optional[int] = 10
     , min_frac: Optional[float] = None
     , separator: str = '|'
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Combines infrequent categories in string columns together. Note this does not guarantee similar
     categories should be combined. This method is purely based on frequency.
@@ -371,17 +393,16 @@ def merge_infreq_values(
             pl.when(pl.col(c).is_in(infreq)).then(value).otherwise(pl.col(c)).alias(c)
         )
     
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def combine_zero_ones(
     df: PolarsFrame
     , cols: list[str]
     , new_name: str
+    , *
     , rule: ZeroOneCombineStrategy = "union"
-    , drop_original:bool = True
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Take columns that are all binary 0, 1 columns, combine them horizontally according to the rule. 
     Please make sure the columns only contain binary 0s and 1s. Depending on the rule, this can be 
@@ -400,8 +421,6 @@ def combine_zero_ones(
         Name for the combined column
     rule
         One of 'union', 'intersection', 'same'.
-    drop_original
-        If true, drop column in cols
 
     Examples
     --------
@@ -447,20 +466,15 @@ def combine_zero_ones(
     else:
         raise TypeError(f"The input `{rule}` is not a valid ZeroOneCombineStrategy.")
 
-    if isinstance(df, pl.LazyFrame):
-        if drop_original:
-            return df.blueprint.with_columns(expr).blueprint.drop(cols)
-        return df.blueprint.with_columns(expr)
-    if drop_original:
-        return df.with_columns(expr).drop(cols)
-    return df.with_columns(expr)
+    return df, [expr]
 
+@with_columns
 def power_transform(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , strategy: PowerTransformStrategy = "yeo_johnson"
-    # , lmbda: Optional[float] = None
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Performs power transform on the numerical columns. This will skip null values in the columns. If strategy is
     box_cox, all values in cols must be positive.
@@ -514,9 +528,7 @@ def power_transform(
         raise TypeError(f"The input strategy {strategy} is not a valid strategy. Valid strategies are: yeo_johnson "
                         "or box_cox")
     
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
 def normalize(
     df: PolarsFrame
@@ -537,9 +549,11 @@ def normalize(
     _ = type_checker(df, cols, "numeric", "normalize")
     return df.with_columns(pl.col(c)/pl.col(c).sum() for c in cols)
 
+@with_columns
 def clip(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , min_clip: Optional[float] = None
     , max_clip: Optional[float] = None
 ) -> PolarsFrame:
@@ -573,13 +587,13 @@ def clip(
     else:
         raise ValueError("At least one of min_cap and max_cap should be provided.")
     
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def log_transform(
     df: PolarsFrame
     , cols:list[str]
+    , *
     , base:float = math.e
     , plus_one:bool = False
     , suffix:str = "_log"
@@ -611,15 +625,15 @@ def log_transform(
         exprs = [pl.col(cols).log1p().suffix(suffix)]
     else:
         exprs = [pl.col(cols).log(base).suffix(suffix)]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def sqrt_transform(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , suffix: str = "_sqrt"
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Performs classical square root transform for the given columns. Negative numbers will be mapped to
     NaN.
@@ -637,13 +651,13 @@ def sqrt_transform(
     '''
     _ = type_checker(df, cols, "numeric", "sqrt_transform")
     exprs = [pl.col(cols).sqrt().suffix(suffix)]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def linear_transform(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , coeffs: Union[float, list[float]]
     , consts: Union[float, list[float]]
     , suffix: str = ""
@@ -689,17 +703,16 @@ def linear_transform(
         for c, a, b in zip(cols, coeff_list, const_list)
     ]
     
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def extract_dt_features(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , extract: Union[DateExtract, list[DateExtract]] = ["year", "quarter", "month"]
     , sunday_first: bool = False
-    , drop_original: bool = True
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Extracts additional date related features from existing date/datetime columns.
 
@@ -717,8 +730,6 @@ def extract_dt_features(
     sunday_first
         For day_of_week, by default, Monday maps to 1, and so on. If sunday_first = True, then Sunday will be
         mapped to 1 and so on
-    drop_original
-        Whether to drop columns in cols
 
     Example
     -------
@@ -741,7 +752,7 @@ def extract_dt_features(
     │ 2023-11-23 ┆ 2023-11-23 │
     └────────────┴────────────┘
     >>> cols = ["date1", "date2"]
-    >>> print(t.extract_dt_features(df, cols=cols, drop_original=False))
+    >>> print(t.extract_dt_features(df, cols=cols))
     shape: (3, 8)
     ┌────────────┬────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
     │ date1      ┆ date2      ┆ date1_year ┆ date2_yea ┆ date1_qua ┆ date2_qua ┆ date1_mon ┆ date2_mon │
@@ -784,20 +795,15 @@ def extract_dt_features(
         else:
             logger.info(f"Found {e} in extract, but it is not a valid DateExtract value. Ignored.")
 
-    if isinstance(df, pl.LazyFrame):
-        if drop_original:
-            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        return df.blueprint.with_columns(exprs)
-    if drop_original:
-        return df.with_columns(exprs).drop(cols)
-    return df.with_columns(exprs)
-    
+    return df, exprs
+
+@with_columns
 def extract_horizontally(
     df:PolarsFrame
     , cols: list[str]
+    , *
     , extract: Union[HorizontalExtract, list[HorizontalExtract]] = ["min", "max"]
-    , drop_original: bool = True
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Extract features horizontally across a few columns.
 
@@ -812,8 +818,6 @@ def extract_horizontally(
     extract
         One of "min", "max", "sum", "any", "all". Note that "any" and "all" only make practical sense when 
         all of cols are boolean columns, but they work even when cols are numbers.
-    drop_original
-        Whether to drop columns in cols
 
     Example
     -------
@@ -856,21 +860,16 @@ def extract_horizontally(
         else:
             logger.info(f"Found {e} in extract, but it is not a valid HorizontalExtract value. Ignored.")
 
-    if isinstance(df, pl.LazyFrame):
-        if drop_original:
-            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        return df.blueprint.with_columns(exprs)
-    if drop_original:
-        return df.with_columns(exprs).drop(cols)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def extract_word_count(
     df: PolarsFrame
     , cols: Union[str, list[str]]
+    , *
     , words: list[str]
     , lower: bool = True
-    , drop_original: bool = True
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Extract word counts from the cols.
 
@@ -886,8 +885,6 @@ def extract_word_count(
         Words/Patterns to count
     lower
         Whether a lowercase() step should be done before the count match
-    drop_original
-        Whether to drop columns in cols
 
     Example
     -------
@@ -922,20 +919,15 @@ def extract_word_count(
         base = base.str.to_lowercase()
     
     exprs.extend(base.str.count_match(w).suffix(f"_count_{w}") for w in words)
-    
-    if isinstance(df, pl.LazyFrame):
-        if drop_original:
-            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        return df.blueprint.with_columns(exprs)
-    if drop_original:
-        return df.with_columns(exprs).drop(cols)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def str_to_list(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , inner: Optional[pl.DataType] = None
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Converts string columns like ['[1,2,3]', '[2,3,4]', ...] into columns of list type.
 
@@ -948,26 +940,25 @@ def str_to_list(
     cols
         Must be explicitly provided and should all be string columns
     inner
-        If you know the inner dtype and don't want Polars to infer the inner dtype, you can provide it. But
-        note that if inner is provided, then all columns will be casted to the same inner dtype.
+        If you know the inner dtype and don't want Polars to infer the inner dtype, you can provide it. You 
+        typically want to do this to conserve memory, e.g. Polars may choose f64 over f32 but you may know f32 
+        is enough. But note that if inner is provided, then all columns will be casted to the same inner dtype.
     '''
     
     _ = type_checker(df, cols, "string", "str_to_list")
     exprs = [
         pl.col(c).str.json_extract(dtype = inner) for c in cols 
     ]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def extract_from_str(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , extract: Union[StrExtract, list[StrExtract]]
     , pattern: Optional[str] = None
-    , use_bool: bool = False
-    , drop_original: bool = True
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Extract data from string columns. For multiple word counts on the same column, see extract_word_count.
     Note that for 'starts_with' and 'ends_with', pattern will be used as a substring instead of a regex pattern.
@@ -989,8 +980,6 @@ def extract_from_str(
     use_bool
         If true, results of "starts_with", "ends_with", and "contains" will be boolean columns instead of binary
         0s and 1s.
-    drop_original
-        Whether to drop columns in cols
 
     Example
     -------
@@ -1025,41 +1014,28 @@ def extract_from_str(
         if e == "len":
             exprs.append(pl.col(cols).str.lengths().suffix("_len"))
         elif e == "starts_with":
-            if use_bool:
-                exprs.append(pl.col(cols).str.starts_with(pattern).suffix(f"_starts_with_{pattern}"))
-            else:
-                exprs.append(pl.col(cols).str.starts_with(pattern).cast(pl.UInt8).suffix(f"_starts_with_{pattern}"))
+            exprs.append(pl.col(cols).str.starts_with(pattern).cast(pl.UInt8).suffix(f"_starts_with_{pattern}"))
         elif e == "ends_with":
-            if use_bool:
-                exprs.append(pl.col(cols).str.ends_with(pattern).suffix(f"_ends_with_{pattern}"))
-            else:
-                exprs.append(pl.col(cols).str.ends_with(pattern).cast(pl.UInt8).suffix(f"_ends_with_{pattern}"))
+            exprs.append(pl.col(cols).str.ends_with(pattern).cast(pl.UInt8).suffix(f"_ends_with_{pattern}"))
         elif e == "count":
             exprs.append(pl.col(cols).str.count_match(pattern).suffix(f"_{pattern}_count"))
         elif e == "contains":
-            if use_bool:
-                exprs.append(pl.col(cols).str.contains(pattern).suffix(f"_contains_{pattern}"))
-            else:
-                exprs.append(pl.col(cols).str.contains(pattern).cast(pl.UInt8).suffix(f"_contains_{pattern}"))
+            exprs.append(pl.col(cols).str.contains(pattern).cast(pl.UInt8).suffix(f"_contains_{pattern}"))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid StrExtract value. Ignored.")
 
-    if isinstance(df, pl.LazyFrame):
-        if drop_original:
-            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        return df.blueprint.with_columns(exprs)
-    if drop_original:
-        return df.with_columns(exprs).drop(cols)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def extract_numbers(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
+    , *
     , ignore_comma: bool = True
     , dtype: pl.DataType = pl.Float64
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
-    Extracts the first number from the given columns. This will always replace original string columns.
+    Extracts the first number from the given columns. This will always replace the original string.
 
     This will be remembered by blueprint by default.
 
@@ -1108,17 +1084,16 @@ def extract_numbers(
         expr = expr.str.replace_all(",", "")
     
     expr = expr.str.extract("(\d*\.?\d+)").cast(dtype)
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns([expr])
-    return df.with_columns(expr)
+    return df, [expr]
 
+@with_columns
 def extract_from_json(
     df: PolarsFrame
     , json_col: str
+    , *
     , paths: list[str]
     , dtypes: list[pl.DataType]
-    , drop_original:bool = True
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Extract JSON fields from a JSON string column according to the json path.
 
@@ -1134,8 +1109,6 @@ def extract_from_json(
         The values at the json paths will be extracted
     dtypes
         The corresponding dtypes for the values. Must be of the same length as paths
-    drop_original
-        After extracting, whether to drop the json_col or not
     
     Example
     -------
@@ -1162,21 +1135,15 @@ def extract_from_json(
         pl.col(json_col).str.json_path_match(f"$.{p}").cast(t).suffix(f".{p}")
         for p, t in zip(paths, dtypes)
     ]
-    
-    if isinstance(df, pl.LazyFrame):
-        if drop_original:
-            return df.blueprint.with_columns(exprs).blueprint.drop([json_col])
-        return df.blueprint.with_columns(exprs)
-    if drop_original:
-        return df.with_columns(exprs).drop(json_col)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def extract_list_features(
     df: PolarsFrame
     , cols: list[str]
+    , *
     , extract: Union[ListExtract, list[ListExtract]] = ["min", "max"]
-    , drop_original: bool = True
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Extract data from columns that contains lists.
 
@@ -1192,8 +1159,6 @@ def extract_list_features(
         One of "min", "max", "mean", "len", "first", "last", "sum" or a list of these values such as 
         ["min", "max"], which means extract min and max from all the columns provided. Notice if you 
         want to extract mean, then the column must be list of numbers.
-    drop_original
-        Whether to drop columns in cols
 
     Example
     -------
@@ -1239,20 +1204,16 @@ def extract_list_features(
         else:
             logger.info(f"Found {e} in extract, but it is not a valid ListExtract value. Ignored.")
 
-    if isinstance(df, pl.LazyFrame):
-        if drop_original:
-            return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-        return df.blueprint.with_columns(exprs)
-    if drop_original:
-        return df.with_columns(exprs).drop(cols)
-    return df.with_columns(exprs)
+    return df, exprs
 
+@with_columns
 def moving_avgs(
     df:PolarsFrame
     , cols: list[str]
+    , *
     , window_sizes:list[int]
     , min_periods: Optional[int] = None,
-) -> PolarsFrame:
+) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Computes moving averages for column c with given window_sizes. Please make sure the dataframe is sorted
     before this. For a pipeline compatible sort, see `dsds.prescreen.order_by`.
@@ -1275,6 +1236,4 @@ def moving_avgs(
     _ = type_checker(df, cols, "numeric", "moving_avgs")
     exprs = [pl.col(cols).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
              for i in window_sizes if i > 1]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return df, exprs
