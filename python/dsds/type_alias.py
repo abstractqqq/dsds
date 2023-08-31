@@ -44,7 +44,7 @@ BinaryModels:TypeAlias = Literal["logistic", "lr", "lightgbm", "lgbm", "xgboost"
 
 # --- Extracts ---
 DateExtract:TypeAlias = Literal["year", "quarter", "month", "week", "day_of_week", "day_of_year"]
-ListExtract:TypeAlias = Literal["min", "max", "mean", "len", "first", "last"]
+ListExtract:TypeAlias = Literal["min", "max", "mean", "len", "first", "last", "sum"]
 HorizontalExtract:TypeAlias = Literal["min", "max", "sum", "any", "all"]
 StrExtract: TypeAlias = Literal["count", "len", "contains", "starts_with", "ends_with"]
 

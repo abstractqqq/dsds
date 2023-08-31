@@ -931,6 +931,35 @@ def extract_word_count(
         return df.with_columns(exprs).drop(cols)
     return df.with_columns(exprs)
 
+def str_to_list(
+    df: PolarsFrame
+    , cols: list[str]
+    , inner: Optional[pl.DataType] = None
+) -> PolarsFrame:
+    '''
+    Converts string columns like ['[1,2,3]', '[2,3,4]', ...] into columns of list type.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be string columns
+    inner
+        If you know the inner dtype and don't want Polars to infer the inner dtype, you can provide it. But
+        note that if inner is provided, then all columns will be casted to the same inner dtype.
+    '''
+    
+    _ = type_checker(df, cols, "string", "str_to_list")
+    exprs = [
+        pl.col(c).str.json_extract(dtype = inner) for c in cols 
+    ]
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    return df.with_columns(exprs)
+
 def extract_from_str(
     df: PolarsFrame
     , cols: list[str]
@@ -942,6 +971,7 @@ def extract_from_str(
     '''
     Extract data from string columns. For multiple word counts on the same column, see extract_word_count.
     Note that for 'starts_with' and 'ends_with', pattern will be used as a substring instead of a regex pattern.
+    If you want to extract numbers from str, see `dsds.transform.extract_numbers`
 
     This will be remembered by blueprint by default.
 
@@ -1082,6 +1112,65 @@ def extract_numbers(
         return df.blueprint.with_columns([expr])
     return df.with_columns(expr)
 
+def extract_from_json(
+    df: PolarsFrame
+    , json_col: str
+    , paths: list[str]
+    , dtypes: list[pl.DataType]
+    , drop_original:bool = True
+) -> PolarsFrame:
+    '''
+    Extract JSON fields from a JSON string column according to the json path.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    json_col
+        The json column to extract from
+    paths
+        The values at the json paths will be extracted
+    dtypes
+        The corresponding dtypes for the values. Must be of the same length as paths
+    drop_original
+        After extracting, whether to drop the json_col or not
+    
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "a": ['{ "id": 1, "name": "a", "course": {"0":"abc"}}', '{ "id": 2, "name": "b", "course": {"0":"efg"}}']
+    ... })
+    >>> print(t.extract_from_json(df, json_col="a", paths=["id", "course.0"] ,dtypes=[pl.UInt16, pl.Utf8]))
+    shape: (2, 2)
+    ┌──────┬────────────┐
+    │ a.id ┆ a.course.0 │
+    │ ---  ┆ ---        │
+    │ u16  ┆ str        │
+    ╞══════╪════════════╡
+    │ 1    ┆ abc        │
+    │ 2    ┆ efg        │
+    └──────┴────────────┘
+    '''
+    _ = type_checker(df, [json_col], "string", "extract_from_json")
+    if len(paths) != len(dtypes):
+        raise ValueError("Length of paths must be the same as length of dtypes.")
+    
+    exprs = [
+        pl.col(json_col).str.json_path_match(f"$.{p}").cast(t).suffix(f".{p}")
+        for p, t in zip(paths, dtypes)
+    ]
+    
+    if isinstance(df, pl.LazyFrame):
+        if drop_original:
+            return df.blueprint.with_columns(exprs).blueprint.drop([json_col])
+        return df.blueprint.with_columns(exprs)
+    if drop_original:
+        return df.with_columns(exprs).drop(json_col)
+    return df.with_columns(exprs)
+
 def extract_list_features(
     df: PolarsFrame
     , cols: list[str]
@@ -1100,9 +1189,9 @@ def extract_list_features(
     cols
         Must be explicitly provided and should all be date/datetime columns
     extract
-        One of "min", "max", "mean", "len", "first", "last" or a list of these values such as ["min", "max"], 
-        which means extract min and max from all the columns provided. Notice if mean is provided, then the 
-        column must be list of numbers.
+        One of "min", "max", "mean", "len", "first", "last", "sum" or a list of these values such as 
+        ["min", "max"], which means extract min and max from all the columns provided. Notice if you 
+        want to extract mean, then the column must be list of numbers.
     drop_original
         Whether to drop columns in cols
 
@@ -1145,6 +1234,8 @@ def extract_list_features(
             exprs.append(pl.col(cols).list.first().suffix("_first"))
         elif e == "last":
             exprs.append(pl.col(cols).list.last().suffix("_last"))
+        elif e == "sum":
+            exprs.append(pl.col(cols).list.sum().suffix("_sum"))
         else:
             logger.info(f"Found {e} in extract, but it is not a valid ListExtract value. Ignored.")
 
