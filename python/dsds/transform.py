@@ -273,6 +273,11 @@ def scale(
         ).collect().row(0)
         exprs = [(pl.col(c) - quantiles[len(cols) + i])/((quantiles[2*len(cols) + i] - quantiles[i])) 
                  for i,c in enumerate(cols)]
+    elif strategy == "max_abs":
+        max_abs = df.lazy().select(
+            pl.col(cols).abs().max().suffix("_maxabs")
+        ).collect().row(0)
+        exprs = [pl.col(c)/max_abs[i] for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
         exprs = [pl.col(cols) / const]
     else:
