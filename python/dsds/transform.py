@@ -43,7 +43,6 @@ def with_columns(func: WithColumnsFunc):
     in the blueprint if df is lazy. 
     '''
     def wrapper(*args, **kwargs) -> PolarsFrame:
-
         df, exprs = func(*args, **kwargs)
         if isinstance(df, pl.LazyFrame):
             output = df.blueprint.with_columns(exprs)

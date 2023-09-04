@@ -41,6 +41,29 @@ def type_checker(df:PolarsFrame, cols:list[str], expected_type:SimpleDtypes, cal
         raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
     return True
 
+def select(
+    df:PolarsFrame
+    , selector: Union[list[str], list[pl.Expr]]
+    , persist: bool = True
+) -> PolarsFrame:
+    '''
+    A select wrapper that makes it pipeline compatible.
+
+    Set persist = True so that this will be remembered by the blueprint.
+    '''
+    if isinstance(df, pl.LazyFrame) and persist:
+        return df.blueprint.select(selector)
+    return df.select(selector)
+
+def drop(df:PolarsFrame, to_drop:list[str], persist:bool=True) -> PolarsFrame:
+    '''
+    A pipeline compatible way to drop the given columns, which will be remembered by the blueprint
+    by default.
+    '''
+    if isinstance(df, pl.LazyFrame) and persist:
+        return df.blueprint.drop(to_drop)
+    return df.drop(to_drop)
+
 def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
     '''Returns numerical columns except those in exclude.'''
     if exclude is None:
@@ -79,11 +102,11 @@ def get_cols_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> list[st
         return df.select(cs.matches(pattern=pattern)).columns
 
 
-def rename(df:PolarsFrame, rename_dict:dict[str, str], persist:bool=False) -> PolarsFrame:
+def rename(df:PolarsFrame, rename_dict:dict[str, str]) -> PolarsFrame:
     '''
-    A wrapper function for df.rename() so that it works with pipeline.
+    Renames the columns in df according to rename_dicts.
 
-    Set persist = True so that this will be remembered by the blueprint.
+    This is remembered by the blueprint by default.
     '''
     d = {}
     for k, v in rename_dict.items():
@@ -91,50 +114,29 @@ def rename(df:PolarsFrame, rename_dict:dict[str, str], persist:bool=False) -> Po
             d[k] = v
         else:
             logger.warn(f"Attempting to rename {k}, which does not exist in df. Ignored.")
-    output = df.rename(d)
-    if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.add_func(df, rename, kwargs = {"rename_dict": d})
-    return output
 
-def lowercase(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
+    exprs = [pl.col(c).alias(d[c]) if c in d else pl.col(c) for c in df.columns]
+    return select(df, exprs)
+
+def lowercase(df:PolarsFrame) -> PolarsFrame:
     '''
     Lowercases all column names.
 
-    Set persist = True if this needs to be remembered by the blueprint.
+    This is remembered by the blueprint by default.
     '''
-    return rename(df, {c: c.lower() for c in df.columns}, persist)
+    return rename(df, {c: c.lower() for c in df.columns})
 
-def snake_case(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
-    '''
-    Turn all camel case column names into snake case.
+# def camel_to_snake(df:PolarsFrame) -> PolarsFrame:
+#     '''
+#     Turn all camel case column names into snake case. This might 
 
-    Set persist = True if this needs to be remembered by the blueprint.
-    '''
-    pat = re.compile(r"(?<!^)(?=[A-Z])")
-    return rename(df, {c: pat.sub('_', c).lower() for c in df.columns}, persist)
-
-def select(
-    df:PolarsFrame
-    , selector: Union[list[str], cs._selector_proxy_]
-    , persist: bool = True
-) -> PolarsFrame:
-    '''
-    A select wrapper that makes it pipeline compatible.
-
-    Set persist = True so that this will be remembered by the blueprint.
-    '''
-    if isinstance(df, pl.LazyFrame) and persist:
-        return df.blueprint.select(selector)
-    return df.select(selector)
-
-def drop(df:PolarsFrame, to_drop:list[str], persist:bool=True) -> PolarsFrame:
-    '''
-    A pipeline compatible way to drop the given columns, which will be remembered by the blueprint
-    by default.
-    '''
-    if isinstance(df, pl.LazyFrame) and persist:
-        return df.blueprint.drop(to_drop)
-    return df.drop(to_drop)
+#     This is remembered by the blueprint by default.
+#     '''
+#     pat = re.compile(r"(?<!^)(?=[A-Z])")
+#     pat2 = re.compile(r"(\s|_)")
+#     exprs = [pl.col(c).alias(pat.sub("_", c).lower()) if pat.search(c) and pat2.search(c) is None else pl.col(c) 
+#              for c in df.columns]
+#     return select(df, exprs)
 
 def drop_nulls(
     df:PolarsFrame
