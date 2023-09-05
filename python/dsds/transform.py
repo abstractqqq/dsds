@@ -308,6 +308,34 @@ def custom_transform(
     return df.with_columns(exprs)
 
 @with_columns
+def binarize(
+    df: PolarsFrame
+    , rules: dict[str, pl.Expr]
+) -> PolarsFrame:
+    '''
+    Binarize the columns according to the rules given. E.g. if rules = {"c": pl.col(c) > 25}, then
+    values in column c which are > 25 will be mapped to 1 and 0 otherwise.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    rules
+        Dict with keys = column names, and value = some boolean condition given as polars expression
+        for the column
+    '''
+    one = pl.lit(1, dtype=pl.UInt8)
+    zero = pl.lit(0, dtype=pl.UInt8)
+    exprs = [
+        pl.when(cond).then(one).otherwise(zero).alias(c)
+        for c, cond in rules.items()
+    ]
+    return df, exprs
+
+
+@with_columns
 def merge_infreq_categories(
     df: PolarsFrame
     , cols: list[str]
