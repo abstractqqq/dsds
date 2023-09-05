@@ -72,7 +72,8 @@ def impute(
     df
         Either a lazy or eager Polars DataFrame
     cols
-        The columns to impute
+        The columns to impute. Please make sure the columns are either numeric or string columns. If a 
+        column is string, then only mode makes sense.
     strategy
         One of 'median', 'mean', 'const', 'mode' or 'coalease'. If 'const', the const argument 
         must be provided. Note that if strategy is mode and if two values occur the same number 
@@ -138,7 +139,7 @@ def hot_deck_impute(
 ) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Imputes column c according to the segment it is in. Performance will hurt if columns in group_by has 
-    too many segments.
+    too many segments (combinations).
     
     This will be remembered by blueprint by default.
 
@@ -147,7 +148,8 @@ def hot_deck_impute(
     df
         Either a lazy or eager Polars DataFrame
     c
-        Column to be imputed name
+        Column to be imputed name. Please make sure c is either a numeric or string column. If c is
+        string, then only mode makes sense.
     group_by
         Computes value to impute with according to the segments.
     strategy
@@ -333,7 +335,6 @@ def binarize(
         for c, cond in rules.items()
     ]
     return df, exprs
-
 
 @with_columns
 def merge_infreq_categories(
@@ -699,10 +700,36 @@ def sqrt_transform(
     cols
         Must be explicitly provided and should all be numeric columns
     suffix
-        The suffix to add to the transformed columns. If you wish to drop the original ones, set suffix = "".
+        The suffix to add to the transformed columns. If you wish to replace the original ones, set suffix = "".
     '''
     _ = type_checker(df, cols, "numeric", "sqrt_transform")
     exprs = [pl.col(cols).sqrt().suffix(suffix)]
+    return df, exprs
+
+@with_columns
+def cbrt_transform(
+    df: PolarsFrame
+    , cols: list[str]
+    , *
+    , suffix: str = "_cbrt"
+) -> PolarsFrame:
+    '''
+    Performs cube root transform for the given columns. This has the advantage of preserving the sign of 
+    numbers.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Must be explicitly provided and should all be numeric columns
+    suffix
+        The suffix to add to the transformed columns. If you wish to replace the original ones, set suffix = "".
+    '''
+    _ = type_checker(df, cols, "numeric", "cbrt_transform")
+    exprs = [pl.col(cols).cbrt().suffix(suffix)]
     return df, exprs
 
 @with_columns
