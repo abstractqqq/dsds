@@ -179,17 +179,14 @@ def order_by(
     , by: Union[str, list[str]]
     , descending:bool = False
     , nulls_last:bool = False
-    , persist: bool = False
 ) -> PolarsFrame:
     '''
     A wrapper function for Polars' sort so that it can be used in pipeline.
-
-    Set persist = True so that this will be remembered by the blueprint.
     '''
-    output = df.sort(by=by, descending=descending, nulls_last=nulls_last)
-    if isinstance(df, pl.LazyFrame) and persist:
-        return output.blueprint.add_func(df, order_by, {"by":by,"descending":descending, "nulls_last":nulls_last})
-    return output
+    return df.sort(by=by, descending=descending, nulls_last=nulls_last)
+    # if isinstance(df, pl.LazyFrame) and persist:
+    #     return output.blueprint.add_func(df, order_by, {"by":by,"descending":descending, "nulls_last":nulls_last})
+    # return output
 
 def check_binary_target(df:PolarsFrame, target:str) -> bool:
     '''
@@ -233,8 +230,6 @@ def format_categorical_target(
         Either a lazy or an eager Polars dataframe
     target
         Name of target column
-    persist
-        Wheter or not this will be persisted by the blueprint
 
     Example
     -------
@@ -800,11 +795,61 @@ def remove_dates(df:PolarsFrame) -> PolarsFrame:
     Removes all date columns from dataframe. This algorithm will try to infer if string column is date. 
     This will be remembered by blueprint by default.
     '''
-
-    remove_cols = infer_dates(df) 
+    remove_cols = infer_dates(df)
     logger.info(f"The following columns are dropped because they are dates. {remove_cols}.\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     return drop(df, remove_cols)
+
+def infer_infreq_categories(
+    df: PolarsFrame,
+    cols: Optional[list[str]] = None,
+    min_count: Optional[int] = 10,
+    min_frac: Optional[float] = None
+) -> pl.DataFrame:
+    '''
+    Infers infrequent categories in the string columns, either based on count or percentage. This will
+    return a dataframe with two columns: column and lists of infreq categories found.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If not provided, will use all string columns
+    min_count
+        Define a category to be infrequent if it occurs less than min_count. This defaults to 10 if 
+        both min_count and min_frac are None.
+    min_frac
+        Define category to be infrequent if it occurs less than this percentage of times. If both 
+        min_count and min_frac are set, min_frac takes priority
+    '''
+    if cols is None:
+        str_cols = get_string_cols(df)
+    else:
+        _ = type_checker(df, cols, "string", "infer_infreq_categories")
+        str_cols = cols
+
+    if min_frac is None:
+        if min_count is None:
+            comp = pl.col("count") < 10
+            reason = "count < 10"
+        else:
+            comp = pl.col("count") < min_count
+            reason = f"count < {min_count}"
+    else:
+        comp = pl.col("count") < min_frac * pl.col("count").sum()
+        reason = f"pct < {min_frac}"
+
+    dfs = (
+        df.lazy().group_by(c).count().filter(
+            comp
+        ).select(
+            pl.lit(c).alias("column"),
+            pl.col(c).implode().alias(reason)
+        )
+        for c in str_cols
+    )
+    return pl.concat(pl.collect_all(dfs))
 
 def infer_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> list[str]:
     '''

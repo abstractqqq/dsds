@@ -15,7 +15,8 @@ from .type_alias import (
 )
 from .prescreen import (
     type_checker, 
-    infer_nums_from_str
+    infer_nums_from_str,
+    infer_infreq_categories
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
@@ -307,7 +308,7 @@ def custom_transform(
     return df.with_columns(exprs)
 
 @with_columns
-def merge_infreq_values(
+def merge_infreq_categories(
     df: PolarsFrame
     , cols: list[str]
     , *
@@ -317,7 +318,7 @@ def merge_infreq_values(
 ) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Combines infrequent categories in string columns together. Note this does not guarantee similar
-    categories should be combined. This method is purely based on frequency.
+    categories should be combined. If there is only 1 infrequent category, nothing will be done.
 
     This will be remembered by blueprint by default.
 
@@ -378,25 +379,44 @@ def merge_infreq_values(
     │ c   ┆ d     │
     └─────┴───────┘
     '''
-    _ = type_checker(df, cols, "string", "merge_infreq_values")
-    if min_frac is None:
-        if min_count is None:
-            comp = pl.col("count") < 10
-        else:
-            comp = pl.col("count") < min_count
-    else:
-        comp = pl.col("count")/pl.col("count").sum() < min_frac
+    _ = type_checker(df, cols, "string", "merge_infreq_categories")
+    result = infer_infreq_categories(df, cols, min_count=min_count, min_frac=min_frac)
 
     exprs = []
-    for c in cols:
-        infreq = df.lazy().group_by(c).count().filter(
-            comp
-        ).select(pl.col(c)).collect()[c]
-        value = separator.join(infreq)
-        exprs.append(
-            pl.when(pl.col(c).is_in(infreq)).then(value).otherwise(pl.col(c)).alias(c)
-        )
+    for c, infreq in zip(*result.get_columns()):
+        if len(infreq) > 1:
+            value = separator.join(infreq)
+            exprs.append(
+                pl.when(pl.col(c).is_in(infreq)).then(value).otherwise(pl.col(c)).alias(c)
+            )
     
+    return df, exprs
+
+@with_columns
+def merge_categories(
+    df: PolarsFrame
+    , merge_what: dict[str, list[str]]
+    , *
+    , separator: str = "|"
+) -> tuple[PolarsFrame, list[pl.Expr]]:
+    '''
+    Merge the categories for the columns.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    merge_what
+        Dict where keys represents columns, and values are list of categories to merge.
+    separator
+        The separator that will be used to construct combined categories
+    '''
+    exprs = [
+        pl.when(pl.col(c).is_in(cats)).then(separator.join(cats)).otherwise(pl.col(c)).alias(c)
+        for c, cats in merge_what.items()
+    ]
     return df, exprs
 
 @with_columns
