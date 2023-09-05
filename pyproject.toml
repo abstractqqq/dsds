@@ -37,8 +37,13 @@ dependencies = [
     "typing_extensions >= 4.0.1"
 ] # Drop tqdm?
 
+
 [project.optional-dependencies]
-scikit-learn = ["scikit-learn"]
+dev = [
+    "pytest >= 7.4.1",
+    "scikit-learn >= 1.2.0"
+]
+scikit-learn = ["scikit-learn >= 1.2.0"]
 xgboost = ["xgboost"]
 lightgbm = ["lightgbm"]
 # nltk = ["nltk"]

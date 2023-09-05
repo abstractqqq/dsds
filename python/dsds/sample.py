@@ -48,7 +48,6 @@ def lazy_sample(
             .set_sorted("row_nr")\
             .filter(pl.col("row_nr") < pl.col("row_nr").max() * frac)\
             .select(df.columns)
-
     else:
         output = df.with_columns(pl.all().shuffle(seed=seed)).with_row_count()\
             .set_sorted("row_nr")\

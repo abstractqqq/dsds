@@ -47,19 +47,6 @@ import math
 logger = logging.getLogger(__name__)
 
 
-def feature_selector(
-    func: Callable
-    , target: str
-    , dtype: Union[SimpleDtypes, list[SimpleDtypes]]
-    , top_k: int
-    , /
-    , **kwargs
-) -> list[str]:
-    # todo()!
-    # A generic method that will replace all method_selectors in the future
-    # Then I can use functool's partials to create alias for wrapped selectors.
-    pass 
-
 def corr(
     df: PolarsFrame
     , target: str

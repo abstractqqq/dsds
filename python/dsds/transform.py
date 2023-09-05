@@ -129,17 +129,33 @@ def impute_nan(
              for c in cols]
     return df, exprs
 
+def _get_agg_expr(c:str, strategy:SimpleImputeStrategy) -> pl.Expr:
+    if strategy in ("mean", "avg"):
+        agg = pl.col(c).mean().alias(strategy)
+    elif strategy == "median":
+        agg = pl.col(c).median().alias(strategy)
+    elif strategy == "max":
+        agg = pl.col(c).max().alias(strategy)
+    elif strategy == "min":
+        agg = pl.col(c).min().alias(strategy)
+    elif strategy == ("mode", "most_frequent"):
+        agg = pl.col(c).mode().first().alias(strategy)
+    else:
+        raise TypeError(f"Unknown hot deck imputation strategy: {strategy}")
+    return agg
+
 @with_columns
 def hot_deck_impute(
     df: PolarsFrame
-    , c: str
+    , cols: list[str]
     , group_by: list[str]
     , *
     , strategy:HotDeckImputeStrategy = 'mean'
 ) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Imputes column c according to the segment it is in. Performance will hurt if columns in group_by has 
-    too many segments (combinations).
+    too many segments (combinations). Note that cols shouldn't have any column in common with columns in 
+    group_by.
     
     This will be remembered by blueprint by default.
 
@@ -147,11 +163,11 @@ def hot_deck_impute(
     ----------
     df
         Either a lazy or eager Polars DataFrame
-    c
-        Column to be imputed name. Please make sure c is either a numeric or string column. If c is
+    cols
+        Columns to be imputed. Please make sure these are either numeric or string columns. If column is
         string, then only mode makes sense.
     group_by
-        Computes value to impute with according to the segments.
+        Computes value to impute with according to the segments in these columns.
     strategy
         One of ['mean', 'avg', 'median', 'mode', 'most_frequent', 'min', 'max'], which can be
         computed as aggregated stats.
@@ -163,7 +179,7 @@ def hot_deck_impute(
     ...     "b": ["cat", "cat", "cat", "dog", "dog", "dog"],
     ...     "c": [0,0,0,0,1,1]
     ... })
-    >>> print(t.hot_deck_impute(df, "a", group_by=["b", "c"], strategy="mean"))
+    >>> print(t.hot_deck_impute(df, ["a"], group_by=["b", "c"], strategy="mean"))
     shape: (6, 3)
     ┌─────┬─────┬─────┐
     │ a   ┆ b   ┆ c   │
@@ -178,30 +194,27 @@ def hot_deck_impute(
     │ 4.0 ┆ dog ┆ 1   │
     └─────┴─────┴─────┘
     '''
-    alias = c + "_" + strategy
-    if strategy in ("mean", "avg"):
-        agg = pl.col(c).mean().alias(alias)
-    elif strategy == "median":
-        agg = pl.col(c).median().alias(alias)
-    elif strategy == "max":
-        agg = pl.col(c).max().alias(alias)
-    elif strategy == "min":
-        agg = pl.col(c).min().alias(alias)
-    elif strategy == ("mode", "most_frequent"):
-        agg = pl.col(c).mode().first().alias(alias)
-    else:
-        raise TypeError(f"Unknown hot deck imputation strategy: {strategy}")
+    for c in cols:
+        if c in group_by:
+            raise ValueError(f"Columns in cols should not appear in group_by. Found {c} in both.")
 
-    ref = df.lazy().group_by(group_by).agg(agg).collect()
-    expr = pl.col(c)
-    for row_dict in ref.iter_rows(named=True):
-        impute = row_dict.pop(alias)
-        expr = pl.when(pl.col(c).is_null().and_(
-            *(pl.col(k) == pl.lit(v) for k,v in row_dict.items())
-        )).then(impute).otherwise(expr)
+    references = (
+        df.lazy().group_by(group_by).agg(_get_agg_expr(c, strategy))
+        for c in cols
+    )
+    dfs = pl.collect_all(references)
+    exprs = []
+    for c, ref in zip(cols, dfs):
+        expr = pl.col(c)
+        for row_dict in ref.iter_rows(named=True):
+            impute = row_dict.pop(strategy)
+            expr = pl.when(pl.col(c).is_null().and_(
+                *(pl.col(k) == pl.lit(v) for k,v in row_dict.items())
+            )).then(impute).otherwise(expr)
+        expr = expr.alias(c)
+        exprs.append(expr)
 
-    expr = expr.alias(c)
-    return df, [expr]
+    return df, exprs
 
 @with_columns
 def coalesce(
