@@ -14,13 +14,11 @@ if sys.version_info >= (3, 10):
     P = ParamSpec('P')
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[Concatenate[PolarsFrame, P], PolarsFrame]
-    WithColumnsFunc = Callable[Concatenate[PolarsFrame, P], tuple[PolarsFrame, list[pl.Expr]]]
 
 else: # 3.9
     from typing_extensions import TypeAlias
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[..., PolarsFrame]
-    WithColumnsFunc = Callable[..., tuple[PolarsFrame, list[pl.Expr]]]
 
 import os
 import numpy as np

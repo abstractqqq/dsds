@@ -1223,8 +1223,8 @@ def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     temp = df.lazy().select(
         expr.str.count_match("\d*\.?\d+").mean()
     ).collect()
-    # On average, about 1 occurrence of number in the values.
-    return [c for c, avg in zip(temp.columns, temp.row(0)) if avg <= 1 and avg >= 0.95]
+    # On average, more than 1 occurrence of number in the values.
+    return [c for c, avg in zip(temp.columns, temp.row(0)) if avg >= 0.95]
 
 def infer_coordinates(df:PolarsFrame):
     pass

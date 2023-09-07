@@ -11,12 +11,13 @@ from .type_alias import (
     , StrExtract
     , HorizontalExtract
     , ZeroOneCombineStrategy
-    , WithColumnsFunc
+    , POLARS_NUMERICAL_TYPES
 )
 from .prescreen import (
     type_checker, 
     infer_nums_from_str,
-    infer_infreq_categories
+    infer_infreq_categories,
+    get_string_cols
 )
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
@@ -37,31 +38,20 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
-def with_columns(func: WithColumnsFunc):
-    '''
-    A convenience function used as a decorator for functions that has return type
-    (PolarsFrame, list[pl.Expr]). It will automatically dump the list of expressions 
-    in the blueprint if df is lazy. 
-    '''
-    def wrapper(*args, **kwargs) -> PolarsFrame:
-        df, exprs = func(*args, **kwargs)
-        if isinstance(df, pl.LazyFrame):
-            output = df.blueprint.with_columns(exprs)
-        else:
-            output = df.with_columns(exprs)
 
-        return output
-    
-    return wrapper
+def _dsds_with_columns(df:PolarsFrame, exprs:list[pl.Expr]) -> PolarsFrame:
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs)
+    else:
+        return df.with_columns(exprs)
 
-@with_columns
 def impute(
     df:PolarsFrame
     , cols:list[str]
     , *
     , strategy:SimpleImputeStrategy = 'median'
     , const:float = 1.
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Impute the given columns with the given strategy.
 
@@ -99,15 +89,14 @@ def impute(
     else:
         raise TypeError(f"Unknown imputation strategy: {strategy}")
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def impute_nan(
     df: PolarsFrame
     , cols: list[str]
     , *
     , by: Optional[float] = None
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Maps all NaN or infinite values to the given value.
     
@@ -127,7 +116,8 @@ def impute_nan(
     _ = type_checker(df, cols, "numeric", "impute_nan")
     exprs = [pl.when((pl.col(c).is_infinite()) | pl.col(c).is_nan()).then(by).otherwise(pl.col(c)).alias(c) 
              for c in cols]
-    return df, exprs
+    
+    return _dsds_with_columns(df, exprs)
 
 def _get_agg_expr(c:str, strategy:SimpleImputeStrategy) -> pl.Expr:
     if strategy in ("mean", "avg"):
@@ -144,14 +134,13 @@ def _get_agg_expr(c:str, strategy:SimpleImputeStrategy) -> pl.Expr:
         raise TypeError(f"Unknown hot deck imputation strategy: {strategy}")
     return agg
 
-@with_columns
 def hot_deck_impute(
     df: PolarsFrame
     , cols: list[str]
     , group_by: list[str]
     , *
     , strategy:HotDeckImputeStrategy = 'mean'
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Imputes column c according to the segment it is in. Performance will hurt if columns in group_by has 
     too many segments (combinations). Note that cols shouldn't have any column in common with columns in 
@@ -214,14 +203,13 @@ def hot_deck_impute(
         expr = expr.alias(c)
         exprs.append(expr)
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def coalesce(
     df: PolarsFrame
     , exprs: list[pl.Expr]
     , new_col_name: str
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Coaleases using the given expressions in exprs.
 
@@ -236,10 +224,8 @@ def coalesce(
     new_col_name
         Name of the new coaleased column
     '''
-    expr = pl.coalesce(exprs).alias(new_col_name)
-    return df, [expr]
+    return _dsds_with_columns(df, [pl.coalesce(exprs).alias(new_col_name)])
 
-@with_columns
 def scale(
     df:PolarsFrame
     , cols:list[str]
@@ -247,7 +233,7 @@ def scale(
     , strategy:ScalingStrategy="standard"
     , const:float = 1.0
     , qcuts:tuple[float, float, float] = (0.25, 0.5, 0.75)
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Scale the given columns with the given strategy.
 
@@ -298,7 +284,7 @@ def scale(
     else:
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
 def custom_transform(
     df: PolarsFrame
@@ -318,11 +304,8 @@ def custom_transform(
     exprs
         List of Polars expressions
     '''
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def binarize(
     df: PolarsFrame
     , rules: dict[str, pl.Expr]
@@ -338,8 +321,8 @@ def binarize(
     df
         Either a lazy or eager Polars DataFrame
     rules
-        Dict with keys = column names, and value = some boolean condition given as polars expression
-        for the column
+        Dict with keys representing column names, and value representing some boolean condition 
+        given as polars expression
     '''
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
@@ -347,9 +330,8 @@ def binarize(
         pl.when(cond).then(one).otherwise(zero).alias(c)
         for c, cond in rules.items()
     ]
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def merge_infreq_categories(
     df: PolarsFrame
     , cols: list[str]
@@ -357,7 +339,7 @@ def merge_infreq_categories(
     , min_count: Optional[int] = 10
     , min_frac: Optional[float] = None
     , separator: str = '|'
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Combines infrequent categories in string columns together. Note this does not guarantee similar
     categories should be combined. If there is only 1 infrequent category, nothing will be done.
@@ -432,15 +414,14 @@ def merge_infreq_categories(
                 pl.when(pl.col(c).is_in(infreq)).then(value).otherwise(pl.col(c)).alias(c)
             )
     
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def merge_categories(
     df: PolarsFrame
     , merge_what: dict[str, list[str]]
     , *
     , separator: str = "|"
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Merge the categories for the columns.
 
@@ -459,16 +440,15 @@ def merge_categories(
         pl.when(pl.col(c).is_in(cats)).then(separator.join(cats)).otherwise(pl.col(c)).alias(c)
         for c, cats in merge_what.items()
     ]
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def combine_zero_ones(
     df: PolarsFrame
     , cols: list[str]
     , new_name: str
     , *
     , rule: ZeroOneCombineStrategy = "union"
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Take columns that are all binary 0, 1 columns, combine them horizontally according to the rule. 
     Please make sure the columns only contain binary 0s and 1s. Depending on the rule, this can be 
@@ -532,15 +512,14 @@ def combine_zero_ones(
     else:
         raise TypeError(f"The input `{rule}` is not a valid ZeroOneCombineStrategy.")
 
-    return df, [expr]
+    return _dsds_with_columns(df, [expr])
 
-@with_columns
 def power_transform(
     df: PolarsFrame
     , cols: list[str]
     , *
     , strategy: PowerTransformStrategy = "yeo_johnson"
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Performs power transform on the numerical columns. This will skip null values in the columns. If strategy is
     box_cox, all values in cols must be positive.
@@ -594,7 +573,7 @@ def power_transform(
         raise TypeError(f"The input strategy {strategy} is not a valid strategy. Valid strategies are: yeo_johnson "
                         "or box_cox")
     
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
 def normalize(
     df: PolarsFrame
@@ -615,7 +594,6 @@ def normalize(
     _ = type_checker(df, cols, "numeric", "normalize")
     return df.with_columns(pl.col(c)/pl.col(c).sum() for c in cols)
 
-@with_columns
 def clip(
     df: PolarsFrame
     , cols: list[str]
@@ -653,9 +631,8 @@ def clip(
     else:
         raise ValueError("At least one of min_cap and max_cap should be provided.")
     
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def log_transform(
     df: PolarsFrame
     , cols:list[str]
@@ -691,15 +668,14 @@ def log_transform(
         exprs = [pl.col(cols).log1p().suffix(suffix)]
     else:
         exprs = [pl.col(cols).log(base).suffix(suffix)]
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def sqrt_transform(
     df: PolarsFrame
     , cols: list[str]
     , *
     , suffix: str = "_sqrt"
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Performs classical square root transform for the given columns. Negative numbers will be mapped to
     NaN.
@@ -716,10 +692,8 @@ def sqrt_transform(
         The suffix to add to the transformed columns. If you wish to replace the original ones, set suffix = "".
     '''
     _ = type_checker(df, cols, "numeric", "sqrt_transform")
-    exprs = [pl.col(cols).sqrt().suffix(suffix)]
-    return df, exprs
+    return _dsds_with_columns(df, [pl.col(cols).sqrt().suffix(suffix)])
 
-@with_columns
 def cbrt_transform(
     df: PolarsFrame
     , cols: list[str]
@@ -742,10 +716,8 @@ def cbrt_transform(
         The suffix to add to the transformed columns. If you wish to replace the original ones, set suffix = "".
     '''
     _ = type_checker(df, cols, "numeric", "cbrt_transform")
-    exprs = [pl.col(cols).cbrt().suffix(suffix)]
-    return df, exprs
+    return _dsds_with_columns(df, [pl.col(cols).cbrt().suffix(suffix)])
 
-@with_columns
 def linear_transform(
     df: PolarsFrame
     , cols: list[str]
@@ -795,16 +767,15 @@ def linear_transform(
         for c, a, b in zip(cols, coeff_list, const_list)
     ]
     
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def extract_dt_features(
     df: PolarsFrame
     , cols: list[str]
     , *
     , extract: Union[DateExtract, list[DateExtract]] = ["year", "quarter", "month"]
     , sunday_first: bool = False
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Extracts additional date related features from existing date/datetime columns.
 
@@ -887,15 +858,14 @@ def extract_dt_features(
         else:
             logger.info(f"Found {e} in extract, but it is not a valid DateExtract value. Ignored.")
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def extract_horizontally(
     df:PolarsFrame
     , cols: list[str]
     , *
     , extract: Union[HorizontalExtract, list[HorizontalExtract]] = ["min", "max"]
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Extract features horizontally across a few columns.
 
@@ -952,16 +922,15 @@ def extract_horizontally(
         else:
             logger.info(f"Found {e} in extract, but it is not a valid HorizontalExtract value. Ignored.")
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def extract_word_count(
     df: PolarsFrame
     , cols: Union[str, list[str]]
     , *
     , words: list[str]
     , lower: bool = True
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Extract word counts from the cols.
 
@@ -1011,15 +980,14 @@ def extract_word_count(
         base = base.str.to_lowercase()
     
     exprs.extend(base.str.count_match(w).suffix(f"_count_{w}") for w in words)
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def str_to_list(
     df: PolarsFrame
     , cols: list[str]
     , *
     , inner: Optional[pl.DataType] = None
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Converts string columns like ['[1,2,3]', '[2,3,4]', ...] into columns of list type.
 
@@ -1036,21 +1004,16 @@ def str_to_list(
         typically want to do this to conserve memory, e.g. Polars may choose f64 over f32 but you may know f32 
         is enough. But note that if inner is provided, then all columns will be casted to the same inner dtype.
     '''
-    
     _ = type_checker(df, cols, "string", "str_to_list")
-    exprs = [
-        pl.col(c).str.json_extract(dtype = inner) for c in cols 
-    ]
-    return df, exprs
+    return _dsds_with_columns(df, [pl.col(cols).str.json_extract(dtype = inner)])
 
-@with_columns
 def extract_from_str(
     df: PolarsFrame
     , cols: list[str]
     , *
     , extract: Union[StrExtract, list[StrExtract]]
     , pattern: Optional[str] = None
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Extract data from string columns. For multiple word counts on the same column, see extract_word_count.
     Note that for 'starts_with' and 'ends_with', pattern will be used as a substring instead of a regex pattern.
@@ -1069,9 +1032,6 @@ def extract_from_str(
         ["len", "starts_with"]. If non-"len" extract type is provided, pattern must not be None.
     pattern
         The pattern for every non-"len" extract.
-    use_bool
-        If true, results of "starts_with", "ends_with", and "contains" will be boolean columns instead of binary
-        0s and 1s.
 
     Example
     -------
@@ -1116,18 +1076,19 @@ def extract_from_str(
         else:
             logger.info(f"Found {e} in extract, but it is not a valid StrExtract value. Ignored.")
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def extract_numbers(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
     , *
-    , ignore_comma: bool = True
-    , dtype: pl.DataType = pl.Float64
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+    , ignore_comma: bool = False
+    , join_by: str = ""
+    , dtype: pl.DataType = pl.Utf8   
+) -> PolarsFrame:
     '''
-    Extracts the first number from the given columns. This will always replace the original string.
+    Extracts all numbers from the string column. This will always replace the original string column.
+    This is useful for survey data where strings like "10% to 20%" are common.
 
     This will be remembered by blueprint by default.
 
@@ -1139,31 +1100,51 @@ def extract_numbers(
         If not given, will infer possible numerical columns from string columns. If given, must be all 
         string columns.
     ignore_comma
-        If true, remove the "," in the string before matching for numbers
+        If true, remove the "," in the string before matching for numbers. If you know there won't be 
+        comma, turn this to False can improve performance.
+    join_by
+        If this is not the empty string, then the numbers will be joined by the given string and a new
+        string column will be returned instead of a column of lists of strings.
     dtype
-        A valid Polars numeric type, like pl.Float64, that you want to cast the numbers to.
+        If a Polars numerical data type is given, the list's inner dtype will be cast to this. This takes
+        priority over join_by.
 
     Example
     -------
     >>> import dsds.transform as t
     ... df = pl.DataFrame({
-    ...    # Numerical string columns
-    ...    "a": ["$1,123.23", "$2,221", "$31.23"],
-    ...    "b": ["(1,123.23)", "(2,221)", "(31.23)"], 
-    ...    # Not a numerical string column
-    ...    "c": ["1212@1212", "12312DGAD231", "123!!!"] 
+    ...     "survey":["0% of my time", "1% to 25% of my time", "75% to 99% of my time", 
+    ...             "50% to 74% of my time", "75% to 99% of my time", 
+    ...             "50% to 74% of my time"]
     ... })
-    >>> t.extract_numbers(df) # a, b are turned into a numerical column
-    shape: (3, 3)
-    ┌─────────┬─────────┬──────────────┐
-    │ a       ┆ b       ┆ c            │
-    │ ---     ┆ ---     ┆ ---          │
-    │ f64     ┆ f64     ┆ str          │
-    ╞═════════╪═════════╪══════════════╡
-    │ 1123.23 ┆ 1123.23 ┆ 1212@1212    │
-    │ 2221.0  ┆ 2221.0  ┆ 12312DGAD231 │
-    │ 31.23   ┆ 31.23   ┆ 123!!!       │
-    └─────────┴─────────┴──────────────┘
+    >>> t.extract_numbers(df, ["survey"], join_by="-")
+    shape: (6, 1)
+    ┌────────┐
+    │ survey │
+    │ ---    │
+    │ str    │
+    ╞════════╡
+    │ 0      │
+    │ 1-25   │
+    │ 75-99  │
+    │ 50-74  │
+    │ 75-99  │
+    │ 50-74  │
+    └────────┘
+    >>> t.extract_numbers(df, ["survey"], dtype=pl.UInt16)
+    shape: (6, 1)
+    ┌───────────┐
+    │ survey    │
+    │ ---       │
+    │ list[u16] │
+    ╞═══════════╡
+    │ [0]       │
+    │ [1, 25]   │
+    │ [75, 99]  │
+    │ [50, 74]  │
+    │ [75, 99]  │
+    │ [50, 74]  │
+    └───────────┘
     '''
     if isinstance(cols, list):
         _ = type_checker(df, cols, "string", "extract_numbers")
@@ -1175,17 +1156,143 @@ def extract_numbers(
     if ignore_comma:
         expr = expr.str.replace_all(",", "")
     
-    expr = expr.str.extract("(\d*\.?\d+)").cast(dtype)
-    return df, [expr]
+    expr = expr.str.extract_all("(\d*\.?\d+)")
+    if dtype in POLARS_NUMERICAL_TYPES: # as list of numbers
+        expr = expr.list.eval(pl.element().cast(dtype))
+    else: # as list of strings
+        if join_by != "":
+            expr = expr.list.join(join_by)
 
-@with_columns
+    return _dsds_with_columns(df, [expr])
+
+def extract_first_number(
+    df: PolarsFrame
+    , cols: Optional[list[str]] = None
+    , *
+    , ignore_comma: bool = True
+    , dtype: pl.DataType = pl.Float64
+) -> PolarsFrame:
+    '''
+    Extracts the first number from the given columns. This will always replace the original string column.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        If not given, will infer possible numerical columns from string columns. If given, must be all 
+        string columns.
+    ignore_comma
+        If true, remove the "," in the string before matching for numbers. If you know there won't be 
+        comma, turn this to False can improve performance.
+    dtype
+        A valid Polars numeric type, like pl.Float64, that you want to cast the numbers to.
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "a": ["$1,123.23", "$2,221", "$31.23"],
+    ...     "b": ["(1,123.23)", "(2,221)", "(31.23)"], 
+    ...     "c": ["1212@1212", "12312DGAD231", "123!!!"] 
+    ... })
+    >>> t.extract_first_number(df)
+    shape: (3, 3)
+    ┌─────────┬─────────┬─────────┐
+    │ a       ┆ b       ┆ c       │
+    │ ---     ┆ ---     ┆ ---     │
+    │ f64     ┆ f64     ┆ f64     │
+    ╞═════════╪═════════╪═════════╡
+    │ 1123.23 ┆ 1123.23 ┆ 1212.0  │
+    │ 2221.0  ┆ 2221.0  ┆ 12312.0 │
+    │ 31.23   ┆ 31.23   ┆ 123.0   │
+    └─────────┴─────────┴─────────┘
+    '''
+    if isinstance(cols, list):
+        _ = type_checker(df, cols, "string", "extract_first_number")
+        strs = cols
+    else:
+        strs = infer_nums_from_str(df, ignore_comma)
+
+    expr = pl.col(strs)
+    if ignore_comma:
+        expr = expr.str.replace_all(",", "")
+    
+    expr = expr.str.extract("(\d*\.?\d+)").cast(dtype)
+    return _dsds_with_columns(df, [expr])
+
+def extract_patterns(
+    df: PolarsFrame
+    , pattern: str
+    , cols: list[str]
+    , *
+    , lowercase: bool = False
+    , join_by: str = ""
+) -> PolarsFrame:
+    '''
+    Extracts all matching patterns from the string column. This will always replace the original string column.
+    If you are trying to extract numbers, it is recommended that you use `dsds.transform.extract_numbers` instead.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    pattern
+        Regex pattern
+    cols
+        A list of string columns
+    lowercase
+        If true, lowercase the columns before matching.
+    join_by
+        If this is not the empty string, then the matched patterns will be joined by the given string and a new
+        string column will be returned instead of a column of lists of strings.
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "survey":["0% of my time", "1% to 25% of my time", "75% to 99% of my time", 
+    ...             "50% to 74% of my time", "75% to 99% of my time", 
+    ...             "50% to 74% of my time"]
+    ... })
+    >>> print(t.extract_patterns(df, "(\d*\.?\d+)%", ["survey"], join_by=" to "))
+    shape: (6, 1)
+    ┌────────────┐
+    │ survey     │
+    │ ---        │
+    │ str        │
+    ╞════════════╡
+    │ 0%         │
+    │ 1% to 25%  │
+    │ 75% to 99% │
+    │ 50% to 74% │
+    │ 75% to 99% │
+    │ 50% to 74% │
+    └────────────┘
+    '''
+    _ = type_checker(df, cols, "string", "extract_patterns")
+    strs = cols
+    expr = pl.col(strs)
+    if lowercase:
+        expr = expr.str.to_lowercase()
+
+    expr = expr.str.extract_all(pattern)
+    if join_by != "":
+        expr = expr.list.join(join_by)
+
+    return _dsds_with_columns(df, [expr])
+
 def extract_from_json(
     df: PolarsFrame
     , json_col: str
     , *
     , paths: list[str]
     , dtypes: list[pl.DataType]
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Extract JSON fields from a JSON string column according to the json path.
 
@@ -1227,15 +1334,14 @@ def extract_from_json(
         pl.col(json_col).str.json_path_match(f"$.{p}").cast(t).suffix(f".{p}")
         for p, t in zip(paths, dtypes)
     ]
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def extract_list_features(
     df: PolarsFrame
     , cols: list[str]
     , *
     , extract: Union[ListExtract, list[ListExtract]] = ["min", "max"]
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Extract data from columns that contains lists.
 
@@ -1296,16 +1402,15 @@ def extract_list_features(
         else:
             logger.info(f"Found {e} in extract, but it is not a valid ListExtract value. Ignored.")
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def moving_avgs(
     df:PolarsFrame
     , cols: list[str]
     , *
     , window_sizes:list[int]
     , min_periods: Optional[int] = None,
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Computes moving averages for column c with given window_sizes. Please make sure the dataframe is sorted
     before this. For a pipeline compatible sort, see `dsds.prescreen.order_by`.
@@ -1328,4 +1433,4 @@ def moving_avgs(
     _ = type_checker(df, cols, "numeric", "moving_avgs")
     exprs = [pl.col(cols).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
              for i in window_sizes if i > 1]
-    return df, exprs
+    return _dsds_with_columns(df, exprs)

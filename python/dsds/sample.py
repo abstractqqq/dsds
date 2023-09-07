@@ -6,7 +6,6 @@ from typing import (
 from collections.abc import Iterator
 from .type_alias import PolarsFrame
 from polars.type_aliases import UniqueKeepStrategy
-# from itertools import product
 import polars as pl
 import polars.selectors as cs
 import numpy as np

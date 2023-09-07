@@ -12,7 +12,7 @@ from .type_alias import (
     PolarsFrame
     , MRMRStrategy
     , BinaryModels
-    , SimpleDtypes
+    # , SimpleDtypes
     , CPU_M1
     , clean_strategy_str
     , ClassifModel
@@ -32,7 +32,6 @@ from typing import (
     Optional, 
     Tuple, 
     Union,
-    Callable
 )
 from itertools import combinations
 from tqdm import tqdm

@@ -9,7 +9,7 @@ from .prescreen import (
     , check_binary_target
     , type_checker
 )
-from .transform import with_columns
+from .transform import _dsds_with_columns
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
@@ -20,13 +20,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-@with_columns
+
 def missing_indicator(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
     , include_nan:bool = True
     , suffix: str = "_missing"
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Add one-hot columns for missing values in the given columns.
 
@@ -56,7 +56,7 @@ def missing_indicator(
     else:
         exprs = [pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add]
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
 def one_hot_encode(
     df:PolarsFrame
@@ -168,8 +168,7 @@ def selective_one_hot_encode(
         return df.blueprint.with_columns(exprs).blueprint.drop(str_cols) 
     return df.with_columns(exprs).drop(str_cols) 
 
-@with_columns
-def force_binary(df:PolarsFrame) -> tuple[PolarsFrame, list[pl.Expr]]:
+def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''
     Force every binary column, no matter what data type, into 0s and 1s according to the order of the 
     elements. If a column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
@@ -194,7 +193,7 @@ def force_binary(df:PolarsFrame) -> tuple[PolarsFrame, list[pl.Expr]]:
             pl.when(pl.col(t.name) == u[0]).then(zero).otherwise(one).alias(t.name)
         )
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
 def multicat_one_hot_encode(
     df:PolarsFrame
@@ -307,16 +306,15 @@ def ordinal_auto_encode(
     temp = df.lazy().select(
         pl.col(ordinal_list).unique().implode().list.sort(descending=descending)
     )
-    mappings = []
-    for t in temp.collect().get_columns():
-        uniques:pl.Series = t[0]
-        mapping = dict(zip(uniques, range(len(uniques))))
-        mappings.append(pl.col(t.name).map_dict(mapping))
-    
+    mappings = [
+        # map_dict on sorted uniques
+        pl.col(t.name).map_dict(dict(zip(t[0], range(len(t[0])))))
+        for t in temp.collect().get_columns()
+    ]
     if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(mappings)
+        return df.blueprint.map_dict(mappings)
     return df.with_columns(mappings)
-
+    
 def ordinal_encode(
     df:PolarsFrame
     , ordinal_mapping:dict[str, dict[str,int]]
@@ -395,10 +393,9 @@ def smooth_target_encode(
 
     # probability of target = 1
     p = df.lazy().select(pl.col(target).mean()).collect().item(0,0)
-    mappings = []
 
     # If c has null, null will become a group when we group by.
-    lazy_references:list[pl.LazyFrame] = [
+    lazy_references:list[pl.LazyFrame] = (
         df.lazy().group_by(c).agg(
             pl.count().alias("cnt"),
             pl.col(target).mean().alias("cond_p")
@@ -409,11 +406,11 @@ def smooth_target_encode(
             to = pl.col("alpha") * pl.col("cond_p") + (pl.lit(1) - pl.col("alpha")) * pl.lit(p)
         )
         for c in str_cols
+    )
+    mappings = [
+        pl.col(str_cols[i]).map_dict(dict(zip(*ref.get_columns())), default=default)
+        for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references))
     ]
-    for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references)):
-        mapping = dict(zip(*ref.get_columns()))
-        mappings.append(pl.col(str_cols[i]).map_dict(mapping, default=default))
-
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.map_dict(mappings)
     return df.with_columns(mappings)
@@ -510,17 +507,14 @@ def feature_mapping(
         raise TypeError("The argument `mapping` must be one of the following types: "
                         "dict[str, dict[Any, Any]] | list[pl.Expr] | pl.Expr")
     
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    return df.with_columns(exprs)
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def custom_binning(
     df:PolarsFrame
     , cols:list[str]
     , cuts:list[float]
     , suffix:str = ""
-) -> tuple[PolarsFrame, list[pl.Expr]]:
+) -> PolarsFrame:
     '''
     Bins according to the cuts provided. The same cuts will be applied to all columns in cols.
 
@@ -538,9 +532,8 @@ def custom_binning(
         If you don't want to replace the original columns, you have the option to give the binned column a suffix
     '''
     exprs = [pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix)]
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
-@with_columns
 def fixed_sized_binning(
     df:PolarsFrame
     , cols:list[str]
@@ -549,7 +542,7 @@ def fixed_sized_binning(
 ) -> tuple[PolarsFrame, list[pl.Expr]]:
     '''
     Bins according to fixed interval size. The same cuts will be applied to all columns in cols. Bin will 
-    start from min(feature) to max(feature) + interval with step length = interval.
+    start from min of feature to max of feature + interval with step length = interval.
 
     This will be remembered by blueprint by default.
 
@@ -564,6 +557,7 @@ def fixed_sized_binning(
     suffix
         If you don't want to replace the original columns, you have the option to give the binned column a suffix
     '''
+    _ = type_checker(df, cols, "numeric", "fixed_sized_binning")
     bounds = df.lazy().select(
         pl.col(cols).min().prefix("min:")
         , pl.col(cols).max().prefix("max:")
@@ -574,7 +568,7 @@ def fixed_sized_binning(
         cut = np.arange(bounds[i], bounds[n+i] + interval, step=interval).tolist()
         exprs.append(pl.col(c).cut(cut).cast(pl.Utf8).suffix(suffix))
 
-    return df, exprs
+    return _dsds_with_columns(df, exprs)
 
 def quantile_binning(
     df:PolarsFrame
@@ -691,8 +685,7 @@ def woe_cat_encode(
         if not check_binary_target(df, target):
             raise ValueError("Target is not binary or not properly encoded or contains nulls.")
 
-    mappings = []
-    lazy_references = [
+    lazy_references = (
         df.lazy().group_by(s).agg(
             ev = pl.col(target).sum()
             , nonev = (pl.lit(1) - pl.col(target)).sum()
@@ -706,10 +699,11 @@ def woe_cat_encode(
             , pl.col("woe")
         )
         for s in str_cols
+    )
+    mappings = [
+        pl.col(str_cols[i]).map_dict(dict(zip(*ref.get_columns())), default=default)
+        for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references))
     ]
-    for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references)):
-        mapping = dict(zip(*ref.get_columns()))
-        mappings.append(pl.col(str_cols[i]).map_dict(mapping, default=default))
 
     if isinstance(df, pl.LazyFrame):
         return df.blueprint.map_dict(mappings)
