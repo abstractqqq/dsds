@@ -218,10 +218,43 @@ def logloss(
             * (pl.col("y").dot(pl.col("l")) + pl.col("ny").dot(pl.col("o"))) / len(y_a)
         ).item(0,0)
     
+def psi_str(
+    expected: pl.Series,
+    actual: pl.Series,
+    full_table: bool = False
+) -> pl.DataFrame:
+    
+    if expected.dtype != pl.Utf8 or actual.dtype != pl.Utf8:
+        raise TypeError(f"The input series should both have str type, but are of "
+                        f"({expected.dtype}, {actual.dtype}) dtypes instead.")
+
+    name1 = f"{expected.name}_count"
+    name2 = f"{actual.name}_count"
+    df1 = expected.value_counts(parallel=True).rename({"counts":name1}).lazy()
+    df2 = actual.value_counts(parallel=True).rename({"counts":name2}).lazy()
+    table = (
+        df1.join(df2, left_on=expected.name, right_on=actual.name, how="outer", suffix="_right")
+        .select(
+            pl.col(expected.name),
+            e = (pl.col(name1) / len(expected)).clip_min(0.00001),
+            a = (pl.col(name2 + "_right") / len(actual)).clip_min(0.00001)
+        ).with_columns(
+            (pl.col("e") - pl.col("a")).alias(r"e% - a%"),
+            ln_e_on_a = (pl.col("e")/pl.col("a")).log()
+        ).with_columns(
+            psi = pl.col(r"e% - a%") * pl.col("ln_e_on_a")
+        )
+    )
+    if full_table:
+        return table.sort(expected.name).collect()
+    else:
+        return table.select(pl.col("psi").sum().alias("psi")).collect()
+    
 def psi(
-    new: Union[pl.Series, np.ndarray]
-    , old: Union[pl.Series, np.ndarray]
+    expected: Union[pl.Series, np.ndarray]
+    , actual: Union[pl.Series, np.ndarray]
     , n_bins: int = 10
+    , full_table: bool = False
 ) -> pl.DataFrame:
     '''
     Computes the Population Stability Index of a new continuous variable vs. an old continuous variable by
@@ -235,9 +268,13 @@ def psi(
         Either a Polars Series or a NumPy array that contains the old probabilites
     n_bins
         The number of bins used in the computation. By default it is 10, which means we are using deciles
+    full_table
+        If true, will return the full table used in PSI computation and you can see which bin contributes
+        the most for the change. If false, a 1x1 dataframe will be returned with only the total PSI. If you
+        want a floating point result, do psi(new, old, n_bins, False).item(0,0)
     '''
-    s1 = pl.Series(new, dtype=pl.Float64)
-    s2 = pl.Series(old, dtype=pl.Float64)
+    s1 = pl.Series(expected)
+    s2 = pl.Series(actual)
 
     qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
     s1_cuts:pl.DataFrame = s1.qcut(qcuts, series=False)
@@ -253,15 +290,21 @@ def psi(
     ).agg(
         b = pl.count()
     )
-    return s1_summary.join(s2_summary, on="category").with_columns(
-        a = pl.max_horizontal(pl.col("a"), pl.lit(0.00001))/len(s1),
-        b = pl.max_horizontal(pl.col("b"), pl.lit(0.00001))/len(s2)
+    table = s1_summary.join(s2_summary, on="category").with_columns(
+        e = (pl.col("a")/len(s1)).clip_min(0.00001),
+        a = (pl.col("b")/len(s2)).clip_min(0.00001)
     ).with_columns(
-        a_minus_b = pl.col("a") - pl.col("b"),
-        ln_a_on_b = (pl.col("a")/pl.col("b")).log()
+        (pl.col("e") - pl.col("a")).alias(r"e% - a%"),
+        ln_e_on_a = (pl.col("e")/pl.col("a")).log()
     ).with_columns(
-        psi = pl.col("a_minus_b") * pl.col("ln_a_on_b")
-    ).sort("category").rename({"category":"score_range"}).collect()
+        psi = pl.col(r"e% - a%") * pl.col("ln_e_on_a")
+    )
+    if full_table:
+        return table.sort("category").rename({"category":"range"}).collect()
+    else:
+        return table.select(pl.col("psi").sum().alias("psi")).collect()
+    
+
 
 # def psi_cat(
 #     new: PolarsFrame
