@@ -372,6 +372,10 @@ def dtype_mapping(d: Any) -> SimpleDtypes:
 # Reports                                                                                      #
 #----------------------------------------------------------------------------------------------#
 
+# Numerical Outlier report
+# String Outlier report
+
+
 def corr_report(
     df: PolarsFrame
     , features: list[str]
@@ -541,10 +545,13 @@ def str_meta_report(
     }
 
     if isinstance(words_to_count, list):
-        for w in words_to_count:
-            output["total_"+ w + "_count"] = df_str.select(
-                                                pl.all().str.count_match(w).sum().prefix("wc:")
-                                            ).collect().row(0)
+        dfs = (
+            df_str.select(pl.all().str.count_match(w).sum().prefix("wc:"))
+            for w in words_to_count
+        )
+        wc_frames = pl.collect_all(dfs)
+        for w, frame in zip(words_to_count, wc_frames):
+            output["total_"+w+"_count"] = frame.row(0)
 
     return pl.from_dict(output)
 
@@ -610,7 +617,6 @@ def over_time_report(
         time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
                                    pl.col(time_col).dt.month().alias("month"),
                                    pl.col(time_col).dt.week().alias("week")]
-
         
     group_by = [e.meta.output_name() for e in time_exprs]
     if isinstance(metrics, list):

@@ -582,7 +582,7 @@ def normalize(
     '''
     Normalize the given columns by dividing them with the respective column sum.
 
-    !!! Note this will NOT be remembered by the blueprint !!!
+    !!! Note this is pipeline-compatible but will NOT be remembered by the blueprint !!!
 
     Parameters
     ----------
@@ -1434,3 +1434,24 @@ def moving_avgs(
     exprs = [pl.col(cols).rolling_mean(i, min_periods=min_periods).suffix(f"_ma_{i}") 
              for i in window_sizes if i > 1]
     return _dsds_with_columns(df, exprs)
+
+def as_percentages(
+    df: PolarsFrame,
+    cols: list[str],
+) -> PolarsFrame:
+    '''
+    Transform the columns in cols into percentage changes. This will NOT make sense unless df is sorted
+    beforehand according to some time column. It computes percentage change between current element and 
+    the most-recent non-null element before the current element.
+
+    !!! Note this is pipeline-compatible but will NOT be remembered by the blueprint !!!
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        Numeric columns that you want to compute percentage changes.
+    '''
+    _ = type_checker(df, cols, "numeric", "as_percentages")
+    return df.with_columns(pl.col(cols).pct_change())

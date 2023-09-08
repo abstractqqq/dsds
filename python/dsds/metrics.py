@@ -99,13 +99,16 @@ def _flatten_input(y_actual: np.ndarray, y_predicted:np.ndarray) -> Tuple[np.nda
 
     return y_a, y_p
 
-def get_tp_fp(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
-    , ratio:bool = True
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _tp_fp_frame(
+    y_actual:np.ndarray,
+    y_predicted:np.ndarray,
+    ratio: bool = True
+) -> pl.LazyFrame:
     '''
-    Get true positive and false positive counts at various thresholds.
+    Get true positive and false positive counts at various thresholds. Returns a lazy dataframe 
+    with 3 columns predicted: the predicted count at this threshold, tp: true positive count, and
+    fp: false positive count. If ratio is true, true positive rate and false positive rate will
+    be returned instead. This is meant to be only used internally.
 
     Parameters
     ----------
@@ -114,7 +117,7 @@ def get_tp_fp(
     y_predicted
         Predicted probabilities
     ratio
-        If true, return true positive rate and false positive rate at the threholds; if false return the count
+        Whether to return tpr, fpr instead of tp, fp
     '''
     df = pl.from_records((y_predicted, y_actual), schema=["predicted", "actual"])
     all_positives = pl.lit(np.sum(y_actual))
@@ -123,49 +126,71 @@ def get_tp_fp(
         pl.count().alias("cnt")
         , pl.col("actual").sum().alias("true_positive")
     ).sort("predicted").with_columns(
-        predicted_positive = n - pl.col("cnt").cumsum() + pl.col("cnt")
-        , tp = (all_positives - pl.col("true_positive").cumsum()).shift_and_fill(fill_value=all_positives, periods=1)
+        (pl.lit(n) - pl.col("cnt").cumsum() + pl.col("cnt")).alias("predicted_positive")
+        , (all_positives - pl.col("true_positive").cumsum()).shift_and_fill(fill_value=all_positives, periods=1).alias("tp")
     ).select(
         pl.col("predicted")
         , pl.col("tp")
-        , fp = pl.col("predicted_positive") - pl.col("tp")
-    ).collect()
-
-    # We are relatively sure that y_actual and y_predicted won't have null values.
-    # So we can do temp["tp"].view() to get some more performance. 
-    # But that might confuse users.
-    tp = temp["tp"].to_numpy()
-    fp = temp["fp"].to_numpy()
+        , (pl.col("predicted_positive") - pl.col("tp")).alias("fp")
+    )
     if ratio:
-        return tp/tp[0], fp/fp[0], temp["predicted"].to_numpy()
-    return tp, fp, temp["predicted"].to_numpy()
+        return temp.select(
+            pl.col("predicted"),
+            (pl.col("tp") / pl.col("tp").first()).alias("tpr"),
+            (pl.col("fp") / pl.col("fp").first()).alias("fpr"),
+        )
+    return temp 
 
-def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, check_binary:bool=True) -> float:
+def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, strategy:WeightStrategy="balanced") -> float:
     '''
-    Return the Area Under the Curve metric for the model's predictions.
+    Return the Area Under the Curve metric for the model's predictions. For multiclass classification,
+    this currently only supports aggregated roc auc for each class. Note that in the multiclass case,
+    y_actual should have only one 1 per row.
 
     Parameters
     ----------
     y_actual
-        Actual binary labels
+        Actual binary labels. Should always be array of integers.
     y_predicted
         Predicted probabilities
-    check_binary
-        If true, checks if y_actual is binary
+    strategy
+        Weight strategy for multiclass roc auc. If none, the averange of each individual binary
+        roc auc will be used. If balanced, the score will be balanced according to class counts.
+        Custom is not supported at this moment and will be treated as none.
+
+    Performance
+    -----------
+    For small arrays, length ~ 1000, Scikit-learn's implementation is faster. But for bigger ones, 
+    length > 10k, this has much better performance. If it is multiclass, this is almost always 
+    faster. Please measure on your own device for most accurate information.
     ''' 
     
     # This currently has difference of magnitude 1e-10 from the sklearn implementation, 
     # which is likely caused by sklearn adding zeros to the front? Not 100% sure
-    y_a, y_p = _flatten_input(y_actual, y_predicted)
-    if check_binary:
-        uniques = np.unique(y_a)
-        if uniques.size != 2:
-            raise ValueError("Currently this only supports binary classification.")
-        if not (0 in uniques and 1 in uniques):
-            raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
-
-    tpr, fpr, _ = get_tp_fp(y_a.astype(np.int8, copy=False), y_p, ratio=True)
-    return float(-np.trapz(tpr, fpr))
+    if y_actual.ndim == 1 and y_predicted.ndim == 1:
+        frame = _tp_fp_frame(y_actual.astype(np.int8, copy=False), y_predicted, ratio=True).collect()
+        return float(-np.trapz(frame["tpr"], frame["fpr"]))
+    elif y_actual.ndim == 2 and y_predicted.ndim == 2:
+        if y_actual.shape[1] != y_predicted.shape[1]:
+            raise ValueError("Input shapes must agree for multiclass roc auc. Found "
+                             f"actual has shape {y_actual.shape} and predicted has shape {y_predicted.shape}.")
+        
+        frames = (
+            _tp_fp_frame(y_actual[:, i].ravel(), y_predicted[:, i].ravel())
+            for i in range(y_actual.shape[1])
+        )
+        roc_aucs = np.array([
+            -np.trapz(f["tpr"], f["fpr"]) for f in pl.collect_all(frames)
+        ])
+        if strategy == "balanced":
+            class_count:np.ndarray = np.sum(y_actual, axis = 0) 
+            class_weights:np.ndarray = class_count / np.sum(class_count)
+            return class_weights.dot(roc_aucs)
+        else:
+            return np.mean(roc_aucs)
+    else:
+        raise ValueError("Input shapes must be either both 1 dim or both 2 dim. Found "
+                        f"actual has shape {y_actual.shape} and predicted has shape {y_predicted.shape}.")
 
 def logloss(
     y_actual:np.ndarray
@@ -223,6 +248,20 @@ def psi_str(
     actual: pl.Series,
     full_table: bool = False
 ) -> pl.DataFrame:
+    '''
+    Computes the Population Stability Index of string series.
+
+    Parameters
+    ----------
+    expected
+        Either a Polars Series or a NumPy array that contains the new probabilites
+    actual
+        Either a Polars Series or a NumPy array that contains the old probabilites
+    full_table
+        If true, will return the full table used in PSI computation and you can see which bin contributes
+        the most for the change. If false, a 1x1 dataframe will be returned with only the total PSI. If you
+        want a floating point result, do psi(new, old, n_bins, False).item(0,0)
+    '''
     
     if expected.dtype != pl.Utf8 or actual.dtype != pl.Utf8:
         raise TypeError(f"The input series should both have str type, but are of "
@@ -262,9 +301,9 @@ def psi(
 
     Parameters
     ----------
-    new_score
+    expected
         Either a Polars Series or a NumPy array that contains the new probabilites
-    old_score
+    actual
         Either a Polars Series or a NumPy array that contains the old probabilites
     n_bins
         The number of bins used in the computation. By default it is 10, which means we are using deciles
@@ -303,30 +342,6 @@ def psi(
         return table.sort("category").rename({"category":"range"}).collect()
     else:
         return table.select(pl.col("psi").sum().alias("psi")).collect()
-    
-
-
-# def psi_cat(
-#     new: PolarsFrame
-#     , old: PolarsFrame
-#     , col: str
-# ) -> pl.DataFrame:
-    
-#     _ = type_checker(new, [col], "string", "psi_cat")
-#     _ = type_checker(old, [col], "string", "psi_cat")
-    
-#     s1_summary = new.group_by(col).agg(pl.count().alias("a"))
-#     s2_summary = old.group_by(col).agg(pl.count().alias("b"))
-
-#     return s1_summary.join(s2_summary, on=col, how="left").with_columns(
-#         a = pl.max_horizontal(pl.col("a"), pl.lit(0.00001))/pl.col("a").sum(),
-#         b = pl.max_horizontal(pl.col("b"), pl.lit(0.00001))/pl.col("b").sum()
-#     ).with_columns(
-#         a_minus_b = pl.col("a") - pl.col("b"),
-#         ln_a_on_b = (pl.col("a")/pl.col("b")).log()
-#     ).with_columns(
-#         psi = pl.col("a_minus_b") * pl.col("ln_a_on_b")
-#     ).sort("category").rename({"category":"score_range"}).collect()
 
 def mse(
     y_actual:np.ndarray
@@ -334,7 +349,7 @@ def mse(
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
     '''
-    Computes average mean square error of some regression model. Currently only supports 1d target.
+    Computes average mean square error of some regression model. Currently only supports 1d arrays.
 
     Parameters
     ----------
@@ -513,7 +528,7 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
 
     When both x and y are row-normalized matrices, this is equivalent to x.dot(y.t).
 
-    Performance hint: if rows in x, y are normalized, then you may set normalize to False and this will
+    Performance: if rows in x, y are normalized, then you may set normalize to False and this will
     greatly improve performance. Say x has dimension (m, n) and y has dimension (k, n), this method is much 
     faster than NumPy/Scikit-learn when m >> k. It is advised if m >> k, you should put x as
     the first input. The condition m >> k is quite common, when you have a large corpus x, and want to 
@@ -542,28 +557,6 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
 def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
     return 1 - cosine_similarity(x,y,True)
 
-# def haversine_dist(
-#     df:PolarsFrame
-#     , x_long:str
-#     , x_lat:str
-#     , y_long:str
-#     , y_lat:str
-#     , out_name:str="haversine"
-# ) -> PolarsFrame:
-#     '''
-    
-#     '''
-#     keep = df.columns
-#     return df.with_columns(
-#         sin_lat = ((pl.col(x_lat) - pl.col(y_lat))/2).sin().pow(2),
-#         sin_long = ((pl.col(x_long) - pl.col(y_long))/2).sin().pow(2),
-#         cos = pl.col(x_lat).cos() * pl.col(y_lat).cos()
-#     ).select(
-#         *keep,
-#         pl.lit(2.0, dtype=pl.Float64)
-#         * (pl.col("sin_lat") + pl.col("sin_long") * pl.col("cos")).sqrt().arcsin().alias(out_name)
-#     )
-
 def jaccard_similarity(
     s1:Union[pl.Series,list,np.ndarray]
     , s2:Union[pl.Series,list,np.ndarray]
@@ -588,7 +581,8 @@ def jaccard_similarity(
         If true, null will be counted as common. If false, they will not.
     stem
         If true and inner values are strings, then perform snowball stemming on the words. This is only useful 
-        when the lists are lists of words. All stopwords will also be removed.
+        when the lists are lists of words. All stopwords will also be removed before counting. Set this to False
+        if stemming doesn't matter or if you want better performance.
     parallel
         Whether to hash values in the lists in parallel. Only applies when internal data type is string.
     '''
@@ -616,8 +610,7 @@ def df_jaccard_similarity(
     , append:bool = False
 ) -> pl.DataFrame:
     '''
-    Computes pairwise jaccard similarity between two list columns. Currently this does not support 
-    stemming for columns with list[str] values.
+    Computes pairwise jaccard similarity between two list columns.
 
     Parameters
     ----------
