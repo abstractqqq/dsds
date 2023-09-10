@@ -306,6 +306,34 @@ def custom_transform(
     '''
     return _dsds_with_columns(df, exprs)
 
+def add_dummy(
+    df: PolarsFrame,
+    id_col: str,
+    dummy_col_name: str = "_dummy",
+    period: int = 7
+) -> PolarsFrame:
+    '''
+    Creates a 'random' column that should have no predictive value whatsoever. This is useful in feature 
+    selection. Everything with importance less than this feature should not be selected. Internally, it
+    will hash the given id_col, mod by period, and then randomly shuffle. It is recommended to use a 
+    column that is like an id_col to avoid hashing conflicts.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    id_col
+        Name of the column you want to hash
+    dummy_col_name
+        Name of the new dummy column
+    period
+        The period of the dummy column. It is used to mod the hashed value.
+    '''
+    expr = pl.col(id_col).hash().mod(period).shuffle().alias(dummy_col_name)
+    return _dsds_with_columns(df, [expr])
+
 def binarize(
     df: PolarsFrame
     , rules: dict[str, pl.Expr]
@@ -769,6 +797,56 @@ def linear_transform(
     
     return _dsds_with_columns(df, exprs)
 
+def sine_cosine_transform(
+    df: PolarsFrame
+    , sin_cols: Optional[list[str]] = None
+    , cos_cols: Optional[list[str]] = None
+    , sin_amplitude: float = 1.
+    , cos_amplitude: float = 1.
+    , sin_period: float = 1.
+    , cos_period: float = 1.
+) -> PolarsFrame:
+    '''
+    Applies sin and cos transformations to the corresponding columns. This might be useful 
+    for date/time features.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    sin_cols
+        Columns to apply sine transform. Either sin_cols or cos_cols must be provided.
+    cos_cols
+        Columns to apply cosine transform. Either sin_cols or cos_cols must be provided.
+    sin_amplitude
+        Amplitude for the sine columns
+    cos_amplitude
+        Amplitude for the cosine columns
+    sin_period
+        Period for the sine columns
+    cos_period
+        Period for the cos columns
+    '''
+    if sin_cols is None and cos_cols is None:
+        raise ValueError("Either sin_cols or cos_cols must be not none.")
+    
+    exprs = []
+    if sin_cols:
+        _ = type_checker(df, sin_cols, "numeric", "sine_cosine_transform")
+        exprs.append(
+            (pl.col(sin_cols) * pl.lit(2.*math.pi/sin_period)).sin() * pl.lit(sin_amplitude)
+        )
+    
+    if cos_cols:
+        _ = type_checker(df, cos_cols, "numeric", "sine_cosine_transform")
+        exprs.append(
+            (pl.col(cos_cols) * pl.lit(2.*math.pi/cos_period)).cos() * pl.lit(cos_amplitude)
+        )
+
+    return _dsds_with_columns(df, exprs)
+
 def extract_dt_features(
     df: PolarsFrame
     , cols: list[str]
@@ -1084,7 +1162,7 @@ def extract_numbers(
     , *
     , ignore_comma: bool = False
     , join_by: str = ""
-    , dtype: pl.DataType = pl.Utf8   
+    , dtype: pl.DataType = pl.Utf8
 ) -> PolarsFrame:
     '''
     Extracts all numbers from the string column. This will always replace the original string column.
@@ -1171,6 +1249,7 @@ def extract_first_number(
     , *
     , ignore_comma: bool = True
     , dtype: pl.DataType = pl.Float64
+    , default: Optional[float] = None
 ) -> PolarsFrame:
     '''
     Extracts the first number from the given columns. This will always replace the original string column.
@@ -1189,6 +1268,9 @@ def extract_first_number(
         comma, turn this to False can improve performance.
     dtype
         A valid Polars numeric type, like pl.Float64, that you want to cast the numbers to.
+    default
+        If not none, then will add a fill null step this default value. Note that default will have numerical
+        dtype as provided by dtype.
 
     Example
     -------
@@ -1221,6 +1303,8 @@ def extract_first_number(
         expr = expr.str.replace_all(",", "")
     
     expr = expr.str.extract("(\d*\.?\d+)").cast(dtype)
+    if default is not None:
+        expr = expr.fill_null(pl.lit(default, dtype))
     return _dsds_with_columns(df, [expr])
 
 def extract_patterns(

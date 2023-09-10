@@ -105,8 +105,9 @@ def _tp_fp_frame(
     ratio: bool = True
 ) -> pl.LazyFrame:
     '''
-    Get true positive and false positive counts at various thresholds. Returns a lazy dataframe 
-    with 3 columns predicted: the predicted count at this threshold, tp: true positive count, and
+    Get true positive and false positive counts at various thresholds. The thresholds are determined
+    by the probabilties the model gives. Returns a lazy dataframe with 3 columns predicted: 
+    the predicted count at this threshold, tp: true positive count, and
     fp: false positive count. If ratio is true, true positive rate and false positive rate will
     be returned instead. This is meant to be only used internally.
 
@@ -127,6 +128,7 @@ def _tp_fp_frame(
         , pl.col("actual").sum().alias("true_positive")
     ).sort("predicted").with_columns(
         (pl.lit(n) - pl.col("cnt").cumsum() + pl.col("cnt")).alias("predicted_positive")
+        # , pl.col("true_positive").cumsum().alias("actual_positive")
         , (all_positives - pl.col("true_positive").cumsum()).shift_and_fill(fill_value=all_positives, periods=1).alias("tp")
     ).select(
         pl.col("predicted")
