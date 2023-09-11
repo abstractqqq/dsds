@@ -5,7 +5,6 @@ from .type_alias import (
     , SimpleDtypes
     , OverTimeMetrics
     , ReportIntervals
-    , DateExtract
     , CPU_COUNT
     , POLARS_DATETIME_TYPES
     , POLARS_NUMERICAL_TYPES
@@ -13,7 +12,10 @@ from .type_alias import (
 from .sample import (
     lazy_sample
 )
-from polars.type_aliases import CorrelationMethod
+from polars.type_aliases import (
+    CorrelationMethod
+    , ClosedInterval
+)
 from .blueprint import(
     Blueprint  # noqa: F401
 )
@@ -367,6 +369,71 @@ def dtype_mapping(d: Any) -> SimpleDtypes:
         return "datetime"
     else:
         return "other/unknown"
+    
+def range_counts(
+    df: PolarsFrame,
+    ranges: dict[str, Union[list[Tuple[float, float]], Tuple[float,float]]]
+    , *
+    , closed: ClosedInterval = "both"
+) -> pl.DataFrame:
+    '''
+    Returns the count of values within given ranges and use as new features.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    ranges
+        A dictionary with keys representing columns, and values being a list
+        of ranges to count for this column. E.g. {"c":[(1,100), (200,300)]} means 
+        we are extracting the count of values between 1 and 100 and 200 and 300 for 
+        column c. If there is only one range to extract from c, you may also pass
+        {"c": (100, 200)} instead of a list of ranges.
+    closed
+        Defines the boundary behavior of the interval. One of 'left', 'right', 'both', 'none'
+
+    Example
+    -------
+    >>> import dsds.prescreen as ps
+    ... df = pl.DataFrame({
+    ...     "a":range(100),
+    ...     "b":range(100,200)
+    ... })
+    >>> ps.range_counts(df, ranges={"a":[(1,20), (23,55)], "b":(121, 199)})
+    shape: (3, 4)
+    ┌────────┬───────┬───────┬───────┐
+    │ column ┆ lower ┆ upper ┆ count │
+    │ ---    ┆ ---   ┆ ---   ┆ ---   │
+    │ str    ┆ f32   ┆ f32   ┆ u32   │
+    ╞════════╪═══════╪═══════╪═══════╡
+    │ a      ┆ 1.0   ┆ 20.0  ┆ 20    │
+    │ a      ┆ 23.0  ┆ 55.0  ┆ 33    │
+    │ b      ┆ 121.0 ┆ 199.0 ┆ 79    │
+    └────────┴───────┴───────┴───────┘
+    '''
+    dfs = []
+    for c, rl in ranges.items():
+        if isinstance(rl, list):
+            dfs.extend(
+                df.lazy().select(
+                    pl.lit(c).alias("column"),
+                    pl.lit(r[0], dtype=pl.Float32).alias("lower"),
+                    pl.lit(r[1], dtype=pl.Float32).alias("upper"),
+                    pl.col(c).is_between(lower_bound=r[0], upper_bound=r[1], closed=closed).sum().alias("count")
+                )
+                for r in rl
+            )
+        elif isinstance(rl, Tuple): 
+            dfs.append(
+                df.lazy().select(
+                    pl.lit(c).alias("column"),
+                    pl.lit(rl[0], dtype=pl.Float32).alias("lower"),
+                    pl.lit(rl[1], dtype=pl.Float32).alias("upper"),
+                    pl.col(c).is_between(lower_bound=rl[0], upper_bound=rl[1], closed=closed).sum().alias("count")
+                )
+            )
+        
+    return pl.concat(pl.collect_all(dfs))
 
 #----------------------------------------------------------------------------------------------#
 # Reports                                                                                      #
