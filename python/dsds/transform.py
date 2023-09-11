@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from polars.type_aliases import ClosedInterval
 from .type_alias import (
     PolarsFrame
     , SimpleImputeStrategy
@@ -22,7 +22,7 @@ from .prescreen import (
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 from scipy.stats import (
     yeojohnson_normmax
     , boxcox_normmax
@@ -845,6 +845,44 @@ def sine_cosine_transform(
             (pl.col(cos_cols) * pl.lit(2.*math.pi/cos_period)).cos() * pl.lit(cos_amplitude)
         )
 
+    return _dsds_with_columns(df, exprs)
+
+def extract_range_counts(
+    df: PolarsFrame,
+    ranges: dict[str, Union[list[Tuple(float, float)], Tuple(float,float)]]
+    , *
+    , closed: ClosedInterval = "both"
+) -> PolarsFrame:
+    '''
+    Extract the count of values within given ranges and use as new features.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    ranges
+        A dictionary with keys representing columns, and values being a list
+        of ranges to count for this column. E.g. {"c":[(1,100), (200,300)]} means 
+        we are extracting the count of values between 1 and 100 and 200 and 300 for 
+        column c. If there is only one range to extract from c, you may also pass
+        {"c": (100, 200)} instead of a list of ranges.
+    closed
+        Defines the boundary behavior of the interval. One of 'left', 'right', 'both', 'none'
+    '''
+    exprs = []
+    for c, rl in ranges.items():
+        if isinstance(rl, list):
+            exprs.extend(
+                pl.col(c).is_between(lower_bound=r[0], upper_bound=r[1], closed=closed).suffix(f"_{str(r)}")
+                for r in rl
+            )
+        elif isinstance(rl, Tuple): 
+            exprs.append(
+                pl.col(c).is_between(lower_bound=rl[0], upper_bound=rl[1], closed=closed).suffix(f"_{str(rl)}")
+            )
+        
     return _dsds_with_columns(df, exprs)
 
 def extract_dt_features(
