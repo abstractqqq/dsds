@@ -411,6 +411,8 @@ def range_counts(
     │ b      ┆ 121.0 ┆ 199.0 ┆ 79    │
     └────────┴───────┴───────┴───────┘
     '''
+    cols = list(ranges.keys())
+    _ = type_checker(df, cols, "numeric", "range_counts")
     dfs = []
     for c, rl in ranges.items():
         if isinstance(rl, list):

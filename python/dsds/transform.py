@@ -20,7 +20,7 @@ from .prescreen import (
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
-from typing import Optional, Union
+from typing import Optional, Union, Any
 from scipy.stats import (
     yeojohnson_normmax
     , boxcox_normmax
@@ -441,6 +441,130 @@ def merge_infreq_categories(
             )
     
     return _dsds_with_columns(df, exprs)
+
+def _when_then_repl(c:str, repl_map:dict):
+    expr = pl.col(c)
+    for og, repl in repl_map.items():
+        expr = pl.when(pl.col(c).eq(og)).then(repl).otherwise(expr)
+    
+    return expr.alias(c)
+
+def feature_mapping(
+    df:PolarsFrame
+    , mapping: Union[dict[str, dict[Any, Any]], list[pl.Expr] , pl.Expr]
+) -> PolarsFrame:
+    '''
+    Maps specific values of a feature into values provided. This is a common task when the feature columns 
+    come with error codes. This allows features to be mapped to other types, but the user has to make sure 
+    that the output column has one clear type.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    mapping
+        Either a dict like {"a": {999: None, 998: None, 997: None}, ...}, meaning that 999, 998 and 997 in column "a" 
+        should be replaced by null, or a list/a single Polars (when-then) expression(s) like the following,  
+        pl.when(pl.col("a") >= 997).then(None).otherwise(pl.col("a")).alias("a"), which will perform the same mapping 
+        as the dict example. Note that using Polars expression can tackle more complex replacement.
+
+    Example
+    -------
+    >>> df = pl.DataFrame({
+    ...     "a": [1,2,3,998,999],
+    ...     "b": [999, 1,2,3,4]
+    ... })
+    >>> print(df)
+    shape: (5, 2)
+    ┌─────┬─────┐
+    │ a   ┆ b   │
+    │ --- ┆ --- │
+    │ i64 ┆ i64 │
+    ╞═════╪═════╡
+    │ 1   ┆ 999 │
+    │ 2   ┆ 1   │
+    │ 3   ┆ 2   │
+    │ 998 ┆ 3   │
+    │ 999 ┆ 4   │
+    └─────┴─────┘
+    >>> feature_mapping(df, mapping = {"a":{998:None,999:None}, "b":{999:None}})
+    shape: (5, 2)
+    ┌──────┬──────┐
+    │ a    ┆ b    │
+    │ ---  ┆ ---  │
+    │ i64  ┆ i64  │
+    ╞══════╪══════╡
+    │ 1    ┆ null │
+    │ 2    ┆ 1    │
+    │ 3    ┆ 2    │
+    │ null ┆ 3    │
+    │ null ┆ 4    │
+    └──────┴──────┘
+    >>> mapping = [pl.when(pl.col("a")>=998).then(None).otherwise(pl.col("a")).alias("a")
+    ...          , pl.when(pl.col("b")==999).then(None).otherwise(pl.col("b")).alias("b")]
+    >>> feature_mapping(df, mapping)
+    shape: (5, 2)
+    ┌──────┬──────┐
+    │ a    ┆ b    │
+    │ ---  ┆ ---  │
+    │ i64  ┆ i64  │
+    ╞══════╪══════╡
+    │ 1    ┆ null │
+    │ 2    ┆ 1    │
+    │ 3    ┆ 2    │
+    │ null ┆ 3    │
+    │ null ┆ 4    │
+    └──────┴──────┘
+    '''
+    if isinstance(mapping, dict):
+        exprs = []
+        for c, repl_map in mapping.items():
+            if c in df.columns:
+                exprs.append(_when_then_repl(c, repl_map))
+            else:
+                logger.info(f"Found {c} not in df. Ignored.")
+    elif isinstance(mapping, list):
+        exprs = []
+        for f in mapping:
+            if isinstance(f, pl.Expr):
+                exprs.append(f)
+            else:
+                logger.warn(f"Found {f} is not a Polars expression. Ignored.")
+    elif isinstance(mapping, pl.Expr):
+        exprs = [mapping]
+    else:
+        raise TypeError("The argument `mapping` must be one of the following types: "
+                        "dict[str, dict[Any, Any]] | list[pl.Expr] | pl.Expr")
+    
+    return _dsds_with_columns(df, exprs)
+
+def replace_by_pattern(
+    df: PolarsFrame,
+    c: str,
+    pattern: str,
+    by: str
+) -> PolarsFrame:
+    '''
+    Use a regex pattern to capture patterns in a string column and replace the patterns by
+    another string. This works like feature_mapping but only works for strings.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    c 
+        Name of the string column to work on
+    pattern
+        The pattern to replace
+    by
+        Replace the pattern by this string
+    '''
+    _ = type_checker(df, [c], "string", "replace_by_pattern")
+    return _dsds_with_columns(df, [pl.col(c).str.replace(pattern=pattern, value=by)])
 
 def merge_categories(
     df: PolarsFrame
