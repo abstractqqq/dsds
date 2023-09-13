@@ -9,7 +9,7 @@ from .prescreen import (
     , check_binary_target
     , type_checker
 )
-from .transform import _dsds_with_columns
+from .transform import _dsds_with_columns, _dsds_with_columns_and_drop
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
@@ -158,15 +158,13 @@ def selective_one_hot_encode(
     _ = type_checker(df, str_cols, "string", "selective_one_hot_encode")
 
     exprs = []
-    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
+    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     for c, vals in selected.items(): # Python's dict is ordered.
         exprs.extend(
             pl.when(pl.col(c) == v).then(one).otherwise(zero).alias(c+separator+v) for v in vals
         )
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs).blueprint.drop(str_cols) 
-    return df.with_columns(exprs).drop(str_cols) 
+    return _dsds_with_columns_and_drop(df, exprs, str_cols)
 
 def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''

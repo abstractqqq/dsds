@@ -42,6 +42,12 @@ def _dsds_with_columns(df:PolarsFrame, exprs:list[pl.Expr]) -> PolarsFrame:
         return df.blueprint.with_columns(exprs)
     else:
         return df.with_columns(exprs)
+    
+def _dsds_with_columns_and_drop(df:PolarsFrame, exprs:list[pl.Expr], to_drop: list[str]) -> PolarsFrame:
+    if isinstance(df, pl.LazyFrame):
+        return df.blueprint.with_columns(exprs).blueprint.drop(to_drop)
+    else:
+        return df.with_columns(exprs).drop(to_drop)
 
 def impute(
     df:PolarsFrame
@@ -1182,7 +1188,7 @@ def extract_word_count(
     exprs.extend(base.str.count_match(w).suffix(f"_count_{w}") for w in words)
     return _dsds_with_columns(df, exprs)
 
-def str_to_list(
+def col_to_list(
     df: PolarsFrame
     , cols: list[str]
     , *
@@ -1609,6 +1615,98 @@ def extract_list_features(
             logger.info(f"Found {e} in extract, but it is not a valid ListExtract value. Ignored.")
 
     return _dsds_with_columns(df, exprs)
+
+def combine_str_cols(
+    df: PolarsFrame
+    , cols: list[Union[str, pl.Expr]]
+    , new_name: str
+    , *
+    , to_null: Optional[list[str]] = None
+    , ignore_null: bool = True
+    , empty_as_null: bool = True
+    , separator: str = ""
+) -> PolarsFrame:
+    '''
+    Combines multiple string columns/expressions into one column as a column of lists of strings. 
+    You can optionally turn the new combined column into a string column separated 
+    by a separator.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        A list of either strings representing column names or Polars expressions
+    new_name
+        The name of the combined column
+    to_null
+        A list of other string values that should be considered to be null. This is useful
+        because sometimes in some columns `N/A` is equivalent to null.
+    ignore_null
+        Whether to ignore nulls in the final concatenated list. If false, nulls will be elements
+        in the list.
+    empty_as_null
+        Whether to treat empty list as null
+    separator
+        If it is not the empty string, then the output column will be a string column
+        separated by this separator
+
+    Example
+    -------
+    >>> import dsds.transform as t
+    ... df = pl.DataFrame({
+    ...     "category1": ["Fruit", "N/A", "Meat", "Kitchen"],
+    ...     "category2": ["edible", None, "", "tool"]
+    ... })
+    >>> t.combine_str_cols(df, [pl.col("category1").str.to_lowercase(), "category2"], new_name="category", to_null=["n/a", ""])
+    shape: (4, 3)
+    ┌───────────┬───────────┬─────────────────────┐
+    │ category1 ┆ category2 ┆ category            │
+    │ ---       ┆ ---       ┆ ---                 │
+    │ str       ┆ str       ┆ list[str]           │
+    ╞═══════════╪═══════════╪═════════════════════╡
+    │ Fruit     ┆ edible    ┆ ["fruit", "edible"] │
+    │ N/A       ┆ null      ┆ []                  │
+    │ Meat      ┆           ┆ ["meat"]            │
+    │ Kitchen   ┆ tool      ┆ ["kitchen", "tool"] │
+    └───────────┴───────────┴─────────────────────┘
+    >>> t.combine_str_cols(df, [pl.col("category1").str.to_lowercase(), "category2"], new_name="category", to_null=["n/a", ""], separator="|")
+    shape: (4, 3)
+    ┌───────────┬───────────┬──────────────┐
+    │ category1 ┆ category2 ┆ category     │
+    │ ---       ┆ ---       ┆ ---          │
+    │ str       ┆ str       ┆ str          │
+    ╞═══════════╪═══════════╪══════════════╡
+    │ Fruit     ┆ edible    ┆ fruit|edible │
+    │ N/A       ┆ null      ┆ null         │
+    │ Meat      ┆           ┆ meat         │
+    │ Kitchen   ┆ tool      ┆ kitchen|tool │
+    └───────────┴───────────┴──────────────┘
+    '''
+    _ = type_checker(df, cols, "string", "combine_str_cols") 
+    if to_null is None:
+        new_cols = cols
+    else:
+        # Expressions and str cases are different
+        new_cols = [
+            pl.when(pl.col(c).is_in(to_null)).then(None).otherwise(pl.col(c))
+            if isinstance(c, str) else 
+            pl.when(c.is_in(to_null)).then(None).otherwise(c) 
+            for c in cols
+        ]
+
+    expr = pl.concat_list(new_cols)
+    if ignore_null:
+        expr = expr.list.set_difference(pl.Series("", [None]))
+
+    if empty_as_null and separator == "":
+        expr = pl.when(expr.list.lengths() == 0).then(None).otherwise(expr)
+    elif separator != "":
+        expr = pl.when(expr.list.lengths() == 0).then(None).otherwise(expr.list.join(separator))
+
+    return _dsds_with_columns(df, [expr.alias(new_name)])
 
 def moving_avgs(
     df:PolarsFrame
