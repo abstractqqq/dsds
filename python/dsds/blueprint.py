@@ -18,6 +18,7 @@ import pickle # Use pickle for now. Think about other ways to preserve.
 import polars as pl
 import importlib
 import logging
+import copy
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,10 @@ logger = logging.getLogger(__name__)
 class Step:
     action:ActionType
     with_columns: Optional[list[pl.Expr]] = None
-    map_dict: list[pl.Expr] = None
+    map_dict: Optional[list[pl.Expr]] = None
     add_func: Optional[dict[str, Any]] = None
     filter: Optional[pl.Expr] = None
-    select: Optional[list[str]] = None
+    select: Optional[list[Union[str, pl.Expr]]] = None
     drop: Optional[list[str]] = None
     model_step: Optional[dict[str, Any]] = None
 
@@ -60,7 +61,7 @@ class Step:
         elif self.action == "map_dict":
             output += "Encoder/Mapper for columns. This is unprintable for now.\n"
         else:
-            output += str(self.value())
+            output += str(self.content())
 
         return output
 
@@ -85,11 +86,19 @@ class Step:
             logger.warning(f"The step {self.action} has two action values associated with it: {not_nones}")
             return False
         
-    def value(self) -> Any:
+    def content(self) -> Any:
         for field in fields(self):
             value = getattr(self, field.name)
             if field.name != "action" and value is not None:
                 return value
+            
+    def show_content(self):
+        content = self.content()
+        if isinstance(content, list):
+            for s in content:
+                print(s)
+        else:
+            print(s) 
 
 @pl.api.register_lazyframe_namespace("blueprint")
 class Blueprint:
@@ -103,8 +112,62 @@ class Blueprint:
     def get_steps(self, indices:list[int]) -> list[Step]:
         return [self.steps[i] for i in indices]
     
-    def get_idx_by_action_type(self, action_type:ActionType) -> list[int]:
-        return [i for i,s in enumerate(self.steps) if s.action == action_type]
+    def show_content_at_step(self, idx:int):
+        self.get_step(idx).show_content()
+
+    def get_content_at_step(self, idx:int) -> Any:
+        content = self.get_step(idx).content()
+        if isinstance(content, list):
+            out = [] 
+            for s in content:
+                out.append(copy.deepcopy(s))
+            return out
+        else:
+            return copy.deepcopy(content)
+    
+    def get_by_action_type(self, action_type:ActionType) -> list[Step]:
+        indices = (i for i,s in enumerate(self.steps) if s.action == action_type)
+        return [copy.deepcopy(self.steps[i]) for i in indices]
+    
+    def get_by_mention(self, keyword:str) -> list[Step]:
+        output = []
+        for s in self.steps:
+            if s.action == "with_columns":
+                exprs = s.with_columns
+                for e in exprs:
+                    if keyword in e.meta.root_names():
+                        output.append(copy.deepcopy(s))
+                        break
+            elif s.action == "map_dict":
+                exprs = s.map_dict
+                for e in exprs:
+                    if keyword in e.meta.root_names():
+                        output.append(copy.deepcopy(s))
+                        break
+            elif s.action == "select":
+                exprs = s.select
+                for e in exprs:
+                    if isinstance(e, str):
+                        if e == keyword:
+                            output.append(copy.deepcopy(s))
+                    else: # e is expression
+                        for n in e.meta.root_names():
+                            if n == keyword:
+                                output.append(copy.deepcopy(s))
+                                break
+            elif s.action == "drop":
+                exprs = s.drop
+                for c in exprs:
+                    if c == keyword:
+                        output.append(copy.deepcopy(s))
+            elif s.action == "filter":
+                for n in s.filter.meta.root_names():
+                    if n == keyword:
+                        output.append(copy.deepcopy(s))
+                        break
+        
+        return output
+
 
     def as_str(self, n:int) -> str:
         output = ""

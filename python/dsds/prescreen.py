@@ -33,7 +33,8 @@ from dsds._rust import rs_levenshtein_dist
 import re
 import polars.selectors as cs
 import polars as pl
-import logging  
+import logging
+import dsds
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +48,14 @@ def type_checker(
     caller_name:str,
     n_rows: int = 10
 ) -> bool:
-    types = check_columns_types(df, cols, n_rows)
-    if types != expected_type:
-        raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
-    return True
+    if dsds.CHECK_COL_TYPES:
+        types = check_columns_types(df, cols, n_rows)
+        if types != expected_type:
+            raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
+        return True
+    else:
+        logger.info("You skipped type checker.")
+        return True # else blindly return true
 
 def select(
     df:PolarsFrame
