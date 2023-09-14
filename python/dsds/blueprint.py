@@ -60,6 +60,20 @@ class Step:
             output += f"Appends {self.model_step['score_col']} to dataframe."
         elif self.action == "map_dict":
             output += "Encoder/Mapper for columns. This is unprintable for now.\n"
+        elif self.action == "select":
+            pure_strs = []
+            exprs = []
+            for c in self.select:
+                if isinstance(c, str):
+                    pure_strs.append(c)
+                else:
+                    exprs.append(c)
+            if len(pure_strs) > 0:
+                output += str(pure_strs)
+            if len(exprs) > 0:
+                for e in exprs:
+                    output += f"{e}\n"
+                output += "\n"
         else:
             output += str(self.content())
 

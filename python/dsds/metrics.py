@@ -100,15 +100,14 @@ def _flatten_input(y_actual: np.ndarray, y_predicted:np.ndarray) -> Tuple[np.nda
     return y_a, y_p
 
 def _tp_fp_frame(
-    y_actual:np.ndarray,
-    y_predicted:np.ndarray,
+    y_actual:Union[np.ndarray, pl.Series],
+    y_predicted:Union[np.ndarray, pl.Series],
     ratio: bool = True
 ) -> pl.LazyFrame:
     '''
     Get true positive and false positive counts at various thresholds. The thresholds are determined
-    by the probabilties the model gives. Returns a lazy dataframe with 3 columns predicted: 
-    the predicted count at this threshold, tp: true positive count, and
-    fp: false positive count. If ratio is true, true positive rate and false positive rate will
+    by the probabilties the model gives. Returns a lazy dataframe with stats needed for precision,
+    recall, and roc_auc calculation. If ratio is true, true positive rate and false positive rate will
     be returned instead. This is meant to be only used internally.
 
     Parameters
@@ -120,28 +119,88 @@ def _tp_fp_frame(
     ratio
         Whether to return tpr, fpr instead of tp, fp
     '''
-    df = pl.from_records((y_predicted, y_actual), schema=["predicted", "actual"])
-    all_positives = pl.lit(np.sum(y_actual))
+    df = pl.from_records((y_predicted, y_actual), schema=["threshold", "actual"])
+    all_positives = pl.lit(y_actual.sum())
     n = len(df)
-    temp = df.lazy().group_by("predicted").agg(
+    temp = df.lazy().group_by("threshold").agg(
         pl.count().alias("cnt")
-        , pl.col("actual").sum().alias("true_positive")
-    ).sort("predicted").with_columns(
+        , pl.col("actual").sum().alias("pos_cnt_at_threshold")
+    ).sort("threshold").with_columns(
         (pl.lit(n) - pl.col("cnt").cumsum() + pl.col("cnt")).alias("predicted_positive")
-        # , pl.col("true_positive").cumsum().alias("actual_positive")
-        , (all_positives - pl.col("true_positive").cumsum()).shift_and_fill(fill_value=all_positives, periods=1).alias("tp")
+        , (
+            all_positives - pl.col("pos_cnt_at_threshold").cumsum()
+        ).shift_and_fill(fill_value=all_positives, periods=1).alias("tp")
     ).select(
-        pl.col("predicted")
+        pl.col("threshold")
+        , pl.col("cnt")
+        , pl.col("pos_cnt_at_threshold")
         , pl.col("tp")
         , (pl.col("predicted_positive") - pl.col("tp")).alias("fp")
+        , (pl.col("tp") / pl.col("predicted_positive")).alias("precision")
     )
     if ratio:
         return temp.select(
-            pl.col("predicted"),
-            (pl.col("tp") / pl.col("tp").first()).alias("tpr"),
-            (pl.col("fp") / pl.col("fp").first()).alias("fpr"),
+            pl.col("threshold")
+            , pl.col("cnt")
+            , pl.col("pos_cnt_at_threshold")
+            , (pl.col("tp") / pl.col("tp").first()).alias("tpr")
+            , (pl.col("fp") / pl.col("fp").first()).alias("fpr")
+            , pl.col("precision")
         )
-    return temp 
+    return temp
+
+def precision_recall(
+    y_actual:Union[np.ndarray, pl.Series]
+    , y_predicted:Union[np.ndarray, pl.Series]
+    , beta:Union[float, list[float]] = 1.
+    , around: Optional[float] = None
+) -> pl.DataFrame:
+    '''
+    Get precision and recall from various thresholds. Thresholds are decided by y_predicted's probabilities.
+    Currently only binary classification y_actual and y_predicted are supported.
+
+    Parameters
+    ----------
+    y_actual
+        Actual binary labels
+    y_predicted
+        Predicted probabilities
+    beta
+        The beta values in F_beta score. You can pass in one beta, or a list of betas.
+    around
+        If given, will return thresholds only around the given value (+- 0.05).
+    '''
+
+    f_list = []
+    if isinstance(beta, float):
+        f_list.append(beta)
+    else:
+        f_list.extend(b for b in beta if b > 0.)
+
+    exprs_for_f = (
+        (
+            pl.lit(b**2 + 1) 
+            *
+            (pl.col("precision") * pl.col("tpr") / (pl.lit(b**2) * pl.col("precision") + pl.col("tpr")))
+        ).alias(f"F_{b:.2f}")
+        for b in f_list
+    )
+    
+    frame = _tp_fp_frame(y_actual, y_predicted, ratio=True).select(
+        pl.col("threshold")
+        , pl.col("cnt").alias("predicted_cnt_at_threshold")
+        , pl.col("pos_cnt_at_threshold")
+        , pl.col("tpr").alias("recall")
+        , pl.col("precision")
+        , *exprs_for_f        
+    )
+
+    if around is None:
+        return frame.collect()
+    else:
+        return frame.filter(
+            pl.col("threshold").is_between(pl.lit(around) - 0.05, pl.lit(around) + 0.05)
+        ).collect()
 
 def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, strategy:WeightStrategy="balanced") -> float:
     '''
