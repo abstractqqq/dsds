@@ -20,12 +20,9 @@ else: # 3.9
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[..., PolarsFrame]
 
-import os
 import numpy as np
 
 # --- Constants ---
-CPU_COUNT:Final[int] = os.cpu_count()
-CPU_M1: Final[int] = CPU_COUNT - 1
 POLARS_NUMERICAL_TYPES:Final[Tuple[pl.DataType]] = (pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64
                                                     , pl.Int8, pl.Int16, pl.Int32, pl.Int64)
 POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date)

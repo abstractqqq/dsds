@@ -13,7 +13,7 @@ from .transform import _dsds_with_columns, _dsds_with_columns_and_drop
 from .blueprint import( # Need this for Polars extension to work
     Blueprint  # noqa: F401
 )
-from typing import Optional, Union, Any
+from typing import Optional
 import numpy as np
 import polars as pl
 import logging

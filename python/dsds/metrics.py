@@ -157,7 +157,7 @@ def precision_recall(
 ) -> pl.DataFrame:
     '''
     Get precision and recall from various thresholds. Thresholds are decided by y_predicted's probabilities.
-    Currently only binary classification y_actual and y_predicted are supported.
+    In the multiclass case, y_actual and y_predicted should be 2D NumPy arrays.
 
     Parameters
     ----------
@@ -168,45 +168,76 @@ def precision_recall(
     beta
         The beta values in F_beta score. You can pass in one beta, or a list of betas.
     around
-        If given, will return thresholds only around the given value (+- 0.05).
+        If given, will return thresholds only around the given value (+- 0.02).
     '''
+    series_input = (isinstance(y_actual, pl.Series) and isinstance(y_predicted, pl.Series))
+    is_1d_numpy = False
+    if not series_input:
+        is_1d_numpy = (y_actual.ndim == 1 and y_predicted.ndim == 1)
 
-    f_list = []
     if isinstance(beta, float):
-        f_list.append(beta)
+        f_list = [beta]
     else:
-        f_list.extend(b for b in beta if b > 0.)
+        f_list = [b for b in beta if b > 0.]
 
-    exprs_for_f = (
+    exprs_for_f = [
         (
             pl.lit(b**2 + 1) 
             *
             (pl.col("precision") * pl.col("tpr") / (pl.lit(b**2) * pl.col("precision") + pl.col("tpr")))
         ).alias(f"F_{b:.2f}")
         for b in f_list
-    )
-    
-    frame = _tp_fp_frame(y_actual, y_predicted, ratio=True).select(
-        pl.col("threshold")
-        , pl.col("cnt").alias("predicted_cnt_at_threshold")
-        , pl.col("pos_cnt_at_threshold")
-        , pl.col("tpr").alias("recall")
-        , pl.col("precision")
-        , *exprs_for_f        
-    )
+    ]
+
+    if is_1d_numpy or series_input:
+        
+        out_frame = _tp_fp_frame(y_actual, y_predicted, ratio=True).select(
+            pl.col("threshold")
+            , pl.col("cnt").alias("predicted_cnt_at_threshold")
+            , pl.col("pos_cnt_at_threshold")
+            , pl.col("tpr").alias("recall")
+            , pl.col("precision")
+            , *exprs_for_f
+        )
+
+    else:
+        # multi-class, must be NumPy Input
+        if y_actual.shape[1] != y_predicted.shape[1]:
+            raise ValueError("Input shapes must agree for multiclass roc auc. Found "
+                             f"actual has shape {y_actual.shape} and predicted has shape {y_predicted.shape}.")
+        
+        frames = (
+            _tp_fp_frame(y_actual[:, i].ravel(), y_predicted[:, i].ravel()).select(
+                pl.lit(i).alias("class_no")
+                , pl.col("threshold")
+                , pl.col("cnt").alias("predicted_cnt_at_threshold")
+                , pl.col("pos_cnt_at_threshold")
+                , pl.col("tpr").alias("recall")
+                , pl.col("precision")
+                , *exprs_for_f
+            )
+            for i in range(y_actual.shape[1])
+        )
+
+        out_frame = pl.concat(pl.collect_all(frames))
 
     if around is None:
-        return frame.collect()
+        return out_frame.lazy().collect()
     else:
-        return frame.filter(
-            pl.col("threshold").is_between(pl.lit(around) - 0.05, pl.lit(around) + 0.05)
+        return out_frame.lazy().filter(
+            pl.col("threshold").is_between(pl.lit(around - 0.02), pl.lit(around + 0.02))
         ).collect()
 
-def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, strategy:WeightStrategy="balanced") -> float:
+def roc_auc(
+    y_actual:Union[np.ndarray, pl.Series],
+    y_predicted:Union[np.ndarray, pl.Series],
+    strategy:WeightStrategy="balanced"
+) -> float:
     '''
     Return the Area Under the Curve metric for the model's predictions. For multiclass classification,
     this currently only supports aggregated roc auc for each class. Note that in the multiclass case,
-    y_actual should have only one 1 per row.
+    y_actual should have only one 1 per row. In the multiclass case, y_actual and y_predicted
+    should be NumPy arrays.
 
     Parameters
     ----------
@@ -223,15 +254,19 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, strategy:WeightStrategy
     -----------
     For small arrays, length ~ 1000, Scikit-learn's implementation is faster. But for bigger ones, 
     length > 10k, this has much better performance. If it is multiclass, this is almost always 
-    faster. Please measure on your own device for most accurate information.
+    faster. Please measure on your own device for most accurate information. In this case, performance 
+    only matters when you are repeatedly applying this function.
     ''' 
-    
-    # This currently has difference of magnitude 1e-10 from the sklearn implementation, 
-    # which is likely caused by sklearn adding zeros to the front? Not 100% sure
-    if y_actual.ndim == 1 and y_predicted.ndim == 1:
-        frame = _tp_fp_frame(y_actual.astype(np.int8, copy=False), y_predicted, ratio=True).collect()
+    series_input = (isinstance(y_actual, pl.Series) and isinstance(y_predicted, pl.Series))
+    is_1d_numpy = False
+    if not series_input:
+        is_1d_numpy = (y_actual.ndim == 1 and y_predicted.ndim == 1)
+
+    if is_1d_numpy or series_input:
+        frame = _tp_fp_frame(y_actual, y_predicted, ratio=True).collect()
         return float(-np.trapz(frame["tpr"], frame["fpr"]))
     elif y_actual.ndim == 2 and y_predicted.ndim == 2:
+        # Has to be not 1d numpy
         if y_actual.shape[1] != y_predicted.shape[1]:
             raise ValueError("Input shapes must agree for multiclass roc auc. Found "
                              f"actual has shape {y_actual.shape} and predicted has shape {y_predicted.shape}.")
@@ -254,8 +289,8 @@ def roc_auc(y_actual:np.ndarray, y_predicted:np.ndarray, strategy:WeightStrategy
                         f"actual has shape {y_actual.shape} and predicted has shape {y_predicted.shape}.")
 
 def logloss(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
+    y_actual:Union[np.ndarray, pl.Series]
+    , y_predicted:Union[np.ndarray, pl.Series]
     , sample_weights:Optional[np.ndarray]=None
     , min_prob:float = 1e-12
     , check_binary:bool = False

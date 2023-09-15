@@ -12,8 +12,6 @@ from .type_alias import (
     PolarsFrame
     , MRMRStrategy
     , BinaryModels
-    # , SimpleDtypes
-    , CPU_M1
     , clean_strategy_str
     , ClassifModel
 )
@@ -42,6 +40,7 @@ import logging
 import polars as pl
 import numpy as np
 import math
+import dsds
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +182,7 @@ def mutual_info(
     , conti_cols:list[str]
     , n_neighbors:int=3
     , seed:int=42
-    , n_threads:int=CPU_M1
+    , n_threads:int= dsds.THREADS
 ) -> pl.DataFrame:
     '''
     Approximates mutual information (information gain) between the continuous variables and the target. This
@@ -267,7 +266,7 @@ def mutual_info_selector(
     , target:str
     , n_neighbors:int=3
     , top_k:int = 50
-    , n_threads:int=CPU_M1
+    , n_threads:int= dsds.THREADS
     , seed:int=42
 ) -> PolarsFrame:
     '''
@@ -998,7 +997,7 @@ def permutation_importance(
     score = roc_auc(y, estimator.predict_proba(X)[:, -1])
     pbar = tqdm(total=len(features), desc="Analyzing Features")
     imp = np.zeros(shape=len(features))
-    with ThreadPoolExecutor(max_workers=CPU_M1) as ex:
+    with ThreadPoolExecutor(max_workers=dsds.THREADS) as ex:
         futures = (
             ex.submit(
                 _permute_importance,

@@ -5,7 +5,6 @@ from .type_alias import (
     , SimpleDtypes
     , OverTimeMetrics
     , ReportIntervals
-    , CPU_COUNT
     , POLARS_DATETIME_TYPES
     , POLARS_NUMERICAL_TYPES
 )
@@ -1437,7 +1436,7 @@ def ks_compare(
     results = []
     to_test = enumerate(combinations(nums, 2))
     pbar = tqdm(total=min(max_comp, n_c2 - skip), desc="Comparisons")
-    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
+    with ThreadPoolExecutor(max_workers = dsds.THREADS) as ex:
         for f in as_completed(ex.submit(_ks_compare, df_test, pair, alt) 
                               for i, pair in to_test if i < last and i > skip):
             results.append(f.result())
@@ -1468,7 +1467,7 @@ def dist_test(
 
     results = []
     pbar = tqdm(total=len(nums), desc="Comparisons")
-    with ThreadPoolExecutor(max_workers=CPU_COUNT) as ex:
+    with ThreadPoolExecutor(max_workers = dsds.THREADS) as ex:
         for f in as_completed(ex.submit(_dist_inferral, df_test, c, which_dist) for c in nums):
             results.append(f.result())
             pbar.update(1)

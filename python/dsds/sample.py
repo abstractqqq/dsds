@@ -220,12 +220,10 @@ def simple_downsample(
         raise TypeError("The `subgroup` argument must be either a Polars Expr or a dict[str, list]")
 
     # lazy if df lazy, eager if df eager
-    output = df.with_columns(
-        pl.when(expr).then(True).otherwise(False).alias("__temp__")
-    ).filter(
-        (~pl.col("__temp__"))
-        | (pl.int_range(0, pl.count()).over("__temp__").shuffle() < pl.count().over("__temp__").max() * sample_frac)
-    ).select(df.columns)
+    output = df.filter(
+        (~expr)
+        | (pl.int_range(0, pl.count()).shuffle().over(expr) < pl.count().over(expr).max() * sample_frac)
+    )
 
     return output
 
