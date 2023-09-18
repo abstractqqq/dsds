@@ -42,11 +42,13 @@ pub fn hamming_dist(s1:&str, s2:&str) -> Option<u32> {
     if s1.len() != s2.len() {
         return None
     }
+    let x = s1.as_bytes();
+    let y = s2.as_bytes();
     Some(
-        s1.chars().zip(s2.chars()).fold(
-            0, |acc, (c1,c2)| acc + (c1 != c2) as u32
+            x.iter()
+            .zip(y)
+            .fold(0, |a, (b, c)| a + (*b ^ *c).count_ones() as u32)
         )
-    )
 }
 
 #[inline]

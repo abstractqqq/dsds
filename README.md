@@ -1,6 +1,6 @@
 # Welcome to the DSDS
 
-This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package. Also see disclaimer in the end.
+This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package. This package requires the latest version of Polars.
 
 Welcome to DSDS, a data science package that aims to be an improvement over a subset of sklearn's functionality, primarily in the following areas:
 

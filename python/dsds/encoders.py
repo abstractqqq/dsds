@@ -16,6 +16,7 @@ from .blueprint import( # Need this for Polars extension to work
 from typing import Optional
 import numpy as np
 import polars as pl
+import copy
 import logging
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,122 @@ def selective_one_hot_encode(
             pl.when(pl.col(c) == v).then(one).otherwise(zero).alias(c+separator+v) for v in vals
         )
     return _dsds_with_columns_and_drop(df, exprs, str_cols)
+
+def sum_encode(
+    df: PolarsFrame
+    , cols:Optional[list[str]]=None
+    , separator:str="_"
+) -> PolarsFrame:
+    '''
+    Sum encoding for the given string columns.
+    
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    cols
+        If not provided, will use all string columns
+    separator
+        The separator used in the names of the new columns
+
+    Reference
+    ---------
+    https://towardsdatascience.com/smarter-ways-to-encode-categorical-data-for-machine-learning-part-1-of-3-6dca2f71b159
+    https://datascience.stackexchange.com/questions/77941/what-is-sum-encoding
+    '''
+    if isinstance(cols, list):
+        _ = type_checker(df, cols, "string", "sum_encode")
+        str_cols = cols
+    else:
+        str_cols = get_string_cols(df)
+
+    temp = df.lazy().select(
+        pl.col(str_cols).unique().implode().list.sort()
+    )
+    exprs:list[pl.Expr] = []
+    one = pl.lit(1, dtype=pl.Int8) # Avoid casting 
+    zero = pl.lit(0, dtype=pl.Int8) # Avoid casting
+    minus_one = pl.lit(-1, dtype=pl.Int8) # Avoid casting
+    for t in temp.collect().get_columns():
+        u:pl.List = t[0] # t is a Series which contains a single series/list, so u is a series/list
+        if len(u) > 1:
+            exprs.extend(
+                pl.when(pl.col(t.name) == u[0]).then(minus_one).otherwise(
+                    pl.when(pl.col(t.name) == u[i]).then(one).otherwise(zero)
+                ).alias(t.name + separator + u[i])
+                for i in range(1, len(u))
+            )
+        else:
+            logger.info(f"During sum-encoding, the column {t.name} is found to have 1 unique value. Dropped.")
+    
+    return _dsds_with_columns_and_drop(df, exprs, str_cols)
+
+def rank_hot_encode(
+    df: PolarsFrame
+    , col_ranks: dict[str, list[str]]
+) -> PolarsFrame:
+    '''
+    Performs rank hot encoding. Currently this only supports string columns.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    col_ranks
+        A dictionary with keys being name of columns, and values being a list of values in the column.
+        The order of this list is used to represent the ranking of the values, and everything not inside
+        the list will be considered to be 1s always. Only the categories given in the list will be 
+        represented as columns. Note that >= lowest ranked value is always true. So that column is omitted.
+        This also implies that if the list has length <=1, then the key value pair will be omitted.
+    
+    Example
+    -------
+    >>> import dsds.encoders as enc
+    ... df = pl.DataFrame({
+    ...     "test":["Very bad", "Bad", "Neutral", "Good", "Very good", "Good"],
+    ...     "abc":["A", "B", "C", "A", "C", "C"]
+    ... })
+    >>> enc.rank_hot_encode(df, col_ranks={"test":["Very bad", "Bad", "Neutral", "Good"], "abc":["A", "B", "C"]})
+    shape: (6, 5)
+    ┌───────────┬───────────────┬────────────┬────────┬────────┐
+    │ test>=Bad ┆ test>=Neutral ┆ test>=Good ┆ abc>=B ┆ abc>=C │
+    │ ---       ┆ ---           ┆ ---        ┆ ---    ┆ ---    │
+    │ u8        ┆ u8            ┆ u8         ┆ u8     ┆ u8     │
+    ╞═══════════╪═══════════════╪════════════╪════════╪════════╡
+    │ 0         ┆ 0             ┆ 0          ┆ 0      ┆ 0      │
+    │ 1         ┆ 0             ┆ 0          ┆ 1      ┆ 0      │
+    │ 1         ┆ 1             ┆ 0          ┆ 1      ┆ 1      │
+    │ 1         ┆ 1             ┆ 1          ┆ 0      ┆ 0      │
+    │ 1         ┆ 1             ┆ 1          ┆ 1      ┆ 1      │
+    │ 1         ┆ 1             ┆ 1          ┆ 1      ┆ 1      │
+    └───────────┴───────────────┴────────────┴────────┴────────┘
+    '''
+    ranks = {
+        key:value
+        for key, value in col_ranks.items() if len(value) > 1
+    }
+    cols = list(ranks.keys())
+    _ = type_checker(df, cols, "string", "rank_hot_encode")
+
+    ref_dicts = {
+        k: {key:i for i, key in enumerate(r)}
+        for k, r in ranks.items()
+    }
+    exprs = []
+    one = pl.lit(1, dtype=pl.UInt8)
+    zero = pl.lit(0, dtype=pl.UInt8)
+    for key, ref in ref_dicts.items():
+        exprs.extend(
+            (pl.when(pl.col(key).map_dict(ref, default=len(ref)) >= i).then(one).otherwise(zero).suffix(f">={v}")
+            for v, i in ref.items() if v != ranks[key][0])
+        )
+
+    return _dsds_with_columns_and_drop(df, exprs, cols)
+
 
 def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''

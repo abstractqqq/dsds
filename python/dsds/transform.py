@@ -1185,7 +1185,7 @@ def extract_word_count(
     if lower:
         base = base.str.to_lowercase()
     
-    exprs.extend(base.str.count_match(w).suffix(f"_count_{w}") for w in words)
+    exprs.extend(base.str.count_matches(w).suffix(f"_count_{w}") for w in words)
     return _dsds_with_columns(df, exprs)
 
 def col_to_list(
@@ -1276,7 +1276,7 @@ def extract_from_str(
         elif e == "ends_with":
             exprs.append(pl.col(cols).str.ends_with(pattern).cast(pl.UInt8).suffix(f"_ends_with_{pattern}"))
         elif e == "count":
-            exprs.append(pl.col(cols).str.count_match(pattern).suffix(f"_{pattern}_count"))
+            exprs.append(pl.col(cols).str.count_matches(pattern).suffix(f"_{pattern}_count"))
         elif e == "contains":
             exprs.append(pl.col(cols).str.contains(pattern).cast(pl.UInt8).suffix(f"_contains_{pattern}"))
         else:

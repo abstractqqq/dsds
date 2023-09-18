@@ -602,10 +602,10 @@ def str_meta_report(
         pl.all().str.lengths().max().prefix("max_byte_len:"),
         pl.all().str.lengths().mean().prefix("avg_byte_len:"),
         pl.all().str.lengths().median().prefix("median_byte_len:"),
-        pl.all().str.count_match(r"\s").mean().prefix("avg_space_cnt:"),
-        pl.all().str.count_match(r"[0-9]").mean().prefix("avg_digit_cnt:"),
-        pl.all().str.count_match(r"[A-Z]").mean().prefix("avg_cap_cnt:"),
-        pl.all().str.count_match(r"[a-z]").mean().prefix("avg_lower_cnt:")
+        pl.all().str.count_matches(r"\s").mean().prefix("avg_space_cnt:"),
+        pl.all().str.count_matches(r"[0-9]").mean().prefix("avg_digit_cnt:"),
+        pl.all().str.count_matches(r"[A-Z]").mean().prefix("avg_cap_cnt:"),
+        pl.all().str.count_matches(r"[a-z]").mean().prefix("avg_lower_cnt:")
     ).collect().row(0)
     output = {
         "features":strs,
@@ -625,7 +625,7 @@ def str_meta_report(
 
     if isinstance(words_to_count, list):
         dfs = (
-            df_str.select(pl.all().str.count_match(w).sum().prefix("wc:"))
+            df_str.select(pl.all().str.count_matches(w).sum().prefix("wc:"))
             for w in words_to_count
         )
         wc_frames = pl.collect_all(dfs)
@@ -1306,15 +1306,12 @@ def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
         expr = expr.str.replace_all(",", "")
 
     temp = df.lazy().select(
-        expr.str.count_match("\d*\.?\d+").mean()
+        expr.str.count_matches("\d*\.?\d+").mean()
     ).collect()
     # On average, more than 1 occurrence of number in the values.
     return [c for c, avg in zip(temp.columns, temp.row(0)) if avg >= 0.95]
 
 def infer_coordinates(df:PolarsFrame):
-    pass
-
-def infer_numlist_from_str(df:PolarsFrame):
     pass
 
 def drop_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
@@ -1372,7 +1369,7 @@ def shrink_dtype(
     return df.with_columns(pl.col(to_shrink).shrink_dtype())
 
 #----------------------------------------------------------------------------------------------#
-# More statistical Methods
+# More statistical Methods for Prescreen purposes                                              #
 #----------------------------------------------------------------------------------------------#
 
 def _ks_compare(

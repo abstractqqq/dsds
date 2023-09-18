@@ -258,7 +258,7 @@ def stratified_downsample(
             raise ValueError("The argument `keep` must be a positive integer.")
         rhs = pl.lit(keep, dtype=pl.UInt64)
     elif isinstance(keep, float):
-        if keep < 0. or keep >= 1.:
+        if keep <= 0. or keep >= 1.:
             raise ValueError("The argument `keep` must be >0 and <1.")
         rhs = pl.max(pl.count().over(group)*keep, min_keep)
     else:
@@ -269,10 +269,52 @@ def stratified_downsample(
     )
     return output
 
+# def train_test_split(
+#     df: PolarsFrame
+#     , train_frac:float = 0.75
+#     , seed:int = 42
+#     , collect: bool = False
+# ) -> Tuple[PolarsFrame, PolarsFrame]:
+#     """
+#     Split polars dataframe into train and test set. If input is eager, output will be eager. If input is lazy, out
+#     output will be lazy. Unlike scikit-learn, this only creates the train and test dataframe. This will not break 
+#     the dataframe into X and y and so target is not a necessary input.
+
+#     Parameters
+#     ----------
+#         df
+#             Either a lazy or eager dataframe to split
+#         train_frac
+#             Fraction that goes to train. Defaults to 0.75.
+#         seed
+#             the random seed
+#         collect
+#             If true, will always return eager train and lazy
+#     """
+#     keep = df.columns # with_row_count will add a row_nr column. Don't need it.
+#     if isinstance(df, pl.DataFrame):
+#         # Eager group by is iterable
+#         p1, p2 = df.with_columns(pl.all().shuffle(seed=seed))\
+#                     .group_by(
+#                         pl.int_range(0, len(df)) >= pl.lit(len(df) * train_frac)
+#                     )
+#         # Sometimes p1 is true, p2 is false, sometimes otherwise
+#         if p2[0]: # if p2[0] == True, then p1[1] is train, p2[1] is test
+#             return p1[1].select(keep), p2[1].select(keep) # Make sure train comes first
+#         return p2[1].select(keep), p1[1].select(keep)
+#     else: # Lazy case.
+#         df_local = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count().set_sorted("row_nr")
+#         df_train = df_local.filter(pl.col("row_nr") < pl.col("row_nr").max() * pl.lit(train_frac))
+#         df_test = df_local.filter(pl.col("row_nr") >= pl.col("row_nr").max() * pl.lit(train_frac))
+#         if collect:
+#             return pl.collect_all([df_train.select(keep), df_test.select(keep)])
+#         return df_train.select(keep), df_test.select(keep)
+    
 def train_test_split(
     df: PolarsFrame
     , train_frac:float = 0.75
     , seed:int = 42
+    , collect: bool = True
 ) -> Tuple[PolarsFrame, PolarsFrame]:
     """
     Split polars dataframe into train and test set. If input is eager, output will be eager. If input is lazy, out
@@ -286,26 +328,17 @@ def train_test_split(
         train_frac
             Fraction that goes to train. Defaults to 0.75.
         seed
-            the random seed.
+            the random seed
+        collect
+            If true, will always return eager train and test
     """
     keep = df.columns # with_row_count will add a row_nr column. Don't need it.
-    if isinstance(df, pl.DataFrame):
-        # Eager group by is iterable
-        p1, p2 = df.with_columns(pl.all().shuffle(seed=seed))\
-                    .with_row_count()\
-                    .set_sorted("row_nr")\
-                    .group_by(
-                        pl.col("row_nr") >= len(df) * train_frac
-                    )
-        # Sometimes p1 is true, p2 is false, sometimes otherwise
-        if p2[0]: # if p2[0] == True, then p1[1] is train, p2[1] is test
-            return p1[1].select(keep), p2[1].select(keep) # Make sure train comes first
-        return p2[1].select(keep), p1[1].select(keep)
-    else: # Lazy case.
-        df = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count().set_sorted("row_nr")
-        df_train = df.filter(pl.col("row_nr") < pl.col("row_nr").max() * train_frac)
-        df_test = df.filter(pl.col("row_nr") >= pl.col("row_nr").max() * train_frac)
-        return df_train.select(keep), df_test.select(keep)
+    df_local = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count().set_sorted("row_nr")
+    df_train = df_local.filter(pl.col("row_nr") < pl.col("row_nr").max() * pl.lit(train_frac)).select(keep)
+    df_test = df_local.filter(pl.col("row_nr") >= pl.col("row_nr").max() * pl.lit(train_frac)).select(keep)
+    if isinstance(df, pl.LazyFrame) and not collect:
+        return df_train, df_test
+    return pl.collect_all([df_train, df_test])
 
 # Make a monthly split for monthly progression version too.
 
@@ -509,11 +542,12 @@ def time_series_split(
     
     for i, j in enumerate(range(n_splits, 0, -1)):
         rhs = offset + pl.col("row_nr").max() - j * test_size + 1
-        train = df_local.lazy().filter(pl.col("row_nr") < rhs).select(keep).collect()
+        train = df_local.lazy().filter(pl.col("row_nr") < rhs).select(keep)
         test = df_local.lazy().filter(
-                pl.col("row_nr").is_between(rhs + gap, rhs + gap + test_size, closed="left")
-            ).select(keep).collect()
+                pl.col("row_nr").is_between(pl.lit(rhs + gap), pl.lit(rhs + gap + test_size), closed="left")
+            ).select(keep)
         
+        train, test = pl.collect_all((train, test))        
         if len(train) == 0 or len(test) == 0:
             logger.warn(f"Fold {i} is empty because of constraints imposed by input parameters. Skipped.")
         else:
