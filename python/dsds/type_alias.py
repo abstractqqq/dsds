@@ -54,7 +54,7 @@ Alternatives = Literal["two-sided", "greater", "less"]
 # for a CommonContinuousDist.
 CommonContiDist:TypeAlias = Literal["norm", "lognorm", "truncnorm", "uniform", "t", "beta", "cauchy", "expon", "gamma"]
 OverTimeMetrics:TypeAlias = Literal["null", "invalid", "mean", "max", "min", "std"]
-ReportIntervals:TypeAlias = Literal["yearly", "quarterly", "monthly", "weekly"]
+TimeIntervals:TypeAlias = Literal["yearly", "quarterly", "monthly", "weekly"]
 
 # --- Blueprint ---
 ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "add_func", "filter", "classif"

@@ -4,7 +4,7 @@ from .type_alias import (
     , CommonContiDist
     , SimpleDtypes
     , OverTimeMetrics
-    , ReportIntervals
+    , TimeIntervals
     , POLARS_DATETIME_TYPES
     , POLARS_NUMERICAL_TYPES
 )
@@ -53,7 +53,6 @@ def type_checker(
             raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
         return True
     else:
-        logger.info("You skipped type checker.")
         return True # else blindly return true
 
 def select(
@@ -680,7 +679,7 @@ def over_time_report(
     , cols: list[str]
     , time_col: str
     , metrics: Union[OverTimeMetrics, list[OverTimeMetrics]] = "null"
-    , interval: ReportIntervals = "monthly" 
+    , interval: TimeIntervals = "monthly" 
 ) -> pl.DataFrame:
 
     _ = type_checker(df, [time_col], "datetime", "over_time_report")
@@ -753,7 +752,7 @@ def drop_non_numeric(df:PolarsFrame, include_bools:bool=False) -> PolarsFrame:
 def infer_by_pattern(
     df: PolarsFrame
     , pattern:str
-    , sample_count:int = 100_000
+    , sample_count:int = 10_000
     , sample_rounds:int = 3
     , threshold:float = 0.9
     , count_null:bool = False
@@ -1213,6 +1212,22 @@ def infer_constants(df:PolarsFrame, include_null:bool=True) -> list[str]:
 
     return get_unique_count(df, True).filter(condition)["column"].to_list()
 
+def infer_multicategorical(
+    df: PolarsFrame
+    , separator:str = "|"
+) -> list[str]:
+    '''
+    Infers multicategorical columns, e.g. string columns with elements of the form "aaa|bbb|ccc". 
+    This occurs a lot for columns like reasoncodes or error codes.
+    '''
+    
+    if separator == "|":
+        sep = r"\|"
+    else:
+        sep = separator
+    
+    return infer_by_pattern(df, pattern=f"(.+{sep}.+)", threshold=0.5)
+
 def infer_binary(df:PolarsFrame, include_null:bool=True) -> list[str]:
     '''
     Returns a list of inferred binary columns. (Columns with 2 values).
@@ -1268,14 +1283,14 @@ def get_complement(
     '''
     return [c for c in df.columns if c not in cols]
 
-def get_similar_names(
+def get_similar_colnames(
     df: PolarsFrame,
     ref: str,
     distance:int = 3
 ) -> list[str]:
     '''
-    Returns columns whose name is within `distance` Levenshtein distance from the reference string. This 
-    is a useful way to find column names which contain typos, e.g. "count" vs. "coutn". 
+    Returns columns whose name is within `distance` Levenshtein (edit) distance from the reference 
+    string. This is a useful way to find column names which contain typos, e.g. "count" vs. "coutn". 
     '''
     return [c for c in df.columns if rs_levenshtein_dist(c, ref) <= distance]
 
@@ -1311,9 +1326,6 @@ def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     # On average, more than 1 occurrence of number in the values.
     return [c for c, avg in zip(temp.columns, temp.row(0)) if avg >= 0.95]
 
-def infer_coordinates(df:PolarsFrame):
-    pass
-
 def drop_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
     '''Removes the given columns if they exist in the dataframe. This will be remembered by blueprint by default.'''
     drop_cols = list(set(cols).intersection(df.columns))
@@ -1325,7 +1337,7 @@ def estimate_n_unique(
     cols: list[str]
 ) -> pl.DataFrame:
     '''
-    Applies the HyperLogLog algorithm to estimate unique count. This is only recommended for absolutely 
+    Applies the HyperLogLog algorithm to estimate unique count. This is only recommended for extremely 
     large dataframes.
 
     Parameters

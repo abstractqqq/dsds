@@ -245,6 +245,7 @@ def rank_hot_encode(
     ...     "test":["Very bad", "Bad", "Neutral", "Good", "Very good", "Good"],
     ...     "abc":["A", "B", "C", "A", "C", "C"]
     ... })
+    ... # "Very bad" is the lowest rank. Everything is >= it, so it is omitted. Same for "A"
     >>> enc.rank_hot_encode(df, col_ranks={"test":["Very bad", "Bad", "Neutral", "Good"], "abc":["A", "B", "C"]})
     shape: (6, 5)
     ┌───────────┬───────────────┬────────────┬────────┬────────┐
@@ -286,7 +287,7 @@ def rank_hot_encode(
 def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''
     Force every binary column, no matter what data type, into 0s and 1s according to the order of the 
-    elements. If a column has two unique values like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
+    elements. If a column has two unique values, like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
 
     This will be remembered by blueprint by default.
 
@@ -295,7 +296,9 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
     df
         Either a lazy or eager Polars DataFrame
     '''
-    binary_list = get_unique_count(df).filter(pl.col("n_unique") == 2)["column"]
+    unique_cnt = get_unique_count(df).filter(pl.col("n_unique") == 2)
+    binary_list = unique_cnt["column"].to_list()
+
     temp = df.lazy().select(
             pl.col(binary_list).unique().implode().list.sort()
         )
@@ -321,8 +324,8 @@ def multicat_one_hot_encode(
     column with strings like `aaa|bbb|ccc`, which means this row belongs to categories aaa, bbb, and ccc. Typically, 
     such a column will contain strings separated by a delimiter. This method will collect all unique strings separated 
     by the delimiter and one hot encode the corresponding column, e.g. by checking if `aaa` is contained in values of 
-    this column. Nulls will be mapped to 0 in the generated one-hot columns. If you wish to have a null mask, take a look 
-    at `dsds.encoders.missing_indicator`.
+    this column. Nulls will be mapped to 0 in the generated one-hot columns. If you wish to have a null mask, take a 
+    look at `dsds.encoders.missing_indicator`.
 
     This will be remembered by blueprint by default.
 

@@ -4,7 +4,7 @@ from typing import (
     , Union
 )
 from collections.abc import Iterator
-from .type_alias import PolarsFrame
+from .type_alias import PolarsFrame, TimeIntervals, POLARS_DATETIME_TYPES
 from polars.type_aliases import UniqueKeepStrategy
 import polars as pl
 import polars.selectors as cs
@@ -323,14 +323,14 @@ def train_test_split(
 
     Parameters
     ----------
-        df
-            Either a lazy or eager dataframe to split
-        train_frac
-            Fraction that goes to train. Defaults to 0.75.
-        seed
-            the random seed
-        collect
-            If true, will always return eager train and test
+    df
+        Either a lazy or eager dataframe to split
+    train_frac
+        Fraction that goes to train. Defaults to 0.75.
+    seed
+        the random seed
+    collect
+        If true, will always return eager train and test
     """
     keep = df.columns # with_row_count will add a row_nr column. Don't need it.
     df_local = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count().set_sorted("row_nr")
@@ -552,6 +552,55 @@ def time_series_split(
             logger.warn(f"Fold {i} is empty because of constraints imposed by input parameters. Skipped.")
         else:
             yield train, test
+
+def time_window_slide(
+    df: PolarsFrame,
+    time_col: str,
+    interval: TimeIntervals,
+    length: int = 2
+) -> Iterator[list[pl.DataFrame]]:
+    
+    if df.select(time_col).dtypes[0] not in POLARS_DATETIME_TYPES:
+        raise TypeError(f"The column {time_col} must be a Polars data/datatime column.")
+    
+    if interval == "monthly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.month().alias("month")]
+    elif interval == "quarterly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.quarter().alias("quarter")]
+    elif interval == "yearly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year")]
+    elif interval == "weekly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.month().alias("month"),
+                                   pl.col(time_col).dt.week().alias("week")]
+        
+    out_names = [e.meta.output_name() for e in time_exprs]
+    df_local = df.lazy().with_columns(time_exprs)
+    reference = df_local.unique(subset=out_names).sort(out_names).select(out_names).collect()
+    total = len(reference)
+    
+    if length >= total:
+        yield df_local.sort(out_names).collect().partition_by(out_names)
+    else:
+        for i in range(total-length+1):
+            subframe = reference.slice(offset=i, length=length)
+            expr = pl.lit(True).and_(
+                *(pl.col(c).is_in(subframe[c]) for c in out_names)
+            )
+            temp = df_local.filter(
+                expr
+            ).sort(out_names).collect()
+            yield temp.partition_by(out_names)
+
+def window_slide(
+    df: PolarsFrame,
+    cols: list[str],
+    length: int = 2
+) -> Iterator[list[pl.DataFrame]]:
+    
+    pass
     
 def bootstrap(
     df: PolarsFrame
