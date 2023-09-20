@@ -10,14 +10,13 @@ pub use numpy::{
     IntoPyArray
 };
 use crate::text::{
-    rs_cnt_vectorizer,
-    rs_tfidf_vectorizer,
-    rs_ref_table,
+    //rs_cnt_vectorizer,
+    //rs_tfidf_vectorizer,
+    //rs_ref_table,
     rs_snowball_stem,
     rs_snowball_stem_series,
     rs_levenshtein_dist,
     rs_hamming_dist,
-    rs_hamming_dist_series
 };
 use crate::functions::{
     rs_df_inner_list_jaccard,
@@ -38,16 +37,16 @@ use crate::functions::{
 #[pymodule]
 fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     // m.add_class::<Test>().unwrap();
-    m.add_function(wrap_pyfunction!(rs_cnt_vectorizer, m)?)?;
-    m.add_function(wrap_pyfunction!(rs_tfidf_vectorizer, m)?)?;
-    m.add_function(wrap_pyfunction!(rs_ref_table, m)?)?;
+    // m.add_function(wrap_pyfunction!(rs_cnt_vectorizer, m)?)?;
+    // m.add_function(wrap_pyfunction!(rs_tfidf_vectorizer, m)?)?;
+    // m.add_function(wrap_pyfunction!(rs_ref_table, m)?)?;
+    // m.add_function(wrap_pyfunction!(rs_hamming_dist_series, m)?)?;
     m.add_function(wrap_pyfunction!(rs_snowball_stem, m)?)?;
     m.add_function(wrap_pyfunction!(rs_levenshtein_dist, m)?)?;
     m.add_function(wrap_pyfunction!(rs_df_inner_list_jaccard, m)?)?;
     m.add_function(wrap_pyfunction!(rs_series_jaccard, m)?)?;
     m.add_function(wrap_pyfunction!(rs_hamming_dist, m)?)?;
     m.add_function(wrap_pyfunction!(rs_snowball_stem_series, m)?)?;
-    m.add_function(wrap_pyfunction!(rs_hamming_dist_series, m)?)?;
     m.add_function(wrap_pyfunction!(rs_gcc_proba_est, m)?)?;
     m.add_function(wrap_pyfunction!(rs_mape, m)?)?;
     m.add_function(wrap_pyfunction!(rs_smape, m)?)?;
@@ -71,7 +70,7 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
 
     #[pyfn(m)]
     fn rs_self_cosine_similarity<'py>(
-        py:Python<'py>,    
+        py:Python<'py>,
         mat1:PyReadonlyArray2<f64>,
         normalize: bool
     ) -> &'py PyArray2<f64> {

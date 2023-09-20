@@ -16,7 +16,11 @@ from polars.type_aliases import (
     , ClosedInterval
 )
 from .blueprint import(
-    Blueprint  # noqa: F401
+    _dsds_select,
+    _dsds_drop,
+    _dsds_with_columns,
+    _dsds_map_dict,
+    _dsds_filter
 )
 from datetime import datetime 
 from typing import Any, Optional, Tuple, Union
@@ -43,40 +47,19 @@ logger = logging.getLogger(__name__)
 def type_checker(
     df:PolarsFrame, 
     cols:list[str], 
-    expected_type:SimpleDtypes, 
+    expected_type: SimpleDtypes,
     caller_name:str,
-    n_rows: int = 10
+    n_rows: int = 10,
 ) -> bool:
     if dsds.CHECK_COL_TYPES:
-        types = check_columns_types(df, cols, n_rows)
-        if types != expected_type:
-            raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} columns, not {types} types.")
+        checked_types = check_columns_types(df, cols, n_rows)
+        if expected_type != checked_types:
+            raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} "
+                                f"columns, not {checked_types} types.")
         return True
+
     else:
         return True # else blindly return true
-
-def select(
-    df:PolarsFrame
-    , selector: Union[list[str], list[pl.Expr]]
-    , persist: bool = True
-) -> PolarsFrame:
-    '''
-    A select wrapper that makes it pipeline compatible.
-
-    Set persist = True so that this will be remembered by the blueprint.
-    '''
-    if isinstance(df, pl.LazyFrame) and persist:
-        return df.blueprint.select(selector)
-    return df.select(selector)
-
-def drop(df:PolarsFrame, to_drop:list[str], persist:bool=True) -> PolarsFrame:
-    '''
-    A pipeline compatible way to drop the given columns, which will be remembered by the blueprint
-    by default.
-    '''
-    if isinstance(df, pl.LazyFrame) and persist:
-        return df.blueprint.drop(to_drop)
-    return df.drop(to_drop)
 
 def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
     '''Returns numerical columns except those in exclude.'''
@@ -115,22 +98,29 @@ def get_cols_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> list[st
     else:
         return df.select(cs.matches(pattern=pattern)).columns
 
-
-def rename(df:PolarsFrame, rename_dict:dict[str, str]) -> PolarsFrame:
+def rename(df:PolarsFrame, rename_dict:dict[str, str], skip_checking:bool=False) -> PolarsFrame:
     '''
-    Renames the columns in df according to rename_dicts.
+    Renames the columns in df according to rename_dicts. This checks whether keys in rename_dict
+    belong to df. You can skip checking by setting skip_checking = True.
 
     This is remembered by the blueprint by default.
     '''
-    d = {}
-    for k, v in rename_dict.items():
-        if k in df.columns:
-            d[k] = v
-        else:
-            logger.warn(f"Attempting to rename {k}, which does not exist in df. Ignored.")
+    if skip_checking:
+        d = rename_dict
+    else:
+        d = {}
+        for k, v in rename_dict.items():
+            if k in df.columns:
+                d[k] = v
+            else:
+                logger.warn(f"Attempting to rename {k}, which does not exist in df. Ignored.")
 
-    exprs = [pl.col(c).alias(d[c]) if c in d else pl.col(c) for c in df.columns]
-    return select(df, exprs)
+    if len(d) > 0:
+        exprs = [pl.col(c).alias(d[c]) if c in d else pl.col(c) for c in df.columns]
+        return _dsds_select(df, exprs)
+    else:
+        logger.warn("Nothing in rename dict is present in df. Nothing is done.")
+        return df
 
 def lowercase(df:PolarsFrame) -> PolarsFrame:
     '''
@@ -138,7 +128,7 @@ def lowercase(df:PolarsFrame) -> PolarsFrame:
 
     This is remembered by the blueprint by default.
     '''
-    return rename(df, {c: c.lower() for c in df.columns})
+    return rename(df, {c: c.lower() for c in df.columns}, skip_checking=True)
 
 def drop_nulls(
     df:PolarsFrame
@@ -159,7 +149,7 @@ def drop_nulls(
         else:
             by = df.columns
         expr = pl.all_horizontal([pl.col(by).is_null()])
-        return df.blueprint.filter(expr)
+        return _dsds_filter(df, expr, persist)
     return df.drop_nulls(subset)
 
 def filter(
@@ -172,9 +162,7 @@ def filter(
 
     Set persist = True so that this will be remembered by the blueprint.
     '''
-    if isinstance(df, pl.LazyFrame) and persist:
-        return df.blueprint.filter(condition)
-    return df.filter(condition)
+    return _dsds_filter(df, condition, persist)
 
 def order_by(
     df: PolarsFrame
@@ -211,7 +199,7 @@ def check_target_cardinality(df:PolarsFrame, target:str, raise_null:bool=True) -
     output = df.lazy().group_by(target).count().sort(target).with_columns(
         pct = pl.col("count")/pl.col("count").sum()
     ).collect()
-    if raise_null and output[target].null_count() > 0:
+    if raise_null & output[target].null_count() > 0:
         raise ValueError("Target contains null.")
     return output
 
@@ -305,21 +293,21 @@ def sparse_to_dense_target(df:PolarsFrame, target:str) -> PolarsFrame:
         pl.col(target).list.arg_max().alias(target)
     )
 
-def dense_to_sparse_target(df:PolarsFrame, target:str) -> PolarsFrame:
+def dense_to_sparse_target(df:PolarsFrame, target:str, persist:bool=False) -> PolarsFrame:
     '''
     This turns dense target column into a sparse column. This steps assume your classification target 
-    is dense, meaning all categories have already been encoded to values in range 0,...,n_classes-1. If
-    your target is not dense, see `dsds.prescreen.format_categorical_target`.
+    is dense. If your target is not dense, see `dsds.prescreen.format_categorical_target`. Here, dense
+    means that it is scalar (string or numbers, not vectors.)
 
-    !!! This step will NOT be remembered by the blueprint !!!
+    This step can be optionally remembered by the pipeline for lazyframes.
 
     Parameters
     ----------
     df
         Either a lazy or an eager Polars dataframe
     target
-        Name of target column
-
+        Name of target column. Will be sorted internally.
+    
     Example
     -------
     >>> import dsds.prescreen as ps
@@ -340,16 +328,34 @@ def dense_to_sparse_target(df:PolarsFrame, target:str) -> PolarsFrame:
     │ [0, 0, 1] │
     │ [1, 0, 0] │
     └───────────┘
+    >>> df = pl.DataFrame({"target":["a","b","c","c","a","b"]}) # for such target, it sorts them and assigns the unit vectors 
+    >>> print(ps.dense_to_sparse_target(df, target="target"))
+    shape: (6, 1)
+    ┌───────────┐
+    │ target    │
+    │ ---       │
+    │ list[u8]  │
+    ╞═══════════╡
+    │ [1, 0, 0] │
+    │ [0, 1, 0] │
+    │ [0, 0, 1] │
+    │ [0, 0, 1] │
+    │ [1, 0, 0] │
+    │ [0, 1, 0] │
+    └───────────┘
     '''
-    _ = type_checker(df, [target], "numeric", "dense_to_sparse_target")
-    n_unique = df.lazy().select(
-        n_unique = pl.col(target).max() + 1
+    unique_targets = df.lazy().select(
+        uniques = pl.col(target).unique().sort().implode(),
     ).collect().item(0,0)
-    return df.with_columns(
-        pl.col(target).apply(
-            lambda i: pl.zeros(n_unique, dtype=pl.UInt8, eager=True).set_at_idx(i, 1)
-        )
+    n_unique = len(unique_targets)
+    vectors = (
+        pl.zeros(n_unique, dtype=pl.UInt8, eager=True).set_at_idx(i, 1)
+        for i in range(len(unique_targets))
     )
+    mapping = dict(zip(unique_targets, vectors))
+    if persist:
+        return _dsds_map_dict(df, [pl.col(target).map_dict(mapping)])
+    return df.with_columns(pl.col(target).map_dict(mapping))
 
 def check_columns_types(df:PolarsFrame, cols:Optional[list[Union[str, pl.Expr]]]=None, n_rows:int=10) -> str:
     '''
@@ -747,7 +753,7 @@ def drop_non_numeric(df:PolarsFrame, include_bools:bool=False) -> PolarsFrame:
     logger.info(f"The following columns are dropped because they are not numeric: {non_nums}.\n"
                 f"Removed a total of {len(non_nums)} columns.")
     
-    return drop(df, non_nums)
+    return _dsds_drop(df, non_nums)
 
 def infer_by_pattern(
     df: PolarsFrame
@@ -821,7 +827,7 @@ def drop_by_pattern(
                 f"{remove_cols}\n"
                 f"Removed a total of {len(remove_cols)} columns.")
     
-    return drop(df, remove_cols)
+    return _dsds_drop(df, remove_cols)
 
 def drop_emails(
     df: PolarsFrame
@@ -834,7 +840,7 @@ def drop_emails(
     logger.info(f"The following columns are dropped because they are emails. {emails}.\n"
             f"Removed a total of {len(emails)} columns.")
     
-    return drop(df, emails)
+    return _dsds_drop(df, emails)
 
 # Refactor
 def infer_dates(df:PolarsFrame) -> list[str]:
@@ -874,7 +880,7 @@ def drop_date_cols(df:PolarsFrame) -> PolarsFrame:
     drop_cols = infer_dates(df)
     logger.info(f"The following columns are dropped because they are dates. {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 def infer_infreq_categories(
     df: PolarsFrame,
@@ -978,7 +984,7 @@ def drop_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=
     logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
                 f" invalid values. {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 def infer_nulls(df:PolarsFrame, threshold:float=0.5) -> list[str]:
     '''
@@ -1015,7 +1021,7 @@ def drop_highly_null(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
     logger.info(f"The following columns are dropped because they have more than {threshold*100:.2f}%"
                 f" null values. {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 def infer_by_var(df:PolarsFrame, threshold:float, target:str) -> list[str]:
     '''Infers columns that have lower than threshold variance. Target will not be included.'''
@@ -1031,7 +1037,7 @@ def drop_by_var(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
     drop_cols = infer_by_var(df, threshold, target) 
     logger.info(f"The following columns are dropped because they have lower than {threshold} variance. {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 # Really this is just an alias
 infer_by_regex = get_cols_regex
@@ -1057,7 +1063,7 @@ def drop_by_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> PolarsFr
                 f" {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
     
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 def get_unique_count(
     df:PolarsFrame, 
@@ -1135,7 +1141,7 @@ def drop_highly_unique(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
     logger.info(f"The following columns are dropped because more than {threshold*100:.2f}% of unique values."
                 f" {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 # Once there is a config, add a discrete criterion config
 def infer_discretes(df:PolarsFrame
@@ -1309,7 +1315,7 @@ def drop_constants(df:PolarsFrame, include_null:bool=True) -> PolarsFrame:
     drop_cols = infer_constants(df, include_null)
     logger.info(f"The following columns are dropped because they are constants. {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     '''
@@ -1330,7 +1336,7 @@ def drop_if_exists(df:PolarsFrame, cols:list[str]) -> PolarsFrame:
     '''Removes the given columns if they exist in the dataframe. This will be remembered by blueprint by default.'''
     drop_cols = list(set(cols).intersection(df.columns))
     logger.info(f"The following columns are dropped. {drop_cols}.\nRemoved a total of {len(drop_cols)} columns.")
-    return drop(df, drop_cols)
+    return _dsds_drop(df, drop_cols)
 
 def estimate_n_unique(
     df: PolarsFrame,
@@ -1376,9 +1382,7 @@ def shrink_dtype(
         _ = type_checker(df, cols, "numeric", "shrink_dtype")
         to_shrink = cols
 
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(pl.col(to_shrink).shrink_dtype())
-    return df.with_columns(pl.col(to_shrink).shrink_dtype())
+    return _dsds_with_columns(df, [pl.col(to_shrink).shrink_dtype()])
 
 #----------------------------------------------------------------------------------------------#
 # More statistical Methods for Prescreen purposes                                              #

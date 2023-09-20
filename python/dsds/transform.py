@@ -17,8 +17,8 @@ from .prescreen import (
     infer_nums_from_str,
     infer_infreq_categories,
 )
-from .blueprint import( # Need this for Polars extension to work
-    Blueprint  # noqa: F401
+from .blueprint import(
+    _dsds_with_columns
 )
 from typing import Optional, Union, Any
 from scipy.stats import (
@@ -36,18 +36,6 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
-
-def _dsds_with_columns(df:PolarsFrame, exprs:list[pl.Expr]) -> PolarsFrame:
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs)
-    else:
-        return df.with_columns(exprs)
-    
-def _dsds_with_columns_and_drop(df:PolarsFrame, exprs:list[pl.Expr], to_drop: list[str]) -> PolarsFrame:
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs).blueprint.drop(to_drop)
-    else:
-        return df.with_columns(exprs).drop(to_drop)
 
 def impute(
     df:PolarsFrame

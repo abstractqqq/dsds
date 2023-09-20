@@ -4,11 +4,11 @@ use rand::seq::SliceRandom;
 use rayon::prelude::*; 
 
 // Sample pool for the Generalized Coupon Collector's problem.
-fn gcc_sample_pooled(
+fn _gcc_sample_pooled(
     total:u32
     , subsample_amt:u32
     , subsample_times:u32
-) -> Array1<u32>{
+) -> Array1<u32> {
     let total_usize = total as usize;
 
     let mut count:Array1<u32> = Array1::from_elem(total_usize, 0);
@@ -31,7 +31,7 @@ fn _gcc_one_trial(
     , subsample_times:u32
     , n_times:u32
 ) -> u32 {
-    let times:Array1<u32> = gcc_sample_pooled(total, subsample_amt, subsample_times);
+    let times:Array1<u32> = _gcc_sample_pooled(total, subsample_amt, subsample_times);
     for x in times.into_iter() {
         if x < n_times {
             return 0
@@ -40,6 +40,7 @@ fn _gcc_one_trial(
     1 // return 1
 }
 
+// gcc = Generalized Coupon Collector problem
 pub fn gcc_monte_carlo_prob_est(
     n_trials:usize
     , total:u32

@@ -1,7 +1,6 @@
 
 pub mod metrics;
 pub mod utils;
-pub mod time_series;
 pub mod estimates;
 
 use polars_core::prelude::*;

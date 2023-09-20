@@ -2,13 +2,14 @@ pub mod text;
 mod consts;
 
 use crate::text::text::{
-    count_vectorizer,
-    tfidf_vectorizer,
+    //count_vectorizer,
+    //tfidf_vectorizer,
+    //get_ref_table,
+    // STEMMER
     snowball_stem,
-    get_ref_table,
     hamming_dist_series,
     hamming_dist,
-    STEMMER
+    levenshtein_dist,
 };
 
 use polars_core::prelude::*;
@@ -19,46 +20,48 @@ use pyo3_polars::error::PyPolarsErr;
 use pyo3_polars::{PyDataFrame, PySeries};
 use rayon::prelude::ParallelIterator;
 
+use self::text::levenshtein_dist;
+
 // Only expose Python Layer in mod.rs, except for things that require py object.
 
-#[pyfunction]
-pub fn rs_cnt_vectorizer(
-    pydf: PyDataFrame
-    , c: &str
-    , stemmer: &str
-    , min_dfreq:f32
-    , max_dfreq:f32
-    , max_word_per_doc:u32
-    , max_feautures: u32
-    , lowercase: bool
-) -> PyResult<PyDataFrame> {
+// #[pyfunction]
+// pub fn rs_cnt_vectorizer(
+//     pydf: PyDataFrame
+//     , c: &str
+//     , stemmer: &str
+//     , min_dfreq:f32
+//     , max_dfreq:f32
+//     , max_word_per_doc:u32
+//     , max_feautures: u32
+//     , lowercase: bool
+// ) -> PyResult<PyDataFrame> {
 
-    let df: DataFrame = pydf.into();
-    let st: STEMMER = STEMMER::from_str(stemmer);
-    let df: DataFrame = count_vectorizer(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
-                        .map_err(PyPolarsErr::from)?;
-    Ok(PyDataFrame(df))
-}
+//     let df: DataFrame = pydf.into();
+//     let st: STEMMER = STEMMER::from_str(stemmer);
+//     let df: DataFrame = count_vectorizer(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
+//                         .map_err(PyPolarsErr::from)?;
+//     Ok(PyDataFrame(df))
+// }
 
-#[pyfunction]
-pub fn rs_tfidf_vectorizer(
-    pydf: PyDataFrame
-    , c: &str
-    , stemmer: &str
-    , min_dfreq:f32
-    , max_dfreq:f32
-    , max_word_per_doc:u32
-    , max_feautures: u32
-    , lowercase: bool
-) -> PyResult<PyDataFrame> {
+// #[pyfunction]
+// pub fn rs_tfidf_vectorizer(
+//     pydf: PyDataFrame
+//     , c: &str
+//     , stemmer: &str
+//     , min_dfreq:f32
+//     , max_dfreq:f32
+//     , max_word_per_doc:u32
+//     , max_feautures: u32
+//     , lowercase: bool
+// ) -> PyResult<PyDataFrame> {
 
-    let df: DataFrame = pydf.into();
-    let st: STEMMER = STEMMER::from_str(stemmer);
-    let df: DataFrame = tfidf_vectorizer(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
-                        .map_err(PyPolarsErr::from)?;
-    Ok(PyDataFrame(df))
+//     let df: DataFrame = pydf.into();
+//     let st: STEMMER = STEMMER::from_str(stemmer);
+//     let df: DataFrame = tfidf_vectorizer(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures, lowercase)
+//                         .map_err(PyPolarsErr::from)?;
+//     Ok(PyDataFrame(df))
 
-}
+// }
 
 #[pyfunction]
 pub fn rs_hamming_dist(s1:&str, s2:&str) -> Option<u32> {
@@ -66,47 +69,8 @@ pub fn rs_hamming_dist(s1:&str, s2:&str) -> Option<u32> {
 }
 
 #[pyfunction]
-pub fn rs_hamming_dist_series(series_a:PySeries, series_b:PySeries) -> PyResult<PySeries> {
-    
-    let a:Series = series_a.into();
-    let b:Series = series_b.into();
-
-    let out: ChunkedArray<UInt32Type> = hamming_dist_series(&a, &b).map_err(PyPolarsErr::from)?;
-
-    Ok(
-        PySeries(out.into_series())
-    )
-}
-
-#[pyfunction]
 pub fn rs_levenshtein_dist(s1:&str, s2:&str) -> u32 {
-
-    // https://en.wikipedia.org/wiki/Wagner%E2%80%93Fischer_algorithm
-
-    let (len1, len2) = (s1.len(), s2.len());
-    let mut dp: Vec<Vec<u32>> = vec![vec![0; len2 + 1]; len1 + 1];
-
-    // Initialize the first row and first column
-    for i in 0..=len1 {
-        dp[i][0] = i as u32;
-    }
-
-    for j in 0..=len2 {
-        dp[0][j] = j as u32;
-    }
-
-    // Fill the dp matrix using dynamic programming
-    for (i, char1) in s1.chars().enumerate() {
-        for (j, char2) in s2.chars().enumerate() {
-            if char1 == char2 {
-                dp[i + 1][j + 1] = dp[i][j];
-            } else {
-                dp[i + 1][j + 1] = 1 + dp[i][j].min(dp[i][j + 1].min(dp[i + 1][j]));
-            }
-        }
-    }
-
-    dp[len1][len2]
+    levenshtein_dist(s1, s2)
 }
 
 #[pyfunction]
@@ -133,22 +97,22 @@ pub fn rs_snowball_stem_series(words:PySeries, no_stopwords:bool) -> PyResult<Py
     Ok(PySeries(out.into_series()))
 }
 
-#[pyfunction]
-pub fn rs_ref_table(
-    pydf: PyDataFrame
-    , c: &str
-    , stemmer: &str
-    , min_dfreq:f32
-    , max_dfreq:f32
-    , max_word_per_doc: u32
-    , max_feautures: u32
-) -> PyResult<PyDataFrame> {
+// #[pyfunction]
+// pub fn rs_ref_table(
+//     pydf: PyDataFrame
+//     , c: &str
+//     , stemmer: &str
+//     , min_dfreq:f32
+//     , max_dfreq:f32
+//     , max_word_per_doc: u32
+//     , max_feautures: u32
+// ) -> PyResult<PyDataFrame> {
     
-    // get_ref_table assumes all docs in df[c] are already lowercased
+//     // get_ref_table assumes all docs in df[c] are already lowercased
 
-    let df: DataFrame = pydf.into();
-    let st: STEMMER = STEMMER::from_str(stemmer);
-    let out: DataFrame = get_ref_table(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
-                        .map_err(PyPolarsErr::from)?;
-    Ok(PyDataFrame(out))
-}
+//     let df: DataFrame = pydf.into();
+//     let st: STEMMER = STEMMER::from_str(stemmer);
+//     let out: DataFrame = get_ref_table(df, c, st, min_dfreq, max_dfreq, max_word_per_doc, max_feautures)
+//                         .map_err(PyPolarsErr::from)?;
+//     Ok(PyDataFrame(out))
+// }

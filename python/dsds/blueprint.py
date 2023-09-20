@@ -19,10 +19,12 @@ import polars as pl
 import importlib
 import logging
 import copy
+import dsds
 
 logger = logging.getLogger(__name__)
 
 # P = ParamSpec("P")
+
 
 # action + the only non-None field name is a unique identifier for this Step (fully classifies all steps)
 @dataclass
@@ -144,40 +146,44 @@ class Blueprint:
         return [copy.deepcopy(self.steps[i]) for i in indices]
     
     def get_by_mention(self, keyword:str) -> list[Step]:
+        '''
+        You will get a shallow copy of the expressions mentioning the keyword. Be very careful 
+        not to mutate them!
+        '''
         output = []
         for s in self.steps:
             if s.action == "with_columns":
                 exprs = s.with_columns
                 for e in exprs:
                     if keyword in e.meta.root_names():
-                        output.append(copy.deepcopy(s))
+                        output.append(copy.copy(s))
                         break
             elif s.action == "map_dict":
                 exprs = s.map_dict
                 for e in exprs:
                     if keyword in e.meta.root_names():
-                        output.append(copy.deepcopy(s))
+                        output.append(copy.copy(s))
                         break
             elif s.action == "select":
                 exprs = s.select
                 for e in exprs:
                     if isinstance(e, str):
                         if e == keyword:
-                            output.append(copy.deepcopy(s))
+                            output.append(copy.copy(s))
                     else: # e is expression
                         for n in e.meta.root_names():
                             if n == keyword:
-                                output.append(copy.deepcopy(s))
+                                output.append(copy.copy(s))
                                 break
             elif s.action == "drop":
                 exprs = s.drop
                 for c in exprs:
                     if c == keyword:
-                        output.append(copy.deepcopy(s))
+                        output.append(copy.copy(s))
             elif s.action == "filter":
                 for n in s.filter.meta.root_names():
                     if n == keyword:
-                        output.append(copy.deepcopy(s))
+                        output.append(copy.copy(s))
                         break
         
         return output
@@ -457,3 +463,58 @@ def from_pkl(path: Union[str,Path]) -> Blueprint:
             return obj
         else:
             raise ValueError("The object in the pickled file is not a Blueprint object.")
+
+def _dsds_with_columns(df:PolarsFrame, exprs:list[pl.Expr]) -> PolarsFrame:
+    if isinstance(df, pl.LazyFrame) & dsds.PERSIST_IN_BLUEPRINT:
+        return df.blueprint.with_columns(exprs)
+    else:
+        return df.with_columns(exprs)
+    
+def _dsds_map_dict(df:PolarsFrame, exprs:list[pl.Expr]) -> PolarsFrame:
+    if isinstance(df, pl.LazyFrame) & dsds.PERSIST_IN_BLUEPRINT:
+        return df.blueprint.map_dict(exprs)
+    else:
+        return df.with_columns(exprs)
+    
+def _dsds_with_columns_and_drop(df:PolarsFrame, exprs:list[pl.Expr], to_drop: list[str]) -> PolarsFrame:
+    if isinstance(df, pl.LazyFrame) & dsds.PERSIST_IN_BLUEPRINT:
+        return df.blueprint.with_columns(exprs).blueprint.drop(to_drop)
+    else:
+        return df.with_columns(exprs).drop(to_drop)
+    
+def _dsds_select(
+    df:PolarsFrame
+    , selector: Union[list[str], list[pl.Expr]]
+    , persist: bool = True
+) -> PolarsFrame:
+    '''
+    A select wrapper that makes it pipeline compatible.
+
+    Set persist = True so that this will be remembered by the blueprint.
+    '''
+    if isinstance(df, pl.LazyFrame) & persist & dsds.PERSIST_IN_BLUEPRINT:
+        return df.blueprint.select(selector)
+    return df.select(selector)
+
+def _dsds_drop(df:PolarsFrame, to_drop:list[str], persist:bool=True) -> PolarsFrame:
+    '''
+    A pipeline compatible way to drop the given columns, which will be remembered by the blueprint
+    by default.
+    '''
+    if isinstance(df, pl.LazyFrame) & persist & dsds.PERSIST_IN_BLUEPRINT:
+        return df.blueprint.drop(to_drop)
+    return df.drop(to_drop)
+
+def _dsds_filter(
+    df:PolarsFrame
+    , condition: pl.Expr
+    , persist: bool = False
+) -> PolarsFrame:
+    ''' 
+    A wrapper function for Polars' filter so that it can be used in pipeline.
+
+    Set persist = True so that this will be remembered by the blueprint.
+    '''
+    if isinstance(df, pl.LazyFrame) & persist & dsds.PERSIST_IN_BLUEPRINT:
+        return df.blueprint.filter(condition)
+    return df.filter(condition)

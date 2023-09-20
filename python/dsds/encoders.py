@@ -9,14 +9,14 @@ from .prescreen import (
     , check_binary_target
     , type_checker
 )
-from .transform import _dsds_with_columns, _dsds_with_columns_and_drop
-from .blueprint import( # Need this for Polars extension to work
-    Blueprint  # noqa: F401
+from .blueprint import (
+    _dsds_with_columns, 
+    _dsds_with_columns_and_drop,
+    _dsds_map_dict
 )
 from typing import Optional
 import numpy as np
 import polars as pl
-import copy
 import logging
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ def one_hot_encode(
             else:
                 logger.info(f"During one-hot-encoding, the column {t.name} is found to have 1 unique value. Dropped.")
         
-        return df.blueprint.with_columns(exprs).blueprint.drop(str_cols)
+        return _dsds_with_columns_and_drop(df, exprs, str_cols)
     else:
         return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
 
@@ -298,19 +298,15 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''
     unique_cnt = get_unique_count(df).filter(pl.col("n_unique") == 2)
     binary_list = unique_cnt["column"].to_list()
-
     temp = df.lazy().select(
             pl.col(binary_list).unique().implode().list.sort()
         )
-    exprs:list[pl.Expr] = []
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
-    for t in temp.collect().get_columns():
-        u:pl.List = t[0] # t is a Series which contains a single list which contains the 2 unique values 
-        exprs.append(
-            pl.when(pl.col(t.name) == u[0]).then(zero).otherwise(one).alias(t.name)
-        )
-
+    exprs:list[pl.Expr] = [
+        pl.when(pl.col(t.name) == t[0][0]).then(zero).otherwise(one).alias(t.name)
+        for t in temp.collect().get_columns()
+    ] # t is a Series which contains a single list which contains the 2 unique values 
     return _dsds_with_columns(df, exprs)
 
 def multicat_one_hot_encode(
@@ -387,9 +383,7 @@ def multicat_one_hot_encode(
         else:
             logger.info(f"The multicategorical column {c.name} seems to have only 1 unique value. Dropped.")
 
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns(exprs).blueprint.drop(cols)
-    return df.with_columns(exprs).drop(cols)
+    return _dsds_with_columns_and_drop(df, exprs, cols)
 
 def ordinal_auto_encode(
     df:PolarsFrame
@@ -424,14 +418,11 @@ def ordinal_auto_encode(
     temp = df.lazy().select(
         pl.col(ordinal_list).unique().implode().list.sort(descending=descending)
     )
-    mappings = [
-        # map_dict on sorted uniques
+    mappings = [ # map_dict on sorted uniques
         pl.col(t.name).map_dict(dict(zip(t[0], range(len(t[0])))))
         for t in temp.collect().get_columns()
     ]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.map_dict(mappings)
-    return df.with_columns(mappings)
+    return _dsds_map_dict(df, mappings)
     
 def ordinal_encode(
     df:PolarsFrame
@@ -460,9 +451,7 @@ def ordinal_encode(
         else:
             logger.warning(f"Found that column {c} is not in df. Skipped.")
 
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.map_dict(mappings)
-    return df.with_columns(mappings)
+    return _dsds_map_dict(df, mappings)
 
 def smooth_target_encode(
     df:PolarsFrame
@@ -529,9 +518,7 @@ def smooth_target_encode(
         pl.col(str_cols[i]).map_dict(dict(zip(*ref.get_columns())), default=default)
         for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references))
     ]
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.map_dict(mappings)
-    return df.with_columns(mappings)
+    return _dsds_map_dict(df, mappings)
 
 def custom_binning(
     df:PolarsFrame
@@ -555,8 +542,7 @@ def custom_binning(
     suffix
         If you don't want to replace the original columns, you have the option to give the binned column a suffix
     '''
-    exprs = [pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix)]
-    return _dsds_with_columns(df, exprs)
+    return _dsds_with_columns(df, [pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix)])
 
 def fixed_sized_binning(
     df:PolarsFrame
@@ -663,11 +649,10 @@ def quantile_binning(
         exprs = [
             pl.col(c).cut(cuts.drop_in_place(c).to_list()).cast(pl.Utf8).suffix(suffix) for c in cols
         ]
-        return df.blueprint.with_columns(exprs)
     else: # Eager frame
-        return df.with_columns(
-            pl.col(cols).qcut(qcuts).cast(pl.Utf8).suffix(suffix) 
-        )
+        exprs = [pl.col(cols).qcut(qcuts).cast(pl.Utf8).suffix(suffix) ]
+
+    return _dsds_with_columns(df, exprs)
 
 def woe_cat_encode(
     df:PolarsFrame
@@ -728,7 +713,4 @@ def woe_cat_encode(
         pl.col(str_cols[i]).map_dict(dict(zip(*ref.get_columns())), default=default)
         for i, ref in enumerate(pl.collect_all(lazy_frames=lazy_references))
     ]
-
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.map_dict(mappings)
-    return df.with_columns(mappings)
+    return _dsds_map_dict(df, mappings)

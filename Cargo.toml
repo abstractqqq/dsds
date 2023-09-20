@@ -1,6 +1,6 @@
 [package]
 name = "dsds"
-version = "0.0.26"
+version = "0.0.3"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,13 +9,14 @@ name = "dsds"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = {version = "0.19"}
-pyo3-polars = {version = "0.6.0", features = ["lazy"]}
-polars-core = {version = "0.32.1"}
-polars-lazy =  {version="0.32.1"}
-polars = {version = "0.32.1", features = ["fmt", "performant"]}
+pyo3 = {version = "0.19.2"}
+pyo3-polars = {version = "0.7.0"}
+polars = {version = "0.33.2", features = ["fmt", "performant"]}
+polars-core = "0.33.2"
+polars-lazy = "0.33.2"
 rayon = "1.7.0"
 ndarray = {version = "0.15.6", features = ["rayon", "matrixmultiply-threading"]}
 numpy = "*"
 rand = "0.8.5"
+chrono = "0.4.31"
 # rustfft = "6.1.0"

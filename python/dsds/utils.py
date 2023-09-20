@@ -1,5 +1,8 @@
 from typing import Optional, Union
-from .blueprint import Blueprint
+from .blueprint import (
+    Blueprint,
+    _dsds_with_columns
+)
 from pathlib import Path
 from .type_alias import (
     PolarsFrame
@@ -75,69 +78,7 @@ def dump_blueprint(df:pl.LazyFrame, path:Union[str,Path]) -> pl.LazyFrame:
         return df
     raise TypeError("Blueprints only work with LazyFrame.")
 
-def checkpoint(
-    df:PolarsFrame
-    , temp_file_path:Union[str,Path]
-    , limit:int = -1
-    , **kwargs
-) -> PolarsFrame:
-    '''
-    A wrapper to save a temp copy of the data so far in either parquet or csv format at the given path. This
-    is purely a side effect. The difference between this and sink is that this gives you the option to save 
-    the temp file as a .csv, which can be checked by a human.
-
-    This step is pipeline compatible but will not be persisted in the blueprint.
-
-    Parameters
-    ----------
-    df
-        Either a lazy or eager Polars dataframe
-    temp_file_path
-        Path to write to. Must either end with .csv or .parquet
-    limit
-        Limit the number of rows to write. If <= 0, write all
-    
-    All other keyword arguments will be passed to Polars' write_csv or write_parquet
-    '''
-    ext = temp_file_path.split(".")[-1]
-    if ext == "csv":
-        if limit > 0:
-            df.lazy().limit(limit).collect().write_csv(temp_file_path, **kwargs)
-        else:
-            df.lazy().collect().write_csv(temp_file_path, **kwargs)
-    elif ext == "parquet":
-        if limit > 0:
-            df.lazy().limit(limit).collect().write_parquet(temp_file_path, **kwargs)
-        else:
-            df.lazy().collect().write_parquet(temp_file_path, **kwargs)
-    else:
-        raise ValueError(f"Temp file path must end with .csv or .parquet, not {ext}.")
-    
-    return df
-
-def sink_parquet(
-    df: pl.LazyFrame
-    , path: Union[str,Path]
-    , **kwargs
-) -> pl.LazyFrame:
-    '''
-    A wrapper for sink_parquet so that it is pipeline compatible. This will not be persisted in the blueprint.
-    '''
-    df.sink_parquet(path, **kwargs)
-    return df
-
-def sink_ipc(
-    df: pl.LazyFrame
-    , path: Union[str,Path]
-    , **kwargs
-) -> pl.LazyFrame:
-    '''
-    A wrapper for sink_ipc so that it is pipeline compatible. This will not be persisted in the blueprint.
-    '''
-    df.sink_ipc(path, **kwargs)
-    return df
-
-def garbage_collect(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
+def garbage_collect(df:PolarsFrame) -> PolarsFrame:
     '''
     A wrapper so that garbage collect can be part of the pipeline. This is purely a side effect.
 
@@ -145,12 +86,8 @@ def garbage_collect(df:PolarsFrame, persist:bool=False) -> PolarsFrame:
     ----------
     df
         Either a lazy or eager Polars dataframe
-    persist
-        Set it to true if df is lazy and you want to persist this step in the pipeline
     '''
     _ = gc.collect()
-    if isinstance(df, pl.LazyFrame) and persist:
-        return df.blueprint.add_func(df, garbage_collect, {})
     return df
 
 def append_classif_score(
@@ -217,18 +154,14 @@ def append_regression(
 def id_passthrough(
     df: PolarsFrame
     , col:str
-    , score_col:str = "_score"
+    , suffix:str = "_id_passthrough"
 ) -> PolarsFrame:
     '''
-    Appends an identity passthrough score to the pipeline.
+    Appends an identity passthrough to the pipeline.
 
     This step will be remembered by the blueprint by default.
     '''
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns([pl.col(col).alias(score_col)])
-    return df.with_columns(
-        pl.col(col).alias(score_col)
-    )
+    return _dsds_with_columns(df, [pl.col(col).suffix(suffix)])
 
 def logistic_passthrough(
     df: PolarsFrame
@@ -236,35 +169,31 @@ def logistic_passthrough(
     , coeff:float = 1.0
     , const:float = 0.
     , k:float = 1.0
-    , score_col:str = "_logistic"
+    , suffix:str = "_logistic"
 ) -> PolarsFrame:
     '''
-    Appends a logistic regression passthrough score to the pipeline. The formula used is 
+    Appends a logistic regression passthrough to the pipeline. The formula used is 
     1/(1 + exp(-k(coeff*x + const))).
 
     This step will be remembered by the blueprint by default.
     '''
-    expr = (pl.lit(1.0)/(pl.lit(1.0) + (pl.lit(-k) * (pl.col(col)*pl.lit(coeff) + pl.lit(const))).exp())).alias(score_col)  # noqa: E501
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns([expr])
-    return df.with_columns(expr)
+    expr = (pl.lit(1.0)/(pl.lit(1.0) + (pl.lit(-k) * (pl.col(col)*pl.lit(coeff) + pl.lit(const))).exp()))\
+            .alias(f"{col}{suffix}")
+    return _dsds_with_columns(df, [expr])
 
 def linear_passthrough(
     df: PolarsFrame
     , col:str
     , coeff:float = 1.0
     , const:float = 0.
-    , score_col:str = "_linear"
+    , suffix:str = "_linear"
 ) -> PolarsFrame:
     '''
-    Appends a linear passthrough score to the pipeline. The formula is coeff * x + const.
+    Appends a linear passthrough to the pipeline. The formula is coeff * x + const.
 
     This step will be remembered by the blueprint by default.
     '''
-    expr = (pl.col(col)*pl.lit(coeff) + pl.lit(const)).alias(score_col)
-    if isinstance(df, pl.LazyFrame):
-        return df.blueprint.with_columns([expr])
-    return df.with_columns(expr)    
+    return _dsds_with_columns(df, [(pl.col(col)*pl.lit(coeff) + pl.lit(const)).suffix(suffix)])
 
 # ----------------------------------------------------------------------------------------------------------------------
 

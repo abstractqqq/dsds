@@ -315,11 +315,12 @@ def train_test_split(
     , train_frac:float = 0.75
     , seed:int = 42
     , collect: bool = True
-) -> Tuple[PolarsFrame, PolarsFrame]:
+) -> list[PolarsFrame]:
     """
     Split polars dataframe into train and test set. If input is eager, output will be eager. If input is lazy, out
     output will be lazy. Unlike scikit-learn, this only creates the train and test dataframe. This will not break 
-    the dataframe into X and y and so target is not a necessary input.
+    the dataframe into X and y and so target is not a necessary input. It will always return a list of 2 dataframes,
+    train and test.
 
     Parameters
     ----------
@@ -330,14 +331,14 @@ def train_test_split(
     seed
         the random seed
     collect
-        If true, will always return eager train and test
+        If true, will always return eager train and test. If false and input is lazy, then output will be lazy too.
     """
     keep = df.columns # with_row_count will add a row_nr column. Don't need it.
     df_local = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count().set_sorted("row_nr")
     df_train = df_local.filter(pl.col("row_nr") < pl.col("row_nr").max() * pl.lit(train_frac)).select(keep)
     df_test = df_local.filter(pl.col("row_nr") >= pl.col("row_nr").max() * pl.lit(train_frac)).select(keep)
     if isinstance(df, pl.LazyFrame) and not collect:
-        return df_train, df_test
+        return [df_train, df_test]
     return pl.collect_all([df_train, df_test])
 
 # Make a monthly split for monthly progression version too.
@@ -351,7 +352,9 @@ def time_series_split(
     , gap: int = 0
 ) -> Iterator[Tuple[pl.DataFrame, pl.DataFrame]]:
     '''
-    Creates a time series validator as an iterator of (train, test) eager frames.
+    Creates a time series validator as an iterator of (train, test) eager frames. This does not take any 
+    time interval into consideration. The train and test size is purely determined by n_splits and data size
+    and other arguments.
 
     Parameters
     ----------
@@ -542,26 +545,30 @@ def time_series_split(
     
     for i, j in enumerate(range(n_splits, 0, -1)):
         rhs = offset + pl.col("row_nr").max() - j * test_size + 1
+        rhs_gap = rhs + pl.lit(gap)
         train = df_local.lazy().filter(pl.col("row_nr") < rhs).select(keep)
         test = df_local.lazy().filter(
-                pl.col("row_nr").is_between(pl.lit(rhs + gap), pl.lit(rhs + gap + test_size), closed="left")
+                pl.col("row_nr").is_between(rhs_gap, rhs_gap + pl.lit(test_size), closed="left")
             ).select(keep)
         
         train, test = pl.collect_all((train, test))        
         if len(train) == 0 or len(test) == 0:
-            logger.warn(f"Fold {i} is empty because of constraints imposed by input parameters. Skipped.")
+            logger.warn(f"Fold {i} is empty because of constraints imposed by input arguments. Skipped.")
         else:
             yield train, test
 
-def time_window_slide(
+def time_sliding_window(
     df: PolarsFrame,
     time_col: str,
     interval: TimeIntervals,
     length: int = 2
 ) -> Iterator[list[pl.DataFrame]]:
+    '''
+    
+    '''
     
     if df.select(time_col).dtypes[0] not in POLARS_DATETIME_TYPES:
-        raise TypeError(f"The column {time_col} must be a Polars data/datatime column.")
+        raise TypeError(f"The column {time_col} must be a Polars date/datetime column.")
     
     if interval == "monthly":
         time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
@@ -584,7 +591,7 @@ def time_window_slide(
     if length >= total:
         yield df_local.sort(out_names).collect().partition_by(out_names)
     else:
-        for i in range(total-length+1):
+        for i in range(total - length + 1):
             subframe = reference.slice(offset=i, length=length)
             expr = pl.lit(True).and_(
                 *(pl.col(c).is_in(subframe[c]) for c in out_names)
@@ -594,13 +601,30 @@ def time_window_slide(
             ).sort(out_names).collect()
             yield temp.partition_by(out_names)
 
-def window_slide(
+def sliding_window(
     df: PolarsFrame,
     cols: list[str],
     length: int = 2
 ) -> Iterator[list[pl.DataFrame]]:
-    
-    pass
+    '''
+    Creates a sliding window that goes through every `length` segments determined by the columns given in cols.
+    '''
+
+    reference = df.lazy().unique(subset=cols).sort(cols).select(cols).collect()
+    total_segments = len(reference)
+
+    if length >= total_segments:
+        yield df.lazy().sort(cols).collect().partition_by(cols)
+    else:
+        for i in range(total_segments - length + 1):
+            subframe = reference.slice(offset=i, length=length)
+            expr = pl.lit(True).and_(
+                *(pl.col(c).is_in(subframe[c]) for c in cols)
+            )
+            temp = df.filter(
+                expr
+            ).sort(cols).collect()
+            yield temp.partition_by(cols)
     
 def bootstrap(
     df: PolarsFrame
@@ -610,7 +634,7 @@ def bootstrap(
 ) -> Iterator[pl.DataFrame]:
     """
     Returns an iterator (generator) where each element is a sample from the underlying df. The dataframes in
-    the iterator will be eager, collected when needed.
+    the iterator will be eager, collected when needed if input is lazy.
 
     Parameters
     ----------
@@ -646,15 +670,15 @@ def col_subsample(
 
     Parameters
     ----------
-        df
-            Either a lazy or eager dataframe to split
-        times
-            The number of times to sample. Total number of yields for this generator
-        sample_amt
-            The number of columns to sample. Will not exceed the max number of columns
-        always_keep
-            Columns you want to always keep in the subsample. If always_keep = ['target'] and sample_amt = 2, then each 
-            time 3 columns will be returned, 'target' and 2 other which are randomly sampled. 
+    df
+        Either a lazy or eager dataframe to split
+    times
+        The number of times to sample. Total number of yields for this generator
+    sample_amt
+        The number of columns to sample. Will not exceed the max number of columns
+    always_keep
+        Columns you want to always keep in the subsample. If always_keep = ['target'] and sample_amt = 2, then each 
+        time 3 columns will be returned, 'target' and 2 other which are randomly sampled. 
     """
     if always_keep is None:
         keep = []
@@ -672,9 +696,9 @@ def segmentation(
     , segments: list[list[str]]
 ) -> Iterator[Tuple[str, pl.DataFrame]]:
     '''
-    Returns an iterator of (segment name, eager sub-dataframes). This generally is slower for lazy frames
-    because we are repeatedly collecting non-overlapping rows. If it is possible, it is highly recommended 
-    to use an eager frame for this.
+    Returns an iterator of (segment name, eager sub-dataframes) pairs. This generally is slower for 
+    lazy frames because we are repeatedly collecting non-overlapping rows. If it is possible, 
+    it is highly recommended to use an eager frame for this.
 
     Parameters
     ----------

@@ -5,7 +5,6 @@ from .prescreen import (
     , get_unique_count
     , get_string_cols
     , type_checker
-    , select
 )
 
 from .type_alias import (
@@ -15,8 +14,8 @@ from .type_alias import (
     , clean_strategy_str
     , ClassifModel
 )
-from .blueprint import( # Need this for Polars extension to work
-    Blueprint  # noqa: F401
+from .blueprint import(
+    _dsds_select
 )
 from .sample import (
     train_test_split
@@ -98,7 +97,7 @@ def corr_selector(
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")
     # add the complement set
-    return select(df, to_select + complement, persist=True)
+    return _dsds_select(df, to_select + complement)
 
 def discrete_ig(
     df:pl.DataFrame
@@ -121,7 +120,7 @@ def discrete_ig(
         (pl.col("n_unique") / len(df)).alias("unique_pct")
     ).rename({"column":"feature"})
 
-    conditional_entropy = [
+    conditional_entropy = (
         df.lazy().group_by(target, pred).agg(
             pl.count()
         ).with_columns(
@@ -133,12 +132,12 @@ def discrete_ig(
             * pl.col("prob(target,predictive)")).sum()).alias("conditional_entropy") 
         )
         for pred in discretes
-    ]
+    )
 
     return pl.concat(pl.collect_all(conditional_entropy))\
         .with_columns(
             target_entropy = pl.lit(target_entropy),
-            information_gain = pl.max(pl.lit(target_entropy) - pl.col("conditional_entropy"), 0)
+            information_gain = pl.max_horizontal(pl.lit(target_entropy) - pl.col("conditional_entropy"), 0)
         ).join(unique_count, on="feature")\
         .select("feature", "target_entropy", "conditional_entropy", "unique_pct", "information_gain")\
         .with_columns(
@@ -174,7 +173,7 @@ def discrete_ig_selector(
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
 
-    return select(df, to_select + complement, persist=True)
+    return _dsds_select(df, to_select + complement)
 
 def mutual_info(
     df:pl.DataFrame
@@ -296,7 +295,7 @@ def mutual_info_selector(
     logger.info(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
 
-    return select(df, to_select + complement, persist=True)
+    return _dsds_select(df, to_select + complement, persist=True)
 
 def _f_score(
     df:PolarsFrame
@@ -431,7 +430,7 @@ def f_score_selector(
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
 
-    return select(df, to_select + complement, persist=True)
+    return _dsds_select(df, to_select + complement, persist=True)
 
 def _mrmr_underlying_score(
     df:pl.DataFrame
@@ -595,7 +594,7 @@ def mrmr_selector(
     logger.info(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
     to_select.extend(f for f in df.columns if f not in nums)
-    return select(df, to_select, persist=True)
+    return _dsds_select(df, to_select, persist=True)
 
 def knock_out_mrmr(
     df:pl.DataFrame
@@ -707,7 +706,7 @@ def knock_out_mrmr_selector(
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
     
-    return select(df, to_select + complement, persist=True)
+    return _dsds_select(df, to_select + complement, persist=True)
 
 # Selectors for the methods below are not yet implemented
 
