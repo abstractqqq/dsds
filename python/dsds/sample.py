@@ -315,12 +315,12 @@ def train_test_split(
     , train_frac:float = 0.75
     , seed:int = 42
     , collect: bool = True
-) -> list[PolarsFrame]:
+) -> tuple[PolarsFrame]:
     """
-    Split polars dataframe into train and test set. If input is eager, output will be eager. If input is lazy, out
-    output will be lazy. Unlike scikit-learn, this only creates the train and test dataframe. This will not break 
-    the dataframe into X and y and so target is not a necessary input. It will always return a list of 2 dataframes,
-    train and test.
+    Split polars dataframe into train and test. If input is eager, output will be eager. If input is lazy, out
+    output will be eager unless collect is false. Unlike scikit-learn, this only creates the train and test 
+    dataframe. This will not break the dataframe into X and y and so target is not a necessary input. It will 
+    always return a list of 2 dataframes, train and test.
 
     Parameters
     ----------
@@ -329,17 +329,35 @@ def train_test_split(
     train_frac
         Fraction that goes to train. Defaults to 0.75.
     seed
-        the random seed
+        The random seed
     collect
         If true, will always return eager train and test. If false and input is lazy, then output will be lazy too.
     """
-    keep = df.columns # with_row_count will add a row_nr column. Don't need it.
-    df_local = df.lazy().with_columns(pl.all().shuffle(seed=seed)).with_row_count().set_sorted("row_nr")
-    df_train = df_local.filter(pl.col("row_nr") < pl.col("row_nr").max() * pl.lit(train_frac)).select(keep)
-    df_test = df_local.filter(pl.col("row_nr") >= pl.col("row_nr").max() * pl.lit(train_frac)).select(keep)
-    if isinstance(df, pl.LazyFrame) and not collect:
-        return [df_train, df_test]
-    return pl.collect_all([df_train, df_test])
+    if isinstance(df, pl.LazyFrame):
+        keep = df.columns # with_row_count will add a row_nr column. Don't need it.
+        df_local = df.lazy().with_row_count(offset=1).set_sorted("row_nr")
+        train_size = pl.col("row_nr").max()*pl.lit(train_frac) + 1
+        df_train = df_local.filter(
+            pl.col("row_nr").shuffle(seed=seed) < train_size
+        ).select(keep)
+        df_test = df_local.filter(
+            pl.col("row_nr").shuffle(seed=seed) >= train_size
+        ).select(keep)
+        if collect:
+            train, test = pl.collect_all([df_train, df_test])
+            return train, test
+        else:
+            return df_train, df_test
+    else:
+        train_size = pl.lit(int(len(df) * train_frac))
+        df_train = df.lazy().filter(
+            pl.int_range(0, len(df)).shuffle(seed=seed) < train_size
+        )
+        df_test = df.lazy().filter(
+            pl.int_range(0, len(df)).shuffle(seed=seed) >= train_size
+        )
+        train, test = pl.collect_all([df_train, df_test])
+        return train, test
 
 # Make a monthly split for monthly progression version too.
 

@@ -11,7 +11,7 @@ from itertools import product
 
 
 def str_comp(df1:pl.DataFrame, df2:pl.DataFrame):
-
+    return 
     df_str1 = df1.select(cs.string())
     df_str2 = df2.select(cs.string())
     for c1, c2 in product(df_str1.columns, df_str2.columns):
