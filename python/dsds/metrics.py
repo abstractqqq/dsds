@@ -21,7 +21,7 @@ from dsds._rust import (
     , rs_snowball_stem_series
 )
 
-from dsds.prescreen import type_checker
+# from dsds.prescreen import type_checker
 import numpy as np 
 import polars as pl
 import logging
@@ -339,7 +339,7 @@ def logloss(
             * (pl.col("y").dot(pl.col("l")) + pl.col("ny").dot(pl.col("o"))) / len(y_a)
         ).item(0,0)
     
-def psi_str(
+def psi_discrete(
     expected: pl.Series,
     actual: pl.Series,
     full_table: bool = False
@@ -350,29 +350,22 @@ def psi_str(
     Parameters
     ----------
     expected
-        Either a Polars Series or a NumPy array that contains the new probabilites
+        Either a Polars Series or a NumPy array that contains the expected values
     actual
-        Either a Polars Series or a NumPy array that contains the old probabilites
+        Either a Polars Series or a NumPy array that contains the actual values
     full_table
         If true, will return the full table used in PSI computation and you can see which bin contributes
         the most for the change. If false, a 1x1 dataframe will be returned with only the total PSI. If you
         want a floating point result, do psi(new, old, n_bins, False).item(0,0)
     '''
-    
-    if expected.dtype != pl.Utf8 or actual.dtype != pl.Utf8:
-        raise TypeError(f"The input series should both have str type, but are of "
-                        f"({expected.dtype}, {actual.dtype}) dtypes instead.")
-
-    name1 = f"{expected.name}_count"
-    name2 = f"{actual.name}_count"
-    df1 = expected.value_counts(parallel=True).rename({"counts":name1}).lazy()
-    df2 = actual.value_counts(parallel=True).rename({"counts":name2}).lazy()
+    df1 = expected.value_counts(parallel=True).lazy()
+    df2 = actual.value_counts(parallel=True).lazy()
     table = (
         df1.join(df2, left_on=expected.name, right_on=actual.name, how="outer", suffix="_right")
         .select(
             pl.col(expected.name),
-            e = (pl.col(name1) / len(expected)).clip_min(0.00001),
-            a = (pl.col(name2 + "_right") / len(actual)).clip_min(0.00001)
+            e = (pl.col("counts") / len(expected)).clip_min(0.00001),
+            a = (pl.col("counts_right") / len(actual)).clip_min(0.00001)
         ).with_columns(
             (pl.col("e") - pl.col("a")).alias(r"e% - a%"),
             ln_e_on_a = (pl.col("e")/pl.col("a")).log()
@@ -411,21 +404,22 @@ def psi(
     s1 = pl.Series(expected)
     s2 = pl.Series(actual)
 
-    qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
-    s1_cuts:pl.DataFrame = s1.qcut(qcuts, series=False)
-    s1_summary = s1_cuts.lazy().group_by(pl.col("category").cast(pl.Utf8)).agg(
-        a = pl.count()
-    )
+    s1_cuts:pl.DataFrame = s1.qcut(n_bins, include_breaks=True).struct.unnest()\
+        .filter(pl.col("break_point").is_not_null())
 
-    s2_base:pl.DataFrame = s2.cut(bins = s1_cuts.get_column("break_point").unique().sort().head(len(qcuts)), 
-                                  series = False)
+    s1_summary = s1_cuts.lazy().group_by(pl.col("category").cast(pl.Utf8)).agg(
+        a = pl.count(),
+        break_point = pl.col("break_point").first()
+    ).collect()
+    s2_base:pl.DataFrame = s2.cut(breaks = s1_summary.filter(pl.col("break_point").is_finite())["break_point"].sort(), 
+                                    include_breaks=True).struct.unnest()
 
     s2_summary:pl.DataFrame = s2_base.lazy().group_by(
         pl.col("category").cast(pl.Utf8)
     ).agg(
         b = pl.count()
     )
-    table = s1_summary.join(s2_summary, on="category").with_columns(
+    table = s1_summary.lazy().join(s2_summary, on="category").with_columns(
         e = (pl.col("a")/len(s1)).clip_min(0.00001),
         a = (pl.col("b")/len(s2)).clip_min(0.00001)
     ).with_columns(
@@ -435,7 +429,11 @@ def psi(
         psi = pl.col(r"e% - a%") * pl.col("ln_e_on_a")
     )
     if full_table:
-        return table.sort("category").rename({"category":"range"}).collect()
+        return table.sort("category").rename({"category":"range"})\
+                .select("range", "break_point"
+                        , pl.col("e").alias("expected%")
+                        , pl.col("a").alias("actual%")
+                        , r"e% - a%", "psi").collect()
     else:
         return table.select(pl.col("psi").sum().alias("psi")).collect()
 
@@ -744,7 +742,7 @@ def df_jaccard_similarity(
     │ 0.333333    │
     └─────────────┘
     '''
-    _ = type_checker(df, [c1,c2], "list", "df_jaccard_similarity")
+    # _ = type_checker(df, [c1,c2], "list", "df_jaccard_similarity")
     out:pl.DataFrame = rs_df_inner_list_jaccard(df, c1, c2, inner_dtype, include_null)
     if append:
         return pl.concat([df, out], how="horizontal")

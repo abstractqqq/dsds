@@ -108,6 +108,12 @@ class Step:
             if field.name != "action" and value is not None:
                 return value
             
+    def get_expressions(self) -> list[pl.Expr]:
+        if self.action in ("model_step", "add_func"):
+            return []
+        else:
+            return copy.deepcopy(self.content())
+            
     def show_content(self):
         content = self.content()
         if isinstance(content, list):

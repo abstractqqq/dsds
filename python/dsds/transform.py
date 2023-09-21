@@ -743,7 +743,7 @@ def clip(
     , cols: list[str]
     , *
     , min_clip: Optional[float] = None
-    , max_clip: Optional[float] = None
+    , max_clip: Optional[float] = 999999.0
 ) -> PolarsFrame:
     '''
     Clips the columns within the min and max_clip bounds. This can be used to control outliers. If both min_clip and
@@ -866,8 +866,8 @@ def linear_transform(
     df: PolarsFrame
     , cols: list[str]
     , *
-    , coeffs: Union[float, list[float]]
-    , consts: Union[float, list[float]]
+    , coeffs: Union[float, list[float]] = 1.0
+    , consts: Union[float, list[float]] = 0.
     , suffix: str = ""
 ) -> PolarsFrame:
     '''
@@ -1121,8 +1121,8 @@ def extract_horizontally(
 def extract_word_count(
     df: PolarsFrame
     , cols: Union[str, list[str]]
-    , *
     , words: list[str]
+    , *
     , lower: bool = True
 ) -> PolarsFrame:
     '''

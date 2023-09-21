@@ -11,6 +11,10 @@ from .type_alias import (
 from .sample import (
     lazy_sample
 )
+from .metrics import (
+    psi_discrete,
+    psi
+)
 from polars.type_aliases import (
     CorrelationMethod
     , ClosedInterval
@@ -174,9 +178,6 @@ def order_by(
     A wrapper function for Polars' sort so that it can be used in pipeline.
     '''
     return df.sort(by=by, descending=descending, nulls_last=nulls_last)
-    # if isinstance(df, pl.LazyFrame) and persist:
-    #     return output.blueprint.add_func(df, order_by, {"by":by,"descending":descending, "nulls_last":nulls_last})
-    # return output
 
 def check_binary_target(df:PolarsFrame, target:str) -> bool:
     '''
@@ -512,59 +513,49 @@ def data_profile(
 ) -> pl.DataFrame:
     '''
     A more detailed profile the data than Polars' default describe. This is an expensive function. 
-    This only profiles numeric and string columns. More complicated columns like columns of lists 
-    cannot be profiled at this time. Please sample and exclude some columns if runtime is important.
+    This only profiles numeric, string and boolean columns. More complicated columns like 
+    columns of lists cannot be profiled at this time. Please sample and exclude some columns 
+    if runtime is important.
 
     Parameters
     ----------
     df
         Either a lazy or eager Polars dataframe
     percentiles
-        Percentile cuts that will be returned
+        Percentile cuts that will be returned. Values should be >0 and <1. It supports up to 1 digit
+        of accuracy. E.g. If 50.12 and 50.13 are both provided, they will be the same 50.1-percentile column
+        and an error will be thrown.
     exclude
         List of columns to exclude
     '''
-    selector = cs.numeric() & cs.string()
+    selector = (cs.numeric() | cs.string() | cs.boolean())
     if exclude is not None:
         selector = selector & ~cs.by_name(exclude)
         
-    df_local = df.lazy().select(selector).collect()
-    temp = df_local.describe(percentiles)
-    desc = temp.drop_in_place("describe")
-    # Get unique
-    unique_counts = get_unique_count(df_local).with_columns(
-        unique_pct = pl.col("n_unique") / len(df_local)
-    )
-    # Skew and Kurtosis
-    skew_and_kt_data = df_local.lazy().select(
-        pl.all().skew().prefix("skew:")
-        , pl.all().skew().prefix("kurtosis:")
-    ).collect().row(0)
+    df_local = df.lazy().select(selector)
+    features = df_local.columns
+    dtypes = (dtype_mapping(t) for t in df_local.dtypes)
 
-    n_cols = len(df_local.columns)
-    skew_and_kt = pl.from_records((df_local.columns, skew_and_kt_data[:n_cols], skew_and_kt_data[n_cols:])
-                                  , schema=["column", "skew", "kurtosis"])
+    stats = [
+        (
+            pl.lit(f, dtype=pl.Utf8).alias("column"),
+            pl.lit(t, dtype=pl.Utf8).alias("dtype"),
+            (pl.col(f).null_count() / pl.count()).alias("null_pct"),
+            pl.col(f).min().cast(pl.Utf8).alias("min"),
+            pl.col(f).max().cast(pl.Utf8).alias("max"),
+            pl.col(f).mean().cast(pl.Float64).alias("mean"),
+            pl.col(f).std().cast(pl.Float64).alias("std"),
+            pl.col(f).median().cast(pl.Float64).alias("median"),
+            pl.col(f).skew().cast(pl.Float64).alias("skew"),
+            pl.col(f).kurtosis().cast(pl.Float64).alias("kurtosis"),
+            *(pl.col(f).quantile(q).cast(pl.Float64).alias(f"{q*100:.1f}-percentile") for q in percentiles if q > 0 and q < 1)
+        )
+        for f,t in zip(features, dtypes)
+    ]
 
-    # Get a basic string description of the data type.
-    dtypes_dict = dict(zip(df_local.columns, map(dtype_mapping, df_local.dtypes)))
-    # Get all percentiles
-    pat = re.compile("^\d+%$")
-    pctls = [d for d in desc if pat.search(d)]
-    # Numerical stuff
-    nums = ["count" ,"null_count", "mean", "std", "median"] + pctls
-    # Combine all
-    final = temp.transpose(include_header=True, column_names=desc).with_columns(
-        pl.col(c).cast(pl.Float64) for c in nums
-    ).with_columns(
-        null_pct = pl.col("null_count")/pl.col("count")
-        , non_null_count = pl.col("count") - pl.col("null_count")
-        , CoV = pl.col("std") / pl.col("mean")
-        , dtype = pl.col("column").map_dict(dtypes_dict)
-    ).join(unique_counts, on="column").join(skew_and_kt, on="column")
-    # select only the stuff we need
-    return final.select('column', 'dtype', "non_null_count", 'null_count','null_pct','n_unique'
-                        , 'unique_pct','mean','std', 'CoV','min','max','median',"skew", "kurtosis"
-                        , *pctls)
+    dfs = (df_local.select(*s) for s in stats)
+    
+    return pl.concat(pl.collect_all(dfs))
 
 # Numeric only describe. Be more detailed.
 
@@ -709,7 +700,6 @@ def over_time_report(
         all_metrics:list[OverTimeMetrics] = [metrics]
 
     agg_exprs = []
-    complex_parts = []
     for m in all_metrics:
         if m == "null":
             agg_exprs.append((pl.col(cols).null_count()/ pl.count()).suffix("_null%"))
@@ -728,11 +718,84 @@ def over_time_report(
             agg_exprs.append(pl.col(cols).max().suffix("_mean"))
         elif m == "std":
             agg_exprs.append(pl.col(cols).std().suffix("_std"))
+        elif m == "var":
+            agg_exprs.append(pl.col(cols).var().suffix("_var"))
+        elif m == "mode":
+            agg_exprs.append(pl.col(cols).mode().suffix("_mode"))
         else:
             logger.warning(f"Found {m} which is not a valid over time metric. Ignored.")
 
-    simple_part = df.with_columns(time_exprs).group_by(group_by).agg(agg_exprs).sort(group_by)
-    return simple_part
+    return (
+        df.with_columns(time_exprs)
+        .group_by(group_by)
+        .agg(agg_exprs)
+        .sort(group_by)
+    )
+
+def old_vs_new_report(
+    old_df: PolarsFrame
+    , new_df: PolarsFrame
+    , features: list[str]
+    , percentiles: list[float] = [0.25, 0.75]
+    , compute_psi: bool = False
+    , psi_bins: int = 10
+) -> pl.DataFrame:
+    '''
+    Computes stats of features in old dataframe vs new dataframe. Optionally, psi can be computed for these features.
+
+    Parameters
+    ----------
+    old_df
+        Reference for the old data. Either a lazy or eager Polars dataframe
+    new_df
+        Reference for the new data. Either a lazy or eager Polars dataframe
+    features
+        Columns to profile.
+    percentiles
+        Percentiles to compute
+    compute_psi
+        If true, will compute psi for these features
+    psi_bins
+        If compute_psi is true, this will be used in the psi computation for numerical features
+    '''
+    if compute_psi:
+        new = new_df.lazy().select(features).collect()
+        old = old_df.lazy().select(features).collect()
+    else:
+        new = new_df.select(features)
+        old = old_df.select(features)
+
+    df1 = data_profile(old, percentiles=percentiles)
+    df2 = data_profile(new, percentiles=percentiles)
+
+    df = df1.join(df2, on = "column", suffix="_new")
+    if compute_psi:
+        psi_list = []
+        discretes = infer_discretes(old)
+        for f in features:
+            try:
+                old_col = old[f]
+                new_col =  new[f]
+                dtype = old_col.dtype
+                if dtype in (pl.Utf8, pl.Boolean) or f in discretes:
+                    psi_list.append(psi_discrete(old_col, new_col).item(0,0))
+                elif dtype in POLARS_NUMERICAL_TYPES:
+                    psi_list.append(psi(old_col, new_col, n_bins=psi_bins).item(0,0))
+                else:
+                    raise TypeError(f"Feature {f} is of type {dtype}, which cannot be used to compute PSI.")
+            except Exception as e:
+                logger.error(f"Exception when computing PSI for column {f}: {e}")
+                psi_list.append(-1.0)
+
+        psi_frame = pl.from_records([features, psi_list], schema=["column", "old_vs_new_psi"])
+        df = df.join(psi_frame, on = "column")
+
+    return df.select(
+        pl.col("column"),
+        pl.col("dtype"),
+        pl.col("old_vs_new_psi"),
+        pl.col("*").exclude(["column", "dtype", "old_vs_new_psi", "dtype_new"])
+    )
 
 # Add an outlier description
 
@@ -1226,7 +1289,6 @@ def infer_multicategorical(
     Infers multicategorical columns, e.g. string columns with elements of the form "aaa|bbb|ccc". 
     This occurs a lot for columns like reasoncodes or error codes.
     '''
-    
     if separator == "|":
         sep = r"\|"
     else:
