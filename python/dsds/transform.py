@@ -4,6 +4,7 @@ from .type_alias import (
     , SimpleImputeStrategy
     , HotDeckImputeStrategy
     , ScalingStrategy
+    , ScaleByStrategy
     , PowerTransformStrategy
     , DateExtract
     , ListExtract
@@ -26,6 +27,7 @@ from scipy.stats import (
     , boxcox_normmax
 )
 from functools import partial
+import dsds
 import logging
 import math
 # import numpy as np
@@ -66,15 +68,15 @@ def impute(
         The constant value to impute by if strategy = 'const'
     '''
     if strategy == "median":
-        all_medians = df.lazy().select(pl.col(cols).median()).collect().row(0)
+        all_medians = df.lazy().select(pl.col(cols).median()).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [pl.col(c).fill_null(all_medians[i]) for i,c in enumerate(cols)]
     elif strategy in ("mean", "avg"):
-        all_means = df.lazy().select(pl.col(cols).mean()).collect().row(0)
+        all_means = df.lazy().select(pl.col(cols).mean()).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [pl.col(c).fill_null(all_means[i]) for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
         exprs = [pl.col(cols).fill_null(const)]
     elif strategy in ("mode", "most_frequent"):
-        all_modes = df.lazy().select(pl.col(cols).mode().first()).collect().row(0)
+        all_modes = df.lazy().select(pl.col(cols).mode().first()).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [pl.col(c).fill_null(all_modes[i]) for i,c in enumerate(cols)]
     elif strategy == "coalease":
         exprs = [pl.coalesce(cols).alias(cols[0])]
@@ -90,7 +92,8 @@ def impute_nan(
     , by: Optional[float] = None
 ) -> PolarsFrame:
     '''
-    Maps all NaN or infinite values to the given value.
+    Maps all NaN or infinite values to the given value. If `by` is not provided, this will map
+    NaN or infinite values to null.
     
     This will be remembered by blueprint by default.
 
@@ -111,7 +114,7 @@ def impute_nan(
     
     return _dsds_with_columns(df, exprs)
 
-def _get_agg_expr(c:str, strategy:SimpleImputeStrategy) -> pl.Expr:
+def _get_agg_impute_expr(c:str, strategy:SimpleImputeStrategy) -> pl.Expr:
     if strategy in ("mean", "avg"):
         agg = pl.col(c).mean().alias(strategy)
     elif strategy == "median":
@@ -179,11 +182,12 @@ def hot_deck_impute(
         if c in group_by:
             raise ValueError(f"Columns in cols should not appear in group_by. Found {c} in both.")
 
+    # Probably not the most performant.
     references = (
-        df.lazy().group_by(group_by).agg(_get_agg_expr(c, strategy))
+        df.lazy().group_by(group_by).agg(_get_agg_impute_expr(c, strategy))
         for c in cols
     )
-    dfs = pl.collect_all(references)
+    dfs = pl.collect_all(references, streaming=dsds.STREAM_TRANSFORM)
     exprs = []
     for c, ref in zip(cols, dfs):
         expr = pl.col(c)
@@ -238,7 +242,8 @@ def scale(
     cols
         The columns to scale
     strategy
-        One of `standard`, `min_max`, `const` or `robust`. If 'const', the const argument should be provided
+        One of `standard`, `min_max`, `const`, `abs_max` or `robust`. If 'const', 
+        the const argument should be provided
     const
         The constant value to scale by if strategy = 'const'
     qcuts
@@ -250,26 +255,26 @@ def scale(
         mean_std = df.lazy().select(
             pl.col(cols).mean().prefix("mean:"),
             pl.col(cols).std().prefix("std:")
-        ).collect().row(0)
+        ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [(pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols)]
     elif strategy == "min_max":
         min_max = df.lazy().select(
             pl.col(cols).min().prefix("min:"),
             pl.col(cols).max().prefix("max:")
-        ).collect().row(0) # All mins come first, then maxs
+        ).collect(streaming=dsds.STREAM_TRANSFORM).row(0) # All mins come first, then maxs
         exprs = [(pl.col(c) - min_max[i])/((min_max[i + len(cols)] - min_max[i])) for i,c in enumerate(cols)]
     elif strategy == "robust":        
         quantiles = df.lazy().select(
             pl.col(cols).quantile(qcuts[0]).suffix("_1"),
             pl.col(cols).quantile(qcuts[1]).suffix("_2"),
             pl.col(cols).quantile(qcuts[2]).suffix("_3")
-        ).collect().row(0)
+        ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [(pl.col(c) - quantiles[len(cols) + i])/((quantiles[2*len(cols) + i] - quantiles[i])) 
                  for i,c in enumerate(cols)]
-    elif strategy == "max_abs":
+    elif strategy == "abs_max":
         max_abs = df.lazy().select(
-            pl.col(cols).abs().max().suffix("_maxabs")
-        ).collect().row(0)
+            pl.col(cols).abs().max().suffix("_absmax")
+        ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [pl.col(c)/max_abs[i] for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
         exprs = [pl.col(cols) / const]
@@ -277,6 +282,69 @@ def scale(
         raise TypeError(f"Unknown scaling strategy: {strategy}")
 
     return _dsds_with_columns(df, exprs)
+
+def scale_by(
+    df: PolarsFrame
+    , c: str
+    , by: str
+    , *
+    , strategy:ScaleByStrategy="standard"
+    , qcuts:tuple[float, float, float] = (0.25, 0.5, 0.75)
+) -> PolarsFrame:
+    
+    _ = type_checker(df, [c], "numeric", "scale_by")    
+    if strategy in ("const", "constant"):
+        raise ValueError("Constant strategy is only available scale, not in scale_by.")
+    
+    if strategy == "standard":
+        agg_exprs = [pl.col(c).mean().prefix("mean:"), pl.col(c).std().prefix("std:")]
+    elif strategy == "max_abs":
+        agg_exprs = [pl.col(c).abs().max().suffix("_maxabs")]
+    elif strategy == "min_max":
+        agg_exprs = [pl.col(c).min().prefix("min:"), pl.col(c).max().prefix("max:")]
+    elif strategy == "mean":
+        agg_exprs = [pl.col(c).mean().prefix("mean:")]
+    elif strategy == "median":
+        agg_exprs = [pl.col(c).median().prefix("median:")]
+    elif strategy == "max":
+        agg_exprs = [pl.col(c).max().prefix("max:")]
+    elif strategy == "robust":
+        agg_exprs = [
+            pl.col(c).quantile(qcuts[0]).suffix("_1"),
+            pl.col(c).quantile(qcuts[1]).suffix("_2"),
+            pl.col(c).quantile(qcuts[2]).suffix("_3")
+        ]
+    else:
+        raise TypeError(f"Unknown scaling strategy: {strategy}. "
+                        "Note: ScaleByStrategies are not the same as ScalingStrategies.")
+
+    stats = df.lazy().group_by(by).agg(
+        *agg_exprs
+    ).collect(streaming=dsds.STREAM_TRANSFORM)
+    expr = pl.lit(None)
+    if strategy == "standard":
+        for b, mean, std in zip(*stats.get_columns()):
+            expr = pl.when(pl.col(by) == b).then((pl.col(c)-pl.lit(mean))/pl.lit(std)).otherwise(expr)
+    elif strategy == "min_max":
+        for b, min_, max_ in zip(*stats.get_columns()):
+            expr = pl.when(pl.col(by) == b).then((pl.col(c)-pl.lit(min_))/pl.lit(max_-min_)).otherwise(expr)
+    elif strategy == "robust":
+        for b, q1, q2, q3 in zip(*stats.get_columns()): 
+            expr = pl.when(pl.col(by) == b).then((pl.col(c)-pl.lit(q2))/pl.lit(q3-q1)).otherwise(expr)
+    elif strategy == "max_abs":
+        for b, abs_max in zip(*stats.get_columns()):
+            expr = pl.when(pl.col(by) == b).then(pl.col(c)/pl.lit(abs_max)).otherwise(expr)
+    elif strategy == "mean":
+        for b, mean in zip(*stats.get_columns()):
+            expr = pl.when(pl.col(by) == b).then(pl.col(c)/pl.lit(mean)).otherwise(expr)
+    elif strategy == "median":
+        for b, median in zip(*stats.get_columns()):
+            expr = pl.when(pl.col(by) == b).then(pl.col(c)/pl.lit(median)).otherwise(expr)
+    elif strategy == "max":
+        for b, max_ in zip(*stats.get_columns()):
+            expr = pl.when(pl.col(by) == b).then(pl.col(c)/pl.lit(max_)).otherwise(expr)
+
+    return _dsds_with_columns(df, [expr])
 
 def custom_transform(
     df: PolarsFrame
@@ -682,11 +750,11 @@ def power_transform(
     _ = type_checker(df, cols, "numeric", "power_transform")
     exprs:list[pl.Expr] = []
     if strategy in ("yeo_johnson", "yeojohnson"):
-        lmaxs = df.lazy().select(cols).group_by(pl.lit(1)).agg(
+        lmaxs = df.lazy().select(
             pl.col(c)
-            .apply(yeojohnson_normmax, strategy="threading", return_dtype=pl.Float64).alias(c)
+            .map(yeojohnson_normmax, return_dtype=pl.Float64).alias(c)
             for c in cols
-        ).select(cols).collect().row(0)
+        ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         for c, lmax in zip(cols, lmaxs):
             if lmax == 0: # log(x + 1)
                 x_ge_0_sub_expr = (pl.col(c).add(1)).log()
@@ -704,11 +772,11 @@ def power_transform(
             )
     elif strategy in ("box_cox", "boxcox"):
         bc_normmax = partial(boxcox_normmax, method="mle")
-        lmaxs = df.lazy().select(cols).group_by(pl.lit(1)).agg(
+        lmaxs = df.lazy().select(
             pl.col(c)
-            .apply(bc_normmax, strategy="threading", return_dtype=pl.Float64).alias(c)
+            .map(bc_normmax, return_dtype=pl.Float64).alias(c)
             for c in cols
-        ).select(cols).collect().row(0)
+        ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs.extend(
             pl.col(c).log() if lmax == 0 else (pl.col(c).pow(lmax) - 1) / lmax 
             for c, lmax in zip(cols, lmaxs)

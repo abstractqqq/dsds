@@ -38,7 +38,7 @@ def lazy_sample(
     if sample_amt is None:
         if sample_frac is None:
             frac = 0.75
-        elif sample_frac <= 0 or sample_frac >= 1:
+        elif (sample_frac <= 0) | (sample_frac >= 1):
             raise ValueError("Sample fraction must be > 0 and < 1.")
         else:
             frac = sample_frac
@@ -84,12 +84,11 @@ def simple_upsample(
     , exclude: Optional[list[str]] = None
     , positive: bool = False
     , seed: int = 42
-) -> PolarsFrame:
+) -> pl.DataFrame:
     '''
     For records in the subgroup, we (1) sample with replacement for `count` many records
     and (2) add a small random number uniformly distributed in (-epsilon, epsilon) to all 
-    the float-valued columns except those in exclude. This function can be used in the 
-    pipeline but will not be preserved.
+    the float-valued columns except those in exclude.
 
     Parameters
     ----------
@@ -183,8 +182,6 @@ def simple_upsample(
         new_c = pl.Series(c, sub[c].to_numpy() + noise).fill_nan(None) 
         sub = sub.replace_at_idx(sub.find_idx_by_name(c), new_c)
 
-    if isinstance(df, pl.LazyFrame):
-        return pl.concat([df, sub.lazy()])
     return pl.concat([df, sub])
 
 def simple_downsample(
@@ -529,7 +526,7 @@ def time_series_split(
             ).select(keep)
         
         train, test = pl.collect_all((train, test))        
-        if len(train) == 0 or len(test) == 0:
+        if (len(train) == 0) | (len(test) == 0):
             logger.warn(f"Fold {i} is empty because of constraints imposed by input arguments. Skipped.")
         else:
             yield train, test
@@ -748,7 +745,7 @@ def segmentation(
     └───────┴───────┴─────┴───────┘
     '''
     is_lazy = isinstance(df, pl.LazyFrame)
-    for seg in segments:
+    for seg in segments: # lazy has perf problems
         seg_name = str(tuple(seg))
         if is_lazy:
             reference = df.lazy().group_by(seg).count().sort(seg).collect()

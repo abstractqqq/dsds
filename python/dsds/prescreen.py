@@ -37,7 +37,7 @@ from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 from math import comb
 from dsds._rust import rs_levenshtein_dist
-import re
+# import re
 import polars.selectors as cs
 import polars as pl
 import logging
@@ -145,7 +145,7 @@ def drop_nulls(
 
     Set persist = True so that this will be remembered by the blueprint.
     '''
-    if isinstance(df, pl.LazyFrame) and persist:
+    if isinstance(df, pl.LazyFrame) & persist:
         if isinstance(subset, str):
             by = [subset]
         elif isinstance(subset, list):
@@ -373,15 +373,15 @@ def check_columns_types(df:PolarsFrame, cols:Optional[list[Union[str, pl.Expr]]]
 
 # dtype can be a "pl.datatype" or just some random data for which we want to infer a generic type.
 def dtype_mapping(d: Any) -> SimpleDtypes:
-    if isinstance(d, str) or d == pl.Utf8:
+    if isinstance(d, str) | (d == pl.Utf8):
         return "string"
-    elif isinstance(d, bool) or d == pl.Boolean:
+    elif isinstance(d, bool) | (d == pl.Boolean):
         return "bool"
-    elif isinstance(d, (int,float)) or d in POLARS_NUMERICAL_TYPES:
+    elif isinstance(d, (int,float)) | (d in POLARS_NUMERICAL_TYPES):
         return "numeric"
     elif isinstance(d, pl.List):
         return "list" # Too many possibilities. Keep it to list for now.
-    elif isinstance(d, datetime) or d in POLARS_DATETIME_TYPES:
+    elif isinstance(d, datetime) | (d in POLARS_DATETIME_TYPES):
         return "datetime"
     else:
         return "other/unknown"
@@ -439,9 +439,9 @@ def range_counts(
                     pl.lit(r[1], dtype=pl.Float32).alias("upper"),
                     pl.col(c).is_between(lower_bound=r[0], upper_bound=r[1], closed=closed).sum().alias("count")
                 )
-                for r in rl
+                for r in rl if len(r) > 1
             )
-        elif isinstance(rl, Tuple): 
+        elif isinstance(rl, Tuple):
             dfs.append(
                 df.lazy().select(
                     pl.lit(c).alias("column"),
@@ -548,7 +548,7 @@ def data_profile(
             pl.col(f).median().cast(pl.Float64).alias("median"),
             pl.col(f).skew().cast(pl.Float64).alias("skew"),
             pl.col(f).kurtosis().cast(pl.Float64).alias("kurtosis"),
-            *(pl.col(f).quantile(q).cast(pl.Float64).alias(f"{q*100:.1f}-percentile") for q in percentiles if q > 0 and q < 1)
+            *(pl.col(f).quantile(q).cast(pl.Float64).alias(f"{q*100:.1f}-percentile") for q in percentiles if (q > 0 & q < 1))
         )
         for f,t in zip(features, dtypes)
     ]
@@ -777,7 +777,7 @@ def old_vs_new_report(
                 old_col = old[f]
                 new_col =  new[f]
                 dtype = old_col.dtype
-                if dtype in (pl.Utf8, pl.Boolean) or f in discretes:
+                if (dtype in (pl.Utf8, pl.Boolean)) | (f in discretes):
                     psi_list.append(psi_discrete(old_col, new_col).item(0,0))
                 elif dtype in POLARS_NUMERICAL_TYPES:
                     psi_list.append(psi(old_col, new_col, n_bins=psi_bins).item(0,0))
@@ -1166,7 +1166,8 @@ def get_unique_count(
 
 def infer_highly_unique(df:PolarsFrame, threshold:float=0.9, estimate:bool=False) -> list[str]:
     '''
-    Infers columns that have higher than threshold unique pct. This 
+    Infers columns that have higher than threshold unique pct. This only applies to numeric, string,
+    and categorical data types.
 
     Parameters
     ----------
@@ -1178,7 +1179,7 @@ def infer_highly_unique(df:PolarsFrame, threshold:float=0.9, estimate:bool=False
         If true, use HyperLogLog algorithm to estimate n_uniques. This is only recommended
         when dataframe is absolutely large.
     '''
-    cols = df.select(cs.numeric() | cs.string() | cs.boolean() | cs.categorical() | cs.temporal()).columns
+    cols = df.select(cs.numeric() | cs.string() | cs.categorical()).columns
     if estimate:
         unique_pct = pl.col(cols).approx_n_unique() / pl.count()
     else:

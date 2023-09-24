@@ -457,9 +457,12 @@ class Blueprint:
             else:
                 break
 
-        if isinstance(df, pl.LazyFrame) and collect:
+        if isinstance(df, pl.LazyFrame) & collect:
             return df.collect()
         return df
+    
+    def transform(self) -> pl.DataFrame:
+        return self.apply(collect=True)
 
 # Right now, use Pickle. Definitely move away from Pickle in the future.
 def from_pkl(path: Union[str,Path]) -> Blueprint:

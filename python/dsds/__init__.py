@@ -14,7 +14,6 @@ CHECK_COL_TYPES: bool = True
 THREADS:int = os.cpu_count() - 1
 # Whether to persis in Blueprint or not
 PERSIST_IN_BLUEPRINT = True
-# Streaming Mode. Not used rn.
-STREAM_COLLECT = False
-
+# Whether to stream internal collect or not
+STREAM_TRANSFORM = False # Whether to stream when collecting in dsds.transform
 

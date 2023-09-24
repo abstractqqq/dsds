@@ -245,7 +245,7 @@ def rank_hot_encode(
     ...     "test":["Very bad", "Bad", "Neutral", "Good", "Very good", "Good"],
     ...     "abc":["A", "B", "C", "A", "C", "C"]
     ... })
-    ... # "Very bad" is the lowest rank. Everything is >= it, so it is omitted. Same for "A"
+    ... # "Very bad" is the lowest rank. Everything is >= "Very bad", so it is omitted. Same for "A"
     >>> enc.rank_hot_encode(df, col_ranks={"test":["Very bad", "Bad", "Neutral", "Good"], "abc":["A", "B", "C"]})
     shape: (6, 5)
     ┌───────────┬───────────────┬────────────┬────────┬────────┐
@@ -640,17 +640,16 @@ def quantile_binning(
     └───────────┘
     '''
     _ = type_checker(df, cols, "numeric", "quantile_binning")
-    qcuts = np.arange(start=1/n_bins, stop=1.0, step = 1/n_bins)
     if isinstance(df, pl.LazyFrame):
         cuts = df.select(
-            pl.col(cols).qcut(qcuts).unique().cast(pl.Utf8).str.extract(r"\((.*?),")
-            .cast(pl.Float64).sort().tail(len(qcuts))
+            pl.col(cols).qcut(quantiles=n_bins).unique().cast(pl.Utf8).str.extract(r"\((.*?),")
+            .cast(pl.Float64).sort().tail(n_bins)
         ).collect()
         exprs = [
             pl.col(c).cut(cuts.drop_in_place(c).to_list()).cast(pl.Utf8).suffix(suffix) for c in cols
         ]
     else: # Eager frame
-        exprs = [pl.col(cols).qcut(qcuts).cast(pl.Utf8).suffix(suffix) ]
+        exprs = [pl.col(cols).qcut(quantiles=n_bins).cast(pl.Utf8).suffix(suffix)]
 
     return _dsds_with_columns(df, exprs)
 
