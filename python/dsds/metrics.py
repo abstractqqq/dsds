@@ -173,7 +173,7 @@ def precision_recall(
     series_input:bool = isinstance(y_actual, pl.Series) & isinstance(y_predicted, pl.Series)
     is_1d_numpy:bool = False
     if not series_input:
-        is_1d_numpy = (y_actual.ndim == 1 & y_predicted.ndim == 1)
+        is_1d_numpy = (y_actual.ndim == 1) & (y_predicted.ndim == 1)
 
     if isinstance(beta, float):
         f_list = [beta]
@@ -258,12 +258,12 @@ def roc_auc(
     series_input:bool = isinstance(y_actual, pl.Series) & isinstance(y_predicted, pl.Series)
     is_1d_numpy:bool = False
     if not series_input:
-        is_1d_numpy = (y_actual.ndim == 1 & y_predicted.ndim == 1)
+        is_1d_numpy = (y_actual.ndim == 1) & (y_predicted.ndim == 1)
 
     if is_1d_numpy | series_input:
         frame = _tp_fp_frame(y_actual, y_predicted, ratio=True).collect()
         return float(-np.trapz(frame["tpr"], frame["fpr"]))
-    elif y_actual.ndim == 2 & y_predicted.ndim == 2:
+    elif (y_actual.ndim == 2) & (y_predicted.ndim == 2):
         # Has to be not 1d numpy
         if y_actual.shape[1] != y_predicted.shape[1]:
             raise ValueError("Input shapes must agree for multiclass roc auc. Found "
@@ -314,7 +314,7 @@ def logloss(
         uniques = np.unique(y_a)
         if uniques.size != 2:
             raise ValueError("Currently this only supports binary classification.")
-        if not (0 in uniques & 1 in uniques):
+        if not (0 in uniques) & (1 in uniques):
             raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
     if sample_weights is None:
@@ -661,9 +661,9 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
     normalize
         If the rows of the matrices are normalized already, set this to False.
     '''
-    if y is None | x is y:
+    if (y is None) | (x is y):
         return rs_self_cosine_similarity(x, normalize)
-    elif x.ndim == 1 & y.ndim == 1:
+    elif (x.ndim == 1) & (y.ndim == 1):
         if normalize:
             return x.dot(y)/np.sqrt(x.dot(x) * y.dot(y))
         return x.dot(y)
