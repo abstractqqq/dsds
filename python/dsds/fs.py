@@ -43,14 +43,15 @@ import dsds
 
 logger = logging.getLogger(__name__)
 
-
-def corr(
+def abs_corr(
     df: PolarsFrame
     , target: str
     , cols: Optional[list[str]] = None
 ) -> pl.DataFrame:
     '''
-    Returns a dataframe with features and their correlation with target.
+    Returns a dataframe with features and their |correlation| with target. NaN correlation
+    will be filled with -999. Note this makes sense since NaN is caused by 0 variance 
+    (constant data) in most situations.
 
     Parameters
     ----------
@@ -67,11 +68,16 @@ def corr(
     else:
         nums = get_numeric_cols(df)
 
-    return df.lazy().select(pl.corr(c, target).abs() for c in nums)\
-        .collect()\
+    return (
+        df.lazy().select(pl.corr(c, target).abs() for c in nums)
+        .fill_nan(pl.lit(-999.0))
+        .collect()
         .transpose(include_header=True, column_names=["abs_corr"])
+        .sort("abs_corr", descending=True)
+        .set_sorted("abs_corr")
+    )
 
-def corr_selector(
+def abs_corr_selector(
     df: PolarsFrame
     , target: str
     , threshold: float
@@ -92,7 +98,7 @@ def corr_selector(
     nums = get_numeric_cols(df, exclude=[target])
     complement = [f for f in df.columns if f not in nums]
     # select high corr columns
-    to_select = corr(df, target, nums)\
+    to_select = abs_corr(df, target, nums)\
                 .filter(pl.col("abs_corr") >= threshold)["column"].to_list()
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the algorithm "
           "cannot process. They are also returned.")

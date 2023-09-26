@@ -38,6 +38,7 @@ from tqdm import tqdm
 from math import comb
 from dsds._rust import rs_levenshtein_dist
 # import re
+import numpy as np
 import polars.selectors as cs
 import polars as pl
 import logging
@@ -460,7 +461,6 @@ def range_counts(
 # Numerical Outlier report
 # String Outlier report
 
-
 def corr_report(
     df: PolarsFrame
     , features: list[str]
@@ -468,7 +468,7 @@ def corr_report(
     , method:CorrelationMethod = "pearson"
 ) -> pl.DataFrame:
     '''
-    A quick prescreen method to check the correlation between columns in cols and columns in corr_with.
+    A quick prescreen method to check the correlation between features and targets.
 
     Parameters
     ----------
@@ -548,7 +548,8 @@ def data_profile(
             pl.col(f).median().cast(pl.Float64).alias("median"),
             pl.col(f).skew().cast(pl.Float64).alias("skew"),
             pl.col(f).kurtosis().cast(pl.Float64).alias("kurtosis"),
-            *(pl.col(f).quantile(q).cast(pl.Float64).alias(f"{q*100:.1f}-percentile") for q in percentiles if (q > 0 & q < 1))
+            *(pl.col(f).quantile(q).cast(pl.Float64).alias(f"{q*100:.1f}-percentile") 
+              for q in percentiles if ((q > 0) & (q < 1)))
         )
         for f,t in zip(features, dtypes)
     ]
@@ -673,11 +674,34 @@ def str_cats_report(
 
 def over_time_report(
     df: PolarsFrame
-    , cols: list[str]
     , time_col: str
+    , cols: Optional[list[str]] = None
     , metrics: Union[OverTimeMetrics, list[OverTimeMetrics]] = "null"
     , interval: TimeIntervals = "monthly" 
 ) -> pl.DataFrame:
+    '''
+    Returns an over time report. You can choose which OverTimeMetrics to use and what on what columns
+    do you want to compute these metrics. The output is wide, meaning that metrics for each column are
+    added as columns. If you want a more filter-friendly version, see over_time_report_2.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    time_col
+        The time column to extract year/quarter/month information. Should be a valid column of datetime
+        values, not strings.
+    cols
+        If provided, will run the report only for the provided features. If not, will use all features.
+        It is highly recommended that you supply only columns of interest.
+    interval
+        One of 'yearly', 'quarterly', 'monthly', 'weekly'
+    '''
+    
+    if cols is None:
+        new_cols = df.columns
+    else:
+        new_cols = cols
 
     _ = type_checker(df, [time_col], "datetime", "over_time_report")
     if interval == "monthly":
@@ -702,26 +726,26 @@ def over_time_report(
     agg_exprs = []
     for m in all_metrics:
         if m == "null":
-            agg_exprs.append((pl.col(cols).null_count()/ pl.count()).suffix("_null%"))
+            agg_exprs.append((pl.col(new_cols).null_count()/ pl.count()).suffix("_null%"))
         elif m == "invalid":
             agg_exprs.append(
-                ((pl.col(cols).is_null().or_(
-                    pl.col(cols).is_nan(),
-                    pl.col(cols).is_infinite()
+                ((pl.col(new_cols).is_null().or_(
+                    pl.col(new_cols).is_nan(),
+                    pl.col(new_cols).is_infinite()
                 )).sum()/ pl.count()).suffix("_invalid%")
             )
         elif m == "max":
-            agg_exprs.append(pl.col(cols).max().suffix("_max"))
+            agg_exprs.append(pl.col(new_cols).max().suffix("_max"))
         elif m == "min":
-            agg_exprs.append(pl.col(cols).min().suffix("_min"))
+            agg_exprs.append(pl.col(new_cols).min().suffix("_min"))
         elif m == "mean":
-            agg_exprs.append(pl.col(cols).max().suffix("_mean"))
+            agg_exprs.append(pl.col(new_cols).max().suffix("_mean"))
         elif m == "std":
-            agg_exprs.append(pl.col(cols).std().suffix("_std"))
+            agg_exprs.append(pl.col(new_cols).std().suffix("_std"))
         elif m == "var":
-            agg_exprs.append(pl.col(cols).var().suffix("_var"))
+            agg_exprs.append(pl.col(new_cols).var().suffix("_var"))
         elif m == "mode":
-            agg_exprs.append(pl.col(cols).mode().suffix("_mode"))
+            agg_exprs.append(pl.col(new_cols).mode().suffix("_mode"))
         else:
             logger.warning(f"Found {m} which is not a valid over time metric. Ignored.")
 
@@ -731,6 +755,88 @@ def over_time_report(
         .agg(agg_exprs)
         .sort(group_by)
     )
+
+def over_time_report_2(
+    df: PolarsFrame
+    , time_col: str
+    , cols: Optional[list[str]] = None
+    , interval: TimeIntervals = "monthly"
+) -> pl.DataFrame:
+    '''
+    Returns an over time report that focuses on mean and null% over time for each feature in the time 
+    interval. This report easier to filter on.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    time_col
+        The time column to extract year/quarter/month information. Should be a valid column of datetime
+        values, not strings.
+    cols
+        If provided, will run the report only for the provided features. If not, will use all features.
+        It is highly recommended that you supply only columns of interest.
+    interval
+        One of 'yearly', 'quarterly', 'monthly', 'weekly'
+    '''
+
+    _ = type_checker(df, [time_col], "datetime", "over_time_report_2")
+
+    if cols is None:
+        new_cols = df.columns
+    else:
+        new_cols = cols
+
+    if interval == "monthly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.month().alias("month")]
+    elif interval == "quarterly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.quarter().alias("quarter")]
+    elif interval == "yearly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year")]
+    elif interval == "weekly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.month().alias("month"),
+                                   pl.col(time_col).dt.week().alias("week")]
+        
+    dfs_all = (
+        df.lazy().select(
+            pl.lit(c).alias("feature"),
+            (pl.col(c).null_count() / pl.count()).alias("null%_global"),
+            pl.col(c).mean().cast(pl.Float64).alias("mean_global")
+        )
+        for c in new_cols
+    )
+    df_all = pl.concat(pl.collect_all(dfs_all))
+    
+    df_local_with_time = df.with_columns(time_exprs).lazy()
+    group_by = [e.meta.output_name() for e in time_exprs]
+    dfs_group_by = (
+        df_local_with_time.group_by(
+            group_by
+        ).agg(
+            pl.lit(c).alias("feature"),
+            pl.count(),
+            (pl.col(c).null_count() / pl.count()).alias("null%"),
+            pl.col(c).mean().cast(pl.Float64).alias("mean")
+        )
+        for c in new_cols
+    )
+
+    new_segment = ["feature"] + group_by
+    df_group_by = pl.concat(pl.collect_all(dfs_group_by))
+
+    df_combined = df_all.join(
+        df_group_by, on = "feature"
+    ).sort(new_segment).with_columns(
+        (pl.col("null%").pct_change().over("feature").fill_nan(np.inf)).alias("null_PoP_%diff"),
+        (pl.col("mean").pct_change().over("feature").fill_nan(np.inf)).alias("mean_PoP_%diff"),
+        ((pl.col("null%")/pl.col("null%_global") - pl.lit(1.0)).fill_nan(np.inf)).alias("null_%diff_overall"),
+        ((pl.col("mean")/pl.col("mean_global") - pl.lit(1.0)).fill_nan(np.inf)).alias("mean_%diff_overall")
+    ).drop(["null%_global", "mean_global"])
+
+    return df_combined
 
 def old_vs_new_report(
     old_df: PolarsFrame
@@ -817,6 +923,43 @@ def drop_non_numeric(df:PolarsFrame, include_bools:bool=False) -> PolarsFrame:
                 f"Removed a total of {len(non_nums)} columns.")
     
     return _dsds_drop(df, non_nums)
+
+def infer_highly_correlated(
+    df: PolarsFrame,
+    threshold: float = 0.8,
+) -> pl.DataFrame:
+    '''
+    Returns a dataframe that shows which features are highly correlated with which.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    threshold
+        The threshold for highly correlated columns
+    '''
+    constants = infer_constants(df)
+    logger.info(f"These columns are constants and will be excluded from this report: {constants}")
+    df_local = df.select(cs.numeric())
+    num_cols = list(set(df_local.columns).difference(constants))
+
+    corr_df = df_local.select(num_cols).corr()
+    all_high_corr = []
+    all_high_neg_corr = []
+    for c, row in zip(num_cols, corr_df.iter_rows(named=True)):
+        all_high_corr.append([
+            col for col, corr in row.items() if (not np.isnan(corr)) & (corr > threshold) & (c != col)
+        ])
+        all_high_neg_corr.append([
+            col for col, corr in row.items() if (not np.isnan(corr)) & (corr < -threshold)
+        ])
+
+    name1 = f"corr > {threshold:.2f}"
+    name2 = f"corr < -{threshold:.2f}"
+    out = pl.DataFrame({"features":num_cols, name1: all_high_corr, name2:all_high_neg_corr}).filter(
+        (pl.col(name1).list.lengths() > 0) | (pl.col(name2).list.lengths() > 0)
+    )
+    return out
 
 def infer_by_pattern(
     df: PolarsFrame
