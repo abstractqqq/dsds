@@ -1437,16 +1437,16 @@ def infer_constants(df:PolarsFrame, include_null:bool=True) -> list[str]:
 
 def infer_multicategorical(
     df: PolarsFrame
-    , separator:str = "|"
+    , delimiter:str = "|"
 ) -> list[str]:
     '''
     Infers multicategorical columns, e.g. string columns with elements of the form "aaa|bbb|ccc". 
     This occurs a lot for columns like reasoncodes or error codes.
     '''
-    if separator == "|":
+    if delimiter == "|":
         sep = r"\|"
     else:
-        sep = separator
+        sep = delimiter
     
     return infer_by_pattern(df, pattern=f"(.+{sep}.+)", threshold=0.5)
 

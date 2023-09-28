@@ -7,6 +7,7 @@ from .prescreen import (
     get_string_cols
     , get_unique_count
     , check_binary_target
+    , infer_multicategorical
     , type_checker
 )
 from .blueprint import (
@@ -311,7 +312,7 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
 
 def multicat_one_hot_encode(
     df:PolarsFrame
-    , cols: list[str]
+    , cols: Optional[list[str]]
     , delimiter: str = "|"
     , drop_first: bool = True
 ) -> PolarsFrame:
@@ -330,9 +331,9 @@ def multicat_one_hot_encode(
     df
         Either a lazy or eager Polars DataFrame
     cols
-        If not provided, will use all string columns
-    separator
-        The separator used in the names of the new columns
+        If not provided, will infer multicategorical columns.
+    delimiter
+        The delimiter in your multicategorical column
     drop_first
         If true, the first category in the each column will be dropped.
 
@@ -365,9 +366,14 @@ def multicat_one_hot_encode(
     │ 1         ┆ 1         ┆ 0         ┆ 0         ┆ 0         ┆ 1         ┆ 1         │
     └───────────┴───────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
     '''
-    _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
+    if isinstance(cols, list):
+        _ = type_checker(df, cols, "string", "multicat_one_hot_encode")
+        multicats = cols
+    else:
+        multicats = infer_multicategorical(df, delimiter=delimiter)
+
     temp = df.lazy().select(
-        pl.col(cols).str.split(delimiter).explode().unique().implode().list.sort()
+        pl.col(multicats).str.split(delimiter).explode().unique().implode().list.sort()
     )
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
@@ -383,7 +389,7 @@ def multicat_one_hot_encode(
         else:
             logger.info(f"The multicategorical column {c.name} seems to have only 1 unique value. Dropped.")
 
-    return _dsds_with_columns_and_drop(df, exprs, cols)
+    return _dsds_with_columns_and_drop(df, exprs, multicats)
 
 def ordinal_auto_encode(
     df:PolarsFrame
