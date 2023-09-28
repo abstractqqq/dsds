@@ -1,6 +1,7 @@
 from .prescreen import (
     infer_discretes
     , check_binary_target
+    , check_binary_target_col
     , get_numeric_cols
     , get_unique_count
     , get_string_cols
@@ -33,6 +34,7 @@ from typing import (
 from itertools import combinations
 from tqdm import tqdm
 from scipy.spatial import KDTree
+from scipy.stats import ks_2samp
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
@@ -438,10 +440,94 @@ def f_score_selector(
 
     return _dsds_select(df, to_select + complement, persist=True)
 
-def _mrmr_underlying_score(
+def _ks_2_samp(
+    feature: np.ndarray
+    , target: np.ndarray
+    , i: int
+    , check_binary: bool = True
+) -> Tuple[float, float, int]:
+    ''' 
+    Computes the ks-statistics for the feature on class 0 and class 1. The bigger the ks
+    statistic, that means the feature has greater differences on each class. This
+    function will return (ks-statistic, p-value, i). Nulls will be dropped during the 
+    computation.
+
+    Parameters
+    ----------
+    feature
+        Feature column. Either numpy array or polars series
+    target
+        Target column. Either numpy array of polars series
+    i
+        A passthrough of the index of the feature. Not used. Only used to keep
+        track of indices when this is being called in a multithreaded context.
+    check_binary
+        Whether to skip the binary checking or not.
+    '''
+    if check_binary & (not check_binary_target_col(target)):
+        raise ValueError("Target is not properly binary.")
+
+    # Drop nulls as they will cause problems for ks computation
+    valid = ~np.isnan(feature)
+    use_feature = feature[valid]
+    use_target = target[valid]
+    # Start computing
+    class_0 = (use_target == 0)
+    feature_0 = use_feature[class_0]
+    feature_1 = use_feature[~class_0]
+    res = ks_2samp(feature_1, feature_0)
+    return (res.statistic, res.pvalue, i)
+
+def ks_statistic(
+    df: pl.DataFrame
+    , target: str
+    , cols: Optional[list[str]]=None
+) -> pl.DataFrame:
+    ''' 
+    Computes the ks-statistics for the feature on class 0 and class 1. The bigger the ks
+    statistic for the feature, the greater differences the feature shows on each class. Nulls
+    will be dropped during the computation.
+
+    Parameters
+    ----------
+    df
+        An eager Polars dataframe
+    target
+        Name of target column
+    cols
+        If not provided, will use all inferred numeric columns
+    '''
+    if cols is None:
+        nums = get_numeric_cols(df, exclude=[target])
+    else:
+        _ = type_checker(df, nums, "numeric", "ks_statistic")
+        nums = [c for c in cols if c != target]
+
+    target_col = df[target].to_numpy(zero_copy_only=True)
+    if not check_binary_target_col(target_col):
+        raise ValueError("KS statistic only works when target is binary.")
+
+    ks_values = np.zeros(shape=len(nums))
+    p_values = np.zeros(shape=len(nums))
+    pbar = tqdm(total=len(nums), desc="KS", position=0, leave=True)
+    with ThreadPoolExecutor(max_workers=dsds.THREADS) as ex:
+        futures = (
+            ex.submit(_ks_2_samp, df[c].to_numpy(), target_col, i, False)
+            for i, c in enumerate(nums)
+        )
+        for f in as_completed(futures):
+            ks, p, i = f.result()
+            ks_values[i] = ks
+            p_values[i] = p
+            pbar.update(1)
+    
+    pbar.close()
+    return pl.from_records([nums, ks_values, p_values], schema=["feature", "ks", "p_value"])
+
+def _mrmr_relevance(
     df:pl.DataFrame
     , target:str
-    , nums:list[str]
+    , cols:list[str]
     , strategy:MRMRStrategy
     , params:dict[str,Any]
 ) -> np.ndarray:
@@ -449,32 +535,29 @@ def _mrmr_underlying_score(
     logger.info(f"Running {strategy} to determine feature relevance...")
     s = clean_strategy_str(strategy)
     if s in ("fscore", "f", "f_score"):
-        scores = _f_score(df, target, nums)
-    elif s in ("rf", "random_forest"):
-        from sklearn.ensemble import RandomForestClassifier
-        print("Random forest is not deterministic by default. Results may vary.")
-        rf = RandomForestClassifier(**params)
-        rf.fit(df[nums].to_numpy(), df[target].to_numpy().ravel())
-        scores = rf.feature_importances_
-    elif s in ("xgb", "xgboost"):
-        from xgboost import XGBClassifier
-        print("XGB is not deterministic by default. Results may vary.")
-        xgb = XGBClassifier(**params)
-        xgb.fit(df[nums].to_numpy(), df[target].to_numpy().ravel())
-        scores = xgb.feature_importances_
+        scores = _f_score(df, target, cols)
     elif s in ("mis", "mutual_info_score"):
-        scores = mutual_info(df, conti_cols=nums, target=target).get_column("estimated_mi").to_numpy().ravel()
+        scores = mutual_info(df, conti_cols=cols, target=target).get_column("estimated_mi").to_numpy().ravel()
     elif s in ("lgbm", "lightgbm"):
         from lightgbm import LGBMClassifier
         print("LightGBM is not deterministic by default. Results may vary.")
         lgbm = LGBMClassifier(**params)
-        lgbm.fit(df[nums].to_numpy(), df[target].to_numpy().ravel())
+        lgbm.fit(df[cols].to_numpy(), df[target].to_numpy().ravel())
         scores = lgbm.feature_importances_
     else: # Pythonic nonsense
         raise ValueError(f"The strategy {strategy} is not a valid MRMR Strategy.")
     
+    invalid = np.isinf(scores) | np.isnan(scores)
+    if invalid.any():
+        invalid_cols = [cols[i] for i, v in enumerate(invalid) if v]
+        logger.info(f"Found Inf/NaN in relevance score computation. {invalid_cols}")
+        logger.info("They will be set to 0. The cause is usually high null, or low variance, or "
+                    "the algorithm chosen cannot handle the input data type.")        
+        scores[invalid] = 0.
+
     return scores
 
+# Add an option for a score the user can pass in?
 def mrmr(
     df:pl.DataFrame
     , target:str
@@ -483,10 +566,13 @@ def mrmr(
     , strategy: MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
     , low_memory:bool=False
-) -> list[str]:
+    , return_score:bool=False
+) -> Union[list[str], Tuple[list[str], np.ndarray]]:
     '''
     Implements MRMR. Will add a few more strategies in the future. Likely only strategies for numerators
-    , aka relevance. Right now xgb, lgbm and rf strategies only work for classification problems.
+    , aka relevance. Right now xgb, lgbm and rf strategies only work for classification problems. A common
+    source of numerical `error` is data quality. If input data has too high null% or too low variance, some
+    methods will not work.
 
     Currently this only supports classification.
 
@@ -508,33 +594,36 @@ def mrmr(
     low_memory
         Whether to do some computation all at once, which uses more memory at once, or do some 
         computation when needed, which uses less memory at any given time.
+    return_score
+        If true, the relevance score will be returned as well
     '''
     if isinstance(cols, list):
         nums = cols
     else:
         nums = get_numeric_cols(df, exclude=[target])
 
-    s = clean_strategy_str(strategy)
-    scores = _mrmr_underlying_score(df
+    scores = _mrmr_relevance(df
         , target = target
         , nums = nums
-        , strategy = s
+        , strategy = strategy
         , params = {} if params is None else params
     )
 
+    # Set up input df according low_memory or not
     if low_memory:
         df_local = df.select(nums)
     else: # this could potentially double memory usage. so I provided a low_memory flag.
         df_local = df.select(nums).with_columns(
-            (pl.col(f) - pl.col(f).mean())/pl.col(f).std() for f in nums
+            (pl.col(nums) - pl.col(nums).mean())/pl.col(nums).std()
         ) # Note that if we get a const column, the entire column will be NaN
 
+    # Init MRMR
     output_size = min(k, len(nums))
-    print(f"Found {len(nums)} total features to select from. Proceeding to select top {output_size} features.")
+    logger.info(f"Found {len(nums)} total features to select from. Proceeding to select top {output_size} features.")
     cumulating_abs_corr = np.zeros(len(nums)) # For each feature at index i, we keep a cumulating sum
     top_idx = np.argmax(scores)
     selected = [nums[top_idx]]
-    pbar = tqdm(total=output_size, desc = f"MRMR, {s}")
+    pbar = tqdm(total=output_size, desc = f"MRMR, {strategy}", position=0, leave=True)
     pbar.update(1)
     for j in range(1, output_size):
         argmax = -1
@@ -544,17 +633,19 @@ def mrmr(
             last_selected_col = (last_selected_col - last_selected_col.mean())/last_selected_col.std()
         for i,f in enumerate(nums):
             if f not in selected:
-                # Left = cumulating sum of abs corr
-                # Right = abs correlation btw last_selected and f
                 candidate_col = df_local.get_column(f)
                 if low_memory: # normalize if in low memory mode.
                     candidate_col = (candidate_col - candidate_col.mean())/candidate_col.std()
 
+                # Correlation = E[XY] when X,Y are normalized
                 a = (last_selected_col*candidate_col).mean()
                 # In the rare case this calculation yields a NaN, we punish by adding 1.
                 # Otherwise, proceed as usual. +1 is a punishment because
                 # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
-                cumulating_abs_corr[i] += 1 if np.isnan(a) else np.abs(a)
+                cumulating_abs_corr[i] += 1 if ((np.isnan(a)) | np.isinf(a)) else np.abs(a)
+                # Left = cumulating sum of abs corr
+                # Right = abs correlation btw last_selected and f
+
                 denominator = cumulating_abs_corr[i]/j 
                 new_score = scores[i] / denominator
                 if new_score > current_max:
@@ -565,6 +656,8 @@ def mrmr(
 
     pbar.close()
     print("Output is sorted in order of selection (max relevance min redundancy).")
+    if return_score:
+        return selected, scores 
     return selected
 
 def mrmr_selector(
@@ -634,7 +727,7 @@ def knock_out_mrmr(
         The threshold above which correlation is considered too high. This means if A has high correlation to B, then
         B will not be selected if A is
     strategy
-        One of 'f', 'xgb', 'rf', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
+        One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
     params
         If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     '''
@@ -643,11 +736,10 @@ def knock_out_mrmr(
     else:
         nums = get_numeric_cols(df, exclude=[target])
 
-    s = clean_strategy_str(strategy)
-    scores = _mrmr_underlying_score(df
+    scores = _mrmr_relevance(df
         , target = target
         , nums = nums
-        , strategy = s
+        , strategy = strategy
         , params = {} if params is None else params
     )
 
@@ -656,15 +748,15 @@ def knock_out_mrmr(
     surviving_indices = np.full(shape=len(nums), fill_value=True) # an array of booleans
     scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
-    count = 0
+    count = np.int32(0)
     output_size = min(k, len(nums))
-    pbar = tqdm(total=output_size)
+    pbar = tqdm(total=output_size, desc = f"Knock out MRMR, {strategy}", position=0, leave=True)
     # Run the knock outs
     for i, _ in scores:
         if surviving_indices[i]:
             selected.append(nums[i])
             surviving_indices = surviving_indices & low_corr[:,i]
-            count += 1
+            count = np.add(count, 1)
             pbar.update(1)
         if count >= output_size:
             break

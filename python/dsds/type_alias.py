@@ -28,8 +28,7 @@ POLARS_NUMERICAL_TYPES:Final[Tuple[pl.DataType]] = (pl.UInt8, pl.UInt16, pl.UInt
 POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date)
 
 # --- Strategies ---
-MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "xgb", "xgboost", "rf", "random_forest", "mis"
-                                , "mutual_info_score", "lgbm", "lightgbm"]
+MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "mis", "mutual_info_score", "lgbm", "lightgbm"]
 ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant", "robust", "abs_max"]
 ScaleByStrategy:TypeAlias = Literal["standard", "min_max", "robust", "abs_max", "mean", "median", "max"]
 SimpleImputeStrategy:TypeAlias = Literal["mean", "avg", "median", "const", 

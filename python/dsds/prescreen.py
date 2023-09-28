@@ -180,6 +180,16 @@ def order_by(
     '''
     return df.sort(by=by, descending=descending, nulls_last=nulls_last)
 
+def check_binary_target_col(target_col: Union[np.ndarray, pl.Series]) -> bool:
+    target_uniques = np.unique(target_col)
+    if len(target_uniques) != 2:
+        logger.error("Target is not binary.")
+        return False
+    elif not (0 in target_uniques and 1 in target_uniques):
+        logger.error("The binary target is not encoded as 0s and 1s.")
+        return False
+    return True
+
 def check_binary_target(df:PolarsFrame, target:str) -> bool:
     '''
     Checks if target is binary or not. Returns true only when binary target has 0s and 1s.
