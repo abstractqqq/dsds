@@ -256,7 +256,7 @@ def format_categorical_target(
     {'A': 0, 'B': 1, 'C': 2}
     '''
     uniques = df.lazy().select(
-        t = pl.col(target).unique().sort()
+        pl.col(target).unique().sort().alias("t")
     ).collect().drop_in_place("t")
     mapping = dict(zip(uniques, range(len(uniques))))
     output = df.with_columns(
@@ -370,18 +370,14 @@ def dense_to_sparse_target(df:PolarsFrame, target:str, persist:bool=False) -> Po
 
 def check_columns_types(
     df:PolarsFrame, 
-    cols:Optional[list[Union[str, pl.Expr]]]=None, 
-    n_rows:int=10
+    cols:Optional[list[Union[str, pl.Expr]]] = None, 
+    n_rows:int = dsds.FETCH_ROW_NUM
 ) -> str:
     '''
     Returns the unique types of given columns in a single string. If multiple types are present
     they are joined by a |. If cols is not given, automatically uses all columns.
     '''
-    if cols is None:
-        check_cols:list[Union[str, pl.Expr]] = df.columns
-    else:
-        check_cols:list[Union[str, pl.Expr]] = cols 
-
+    check_cols:list[Union[str, pl.Expr]] = df.columns if cols is None else cols
     types = sorted(set(dtype_mapping(t) for t in df.lazy().select(check_cols).fetch(n_rows=n_rows).dtypes))
     return "|".join(types) if len(types) > 0 else "other/unknown"
 

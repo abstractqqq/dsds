@@ -189,7 +189,6 @@ def mutual_info(
     , conti_cols:list[str]
     , n_neighbors:int=3
     , seed:int=42
-    , n_threads:int= dsds.THREADS
 ) -> pl.DataFrame:
     '''
     Approximates mutual information (information gain) between the continuous variables and the target. This
@@ -214,8 +213,6 @@ def mutual_info(
     seed
         The random seed used to generate noise, which prevents points to collide and cause difficulty for the
         nearest neighbor method used in the approximation
-    n_threads
-        The number of threads used in scipy's Kdtree
 
     Sources
     -------
@@ -253,12 +250,12 @@ def mutual_info(
             kd1 = KDTree(data=c_masked, leafsize=40)
             # dd = distances from the points the the k nearest points. +1 because this starts from 0. It is 1 off from 
             # sklearn's kdtree.
-            dd, _ = kd1.query(c_masked, k = n_neighbors + 1, workers=n_threads)
+            dd, _ = kd1.query(c_masked, k = n_neighbors + 1, workers=dsds.THREADS)
             radius[mask] = np.nextafter(dd[:, -1], 0)
             label_counts[mask] = np.sum(mask)
 
         kd2 = KDTree(data=c, leafsize=40) 
-        m_all = kd2.query_ball_point(c, r = radius, return_length=True, workers=n_threads)
+        m_all = kd2.query_ball_point(c, r = radius, return_length=True, workers=dsds.THREADS)
         estimates.append(
             max(0, psi_n_and_k - np.mean(psi(label_counts) + psi(m_all)))
         ) # smallest is 0

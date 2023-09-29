@@ -6,10 +6,11 @@ Welcome to DSDS, an alternative data science package that aims to be an improvem
 
 1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, etc.)
 2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, MRMR, mutual_info_score, better feature extraction APIs, etc.
-3. Cleaner pipeline construction and management (See examples below.)
-4. Compatible with Polars LazyFrames
-5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes.
-6. Even more performance for all of the above with the power of Rust!
+3. Cleaner pipeline construction and management, much easier to create customer "transformers" (All Polars Expressions under the hood)
+4. Consistent API with intuitive argument names and examples for not-easy-to-explain stuff.
+5. Most features are compatible with both Polars DataFrame and LazyFrames
+6. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. Just Polars.
+7. Even more performance for all of the above with the power of Rust!
 
 DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
 
@@ -52,13 +53,10 @@ output = input_df.pipe(var_removal, threshold = 0.5, target = "Clicked on Ad")\
     .pipe(mutual_info_selector, target = "Clicked on Ad", top_k = 12)
 ```
 
-Performance without sacrificing user experience.
+Benchmarks: (using a version not available to the public yet.)
 
-![Screenshot](./pics/impute.PNG)
+![Screenshot](./pics/benches.PNG)
 
-And yes, significantly faster than NumPy in many cases
-
-![Screenshot](./pics/logloss.PNG)
 
 ## Dependencies
 

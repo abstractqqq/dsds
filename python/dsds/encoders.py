@@ -270,9 +270,9 @@ def rank_hot_encode(
         k: {key:i for i, key in enumerate(r)}
         for k, r in ranks.items()
     }
-    exprs = []
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
+    exprs = []
     for key, ref in ref_dicts.items():
         exprs.extend(
             (pl.when(pl.col(key).map_dict(ref, default=len(ref)) >= i).then(one).otherwise(zero).suffix(f">={v}")
@@ -280,7 +280,6 @@ def rank_hot_encode(
         )
 
     return _dsds_with_columns_and_drop(df, exprs, cols)
-
 
 def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''
@@ -297,8 +296,8 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
     unique_cnt = get_unique_count(df).filter(pl.col("n_unique") == 2)
     binary_list = unique_cnt["column"].to_list()
     temp = df.lazy().select(
-            pl.col(binary_list).unique().implode().list.sort()
-        )
+        pl.col(binary_list).unique().implode().list.sort()
+    )
     one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
     zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     exprs:list[pl.Expr] = [
@@ -681,7 +680,7 @@ def woe_cat_encode(
         If not provided, all string columns will be used
     min_count
         A numerical factor that prevents values like infinity to occur when taking log
-    check_binary
+    check_binary : Might be moved to a global config in the future
         Whether to check target is binary or not.
     default
         Unseen values at transform time will be mapped to default

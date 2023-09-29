@@ -42,7 +42,6 @@ class MoreExprs:
         '''
         return (self._expr - self._expr.mean()) / self._expr.std()
     
-
     def benford_correlation(x: pl.Expr) -> pl.Expr:
         '''
         Returns the benford correlation for the given expression.

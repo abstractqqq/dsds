@@ -252,7 +252,7 @@ def scale(
     if strategy == "standard":
         mean_std = df.lazy().select(
             pl.col(cols).mean().prefix("mean:"),
-            pl.col(cols).std().prefix("std:")
+            pl.col(cols).std(ddof=0).prefix("std:")
         ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [(pl.col(c) - mean_std[i])/(mean_std[i + len(cols)]) for i,c in enumerate(cols)]
     elif strategy == "min_max":
@@ -1739,8 +1739,7 @@ def combine_str_cols(
     _ = type_checker(df, cols, "string", "combine_str_cols") 
     if to_null is None:
         new_cols = cols
-    else:
-        # Expressions and str cases are different
+    else: # Expressions and str cases are different
         new_cols = [
             pl.when(pl.col(c).is_in(to_null)).then(None).otherwise(pl.col(c))
             if isinstance(c, str) else 
