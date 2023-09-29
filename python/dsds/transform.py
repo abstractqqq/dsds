@@ -107,11 +107,9 @@ def impute_nan(
         If this is None, this will map all NaNs/infinity value to null. If this is a valid float,
         this will impute NaN/infinity by this value.
     '''
-
     _ = type_checker(df, cols, "numeric", "impute_nan")
     exprs = [pl.when((pl.col(c).is_infinite()) | pl.col(c).is_nan()).then(by).otherwise(pl.col(c)).alias(c) 
              for c in cols]
-    
     return _dsds_with_columns(df, exprs)
 
 def _get_agg_impute_expr(c:str, strategy:SimpleImputeStrategy) -> pl.Expr:
@@ -1013,18 +1011,18 @@ def sine_cosine_transform(
     cos_period
         Period for the cos columns
     '''
-    if sin_cols is None and cos_cols is None:
+    if (sin_cols is None) & (cos_cols is None):
         raise ValueError("Either sin_cols or cos_cols must be not none.")
+    if len(sin_cols) + len(cos_cols) == 0:
+        raise ValueError("Either sin_cols or cos_cols must be non-empty.")
     
     exprs = []
+    _ = type_checker(df, sin_cols + cos_cols, "numeric", "sine_cosine_transform")
     if sin_cols:
-        _ = type_checker(df, sin_cols, "numeric", "sine_cosine_transform")
         exprs.append(
             (pl.col(sin_cols) * pl.lit(2.*math.pi/sin_period)).sin() * pl.lit(sin_amplitude)
         )
-    
     if cos_cols:
-        _ = type_checker(df, cos_cols, "numeric", "sine_cosine_transform")
         exprs.append(
             (pl.col(cos_cols) * pl.lit(2.*math.pi/cos_period)).cos() * pl.lit(cos_amplitude)
         )
@@ -1244,7 +1242,7 @@ def extract_word_count(
     exprs.extend(base.str.count_matches(w).suffix(f"_count_{w}") for w in words)
     return _dsds_with_columns(df, exprs)
 
-def col_to_list(
+def str_col_to_list(
     df: PolarsFrame
     , cols: list[str]
     , *
@@ -1266,7 +1264,7 @@ def col_to_list(
         typically want to do this to conserve memory, e.g. Polars may choose f64 over f32 but you may know f32 
         is enough. But note that if inner is provided, then all columns will be casted to the same inner dtype.
     '''
-    _ = type_checker(df, cols, "string", "str_to_list")
+    _ = type_checker(df, cols, "string", "str_col_to_list")
     return _dsds_with_columns(df, [pl.col(cols).str.json_extract(dtype = inner)])
 
 def extract_from_str(
@@ -1320,7 +1318,7 @@ def extract_from_str(
     else:
         to_extract = [extract]
     
-    if (len(to_extract) > 1 or (len(to_extract) == 1 and to_extract[0] != 'len')) and pattern is None:
+    if ((len(to_extract) > 1) | (len(to_extract) == 1 and to_extract[0] != 'len')) & (pattern is None):
         raise ValueError("The argument `pattern` has to be supplied when extract contains non-'len' types.")
     
     exprs = []
@@ -1647,10 +1645,7 @@ def extract_list_features(
     '''
     _ = type_checker(df, cols, "list", "extract_list_features")
     exprs = []
-    if isinstance(extract, list):
-        to_extract = extract
-    else:
-        to_extract = [extract]
+    to_extract = extract if isinstance(extract, list) else [extract]
     
     for e in to_extract:
         if e == "min":

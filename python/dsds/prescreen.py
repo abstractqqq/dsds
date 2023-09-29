@@ -62,7 +62,6 @@ def type_checker(
             raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} "
                                 f"columns, not {checked_types} types.")
         return True
-
     else:
         return True # else blindly return true
 
@@ -369,7 +368,11 @@ def dense_to_sparse_target(df:PolarsFrame, target:str, persist:bool=False) -> Po
         return _dsds_map_dict(df, [pl.col(target).map_dict(mapping)])
     return df.with_columns(pl.col(target).map_dict(mapping))
 
-def check_columns_types(df:PolarsFrame, cols:Optional[list[Union[str, pl.Expr]]]=None, n_rows:int=10) -> str:
+def check_columns_types(
+    df:PolarsFrame, 
+    cols:Optional[list[Union[str, pl.Expr]]]=None, 
+    n_rows:int=10
+) -> str:
     '''
     Returns the unique types of given columns in a single string. If multiple types are present
     they are joined by a |. If cols is not given, automatically uses all columns.
@@ -668,7 +671,7 @@ def str_cats_report(
         ).sort(by=[pl.col("count"), pl.col(s)]).select(
             pl.lit(s).alias("feature"),
             pl.col(s).count().alias("n_unique"),
-            pl.when(pl.col(s).null_count() > 0).then(True).otherwise(False).alias("has_null"),
+            (pl.col(s).null_count() > 0).alias("has_null"),
             pl.col(s).first().alias("category_w_min_count"),
             pl.col("count").min().alias("min_count"),
             pl.col(s).last().alias("category_w_max_count"),
@@ -1284,7 +1287,6 @@ def drop_by_regex(df:PolarsFrame, pattern:str, lowercase:bool=False) -> PolarsFr
 def get_unique_count(
     df:PolarsFrame, 
     include_null_count:bool=False,
-    estimate:bool=False
 ) -> pl.DataFrame:
     '''
     Gets unique counts for columns in df and returns a dataframe with schema = ["column", "n_unique"]. 
@@ -1297,14 +1299,8 @@ def get_unique_count(
         Either a lazy or eager Polars dataframe
     include_null_count
         If true, this will return a dataframe with schema = ["column", "n_unique", "null_count"]
-    estimate
-        If true, use HyperLogLog algorithm to estimate n_unique
     '''
-    if estimate:
-        n_unique = pl.all().approx_n_unique()
-    else:
-        n_unique = pl.all().n_unique()
-    
+    n_unique = pl.all().n_unique()
     if include_null_count:
         temp = df.lazy().select(
             n_unique,
@@ -1317,7 +1313,7 @@ def get_unique_count(
             n_unique
         ).collect().transpose(include_header=True, column_names=["n_unique"])
 
-def infer_highly_unique(df:PolarsFrame, threshold:float=0.9, estimate:bool=False) -> list[str]:
+def infer_highly_unique(df:PolarsFrame, threshold:float=0.9) -> list[str]:
     '''
     Infers columns that have higher than threshold unique pct. This only applies to numeric, string,
     and categorical data types.
@@ -1328,16 +1324,9 @@ def infer_highly_unique(df:PolarsFrame, threshold:float=0.9, estimate:bool=False
         Either a lazy or eager Polars dataframe
     threshold
         Every column with unique pct higher than this threshold will be returned.
-    estimate
-        If true, use HyperLogLog algorithm to estimate n_uniques. This is only recommended
-        when dataframe is absolutely large.
     '''
     cols = df.select(cs.numeric() | cs.string() | cs.categorical()).columns
-    if estimate:
-        unique_pct = pl.col(cols).approx_n_unique() / pl.count()
-    else:
-        unique_pct = pl.col(cols).n_unique() / pl.count()
-    temp = df.lazy().select(unique_pct).collect()
+    temp = df.lazy().select(pl.col(cols).n_unique() / pl.count()).collect()
     return [c for c, pct in zip(temp.columns, temp.row(0)) if pct > threshold]
 
 def drop_highly_unique(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
@@ -1560,7 +1549,7 @@ def estimate_n_unique(
 ) -> pl.DataFrame:
     '''
     Applies the HyperLogLog algorithm to estimate unique count. This is only recommended for extremely 
-    large dataframes.
+    large dataframes (trillion scale) with lots of distinct values. 
 
     Parameters
     ----------

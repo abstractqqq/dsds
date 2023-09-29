@@ -2,10 +2,10 @@
 
 This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package. This package requires the latest version of Polars.
 
-Welcome to DSDS, an alternative data science package that aims to be an improvement over a subset of sklearn's functionality, primarily in the following areas:
+Welcome to DSDS, an alternative data science package that aims to be an improvement over a subset of the following packages: sklearn, categorical encoder, and feature_engine, primarily in the following areas:
 
 1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, etc.)
-2. Fast and furious feature selection using simple methods. It has significantly faster F-score, MRMR, mutual_info_score, etc.
+2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, MRMR, mutual_info_score, better feature extraction APIs, etc.
 3. Cleaner pipeline construction and management (See examples below.)
 4. Compatible with Polars LazyFrames
 5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes.

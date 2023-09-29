@@ -85,7 +85,6 @@ pub fn smape(
         });
         (100.0 / y_a.len() as f64) * sum
     }
-
 }
 
 #[inline]

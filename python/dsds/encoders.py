@@ -45,10 +45,7 @@ def missing_indicator(
     suffix
         The suffix given to the missing indicator columns
     '''
-    if cols is None:
-        to_add = df.columns
-    else:
-        to_add = cols
+    to_add = df.columns if cols is None else cols
     one = pl.lit(1, dtype=pl.UInt8)
     zero = pl.lit(0, dtype=pl.UInt8)
     if include_nan:
@@ -312,7 +309,7 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
 
 def multicat_one_hot_encode(
     df:PolarsFrame
-    , cols: Optional[list[str]]
+    , cols: Optional[list[str]] = None
     , delimiter: str = "|"
     , drop_first: bool = True
 ) -> PolarsFrame:

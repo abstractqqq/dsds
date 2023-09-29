@@ -290,7 +290,7 @@ def logloss(
     y_actual:Union[np.ndarray, pl.Series]
     , y_predicted:Union[np.ndarray, pl.Series]
     , sample_weights:Optional[np.ndarray]=None
-    , min_prob:float = 1e-12
+    # , min_prob:float = 1e-12
     , check_binary:bool = False
 ) -> float:
     '''
@@ -304,7 +304,7 @@ def logloss(
         Predicted probabilities
     sample_weights
         An array of size (len(y_actual), ) which provides weights to each sample
-    min_prob
+    min_prob : Removed. Unless requested by people.
         Minimum probability to clip so that we can prevent illegal computations like 
         log(0). If p < min_prob, log(min_prob) will be computed instead.
     '''
@@ -319,22 +319,26 @@ def logloss(
 
     if sample_weights is None:
         return pl.from_records((y_a, y_p), schema=["y", "p"]).with_columns(
-            l = pl.col("p").clip_min(min_prob).log(),
-            o = (1- pl.col("p")).clip_min(min_prob).log(),
-            ny = 1 - pl.col("y")
+            pl.col("p").log().alias("l"),
+            ((pl.lit(1., dtype=pl.Float64)-pl.col("p")).log()).alias("o"),
+            (pl.lit(1., dtype=pl.Float64) - pl.col("y")).alias("ny")
         ).select(
-            pl.lit(-1, dtype=pl.Float64) 
-            * (pl.col("y").dot(pl.col("l")) + pl.col("ny").dot(pl.col("o"))) / len(y_a)
+            pl.sum_horizontal(
+                pl.col("y").dot(pl.col("l")),
+                pl.col("ny").dot(pl.col("o"))
+            ) * pl.lit((-1/len(y_a)), dtype=pl.Float64)
         ).item(0,0)
     else:
         s = sample_weights.ravel()
         return pl.from_records((y_a, y_p, s), schema=["y", "p", "s"]).with_columns(
-            l = pl.col("s") * pl.col("p").clip_min(min_prob).log(),
-            o = pl.col("s") * (1- pl.col("p")).clip_min(min_prob).log(),
-            ny = 1 - pl.col("y")
+            (pl.col("s") * pl.col("p").log()).alias("l"),
+            (pl.col("s") * (pl.lit(1., dtype=pl.Float64) - pl.col("p")).log()).alias("o"),
+            (pl.lit(1., dtype=pl.Float64) - pl.col("y")).alias("ny")
         ).select(
-            pl.lit(-1, dtype=pl.Float64) 
-            * (pl.col("y").dot(pl.col("l")) + pl.col("ny").dot(pl.col("o"))) / len(y_a)
+            pl.sum_horizontal(
+                pl.col("y").dot(pl.col("l")),
+                pl.col("ny").dot(pl.col("o"))
+            ) * pl.lit((-1/len(y_a)), dtype=pl.Float64)
         ).item(0,0)
     
 def psi_discrete(
@@ -362,13 +366,13 @@ def psi_discrete(
         df1.join(df2, left_on=expected.name, right_on=actual.name, how="outer", suffix="_right")
         .select(
             pl.col(expected.name),
-            e = (pl.col("counts") / len(expected)).clip_min(0.00001),
-            a = (pl.col("counts_right") / len(actual)).clip_min(0.00001)
+            (pl.col("counts") / len(expected)).clip_min(0.00001).alias("e"),
+            (pl.col("counts_right") / len(actual)).clip_min(0.00001).alias("a")
         ).with_columns(
             (pl.col("e") - pl.col("a")).alias(r"e% - a%"),
-            ln_e_on_a = (pl.col("e")/pl.col("a")).log()
+            (pl.col("e")/pl.col("a")).log().alias("ln_e_on_a")
         ).with_columns(
-            psi = pl.col(r"e% - a%") * pl.col("ln_e_on_a")
+            (pl.col(r"e% - a%") * pl.col("ln_e_on_a")).alias("psi")
         )
     )
     if full_table:
@@ -418,13 +422,13 @@ def psi(
         b = pl.count()
     )
     table = s1_summary.lazy().join(s2_summary, on="category").with_columns(
-        e = (pl.col("a")/len(s1)).clip_min(0.00001),
-        a = (pl.col("b")/len(s2)).clip_min(0.00001)
+        (pl.col("a")/len(s1)).clip_min(0.00001).alias("e"),
+        (pl.col("b")/len(s2)).clip_min(0.00001).alias("a")
     ).with_columns(
         (pl.col("e") - pl.col("a")).alias(r"e% - a%"),
-        ln_e_on_a = (pl.col("e")/pl.col("a")).log()
+        (pl.col("e")/pl.col("a")).log().alias("ln_e_on_a")
     ).with_columns(
-        psi = pl.col(r"e% - a%") * pl.col("ln_e_on_a")
+        (pl.col(r"e% - a%") * pl.col("ln_e_on_a")).alias("psi")
     )
     if full_table:
         return table.sort("category").rename({"category":"range"})\
