@@ -106,7 +106,7 @@ def clean_str_cols(
     if lowercase:
         exprs = [pl.col(str_cols).str.to_lowercase().str.replace_all(pattern, value)]
     else:
-        exprs = [pl.col(str_cols).str.replace_all(pattern, value) for c in str_cols]
+        exprs = [pl.col(str_cols).str.replace_all(pattern, value)]
 
     return _dsds_with_columns(df ,exprs)
 

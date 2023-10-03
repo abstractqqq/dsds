@@ -365,10 +365,10 @@ def custom_transform(
     return _dsds_with_columns(df, exprs)
 
 def add_dummy(
-    df: PolarsFrame,
-    id_col: str,
-    dummy_col_name: str = "_dummy",
-    period: int = 7
+    df: PolarsFrame
+    , id_col: str
+    , dummy_col_name: str = "_dummy"
+    , period: int = 7
 ) -> PolarsFrame:
     '''
     Creates a 'random' column that should have no predictive value whatsoever. This is useful in feature 
@@ -392,13 +392,36 @@ def add_dummy(
     expr = pl.col(id_col).hash().mod(period).shuffle().alias(dummy_col_name)
     return _dsds_with_columns(df, [expr])
 
+def cast_dtype(
+    df: PolarsFrame
+    , cols: list[str]
+    , dtype: pl.DataType
+) -> PolarsFrame:
+    '''
+    Casts the given columns to the given type. This type is general purpose. For things like casting boolean
+    columns to 0s and 1s, please use more specialized functions like dsds.encoders.force_binary.
+
+    This will be remembered by blueprint by default.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    cols
+        List of columns to cast
+    dtype
+        The dtype to cast to
+    '''
+    return _dsds_with_columns(df, [pl.col(cols).cast(dtype)])
+
 def binarize(
     df: PolarsFrame
     , rules: dict[str, pl.Expr]
 ) -> PolarsFrame:
     '''
     Binarize the columns according to the rules given. E.g. if rules = {"c": pl.col(c) > 25}, then
-    values in column c which are > 25 will be mapped to 1 and 0 otherwise.
+    values in column c which are > 25 will be mapped to 1 and 0 otherwise. The resulting 0-1 column
+    will replace the original column c.
 
     This will be remembered by blueprint by default.
 
@@ -516,7 +539,7 @@ def feature_mapping(
     '''
     Maps specific values of a feature into values provided. This is a common task when the feature columns 
     come with error codes. This allows features to be mapped to other types, but the user has to make sure 
-    that the output column has one clear type.
+    that the output column has one clear type. This method can be slow when there are lots of values to map.
 
     This will be remembered by blueprint by default.
 
@@ -582,9 +605,9 @@ def feature_mapping(
         exprs = []
         for c, repl_map in mapping.items():
             if c in df.columns:
-                exprs.append(_when_then_repl(c, repl_map))
+                exprs.append(pl.col(c).map_dict(repl_map))
             else:
-                logger.info(f"Found {c} not in df. Ignored.")
+                logger.info(f"Found key {c} is not in df. Ignored.")
     elif isinstance(mapping, list):
         exprs = []
         for f in mapping:
@@ -601,10 +624,10 @@ def feature_mapping(
     return _dsds_with_columns(df, exprs)
 
 def replace_by_pattern(
-    df: PolarsFrame,
-    c: str,
-    pattern: str,
-    by: str
+    df: PolarsFrame
+    , c: str
+    , pattern: str
+    , by: str
 ) -> PolarsFrame:
     '''
     Use a regex pattern to capture patterns in a string column and replace the patterns by
@@ -888,7 +911,7 @@ def sqrt_transform(
 ) -> PolarsFrame:
     '''
     Performs classical square root transform for the given columns. Negative numbers will be mapped to
-    NaN.
+    NaN. Set suffix = "" to replace the original columns.
 
     This will be remembered by blueprint by default.
 
@@ -899,7 +922,7 @@ def sqrt_transform(
     cols
         Must be explicitly provided and should all be numeric columns
     suffix
-        The suffix to add to the transformed columns. If you wish to replace the original ones, set suffix = "".
+        The suffix to add to the transformed columns.
     '''
     _ = type_checker(df, cols, "numeric", "sqrt_transform")
     return _dsds_with_columns(df, [pl.col(cols).sqrt().suffix(suffix)])
@@ -923,7 +946,7 @@ def cbrt_transform(
     cols
         Must be explicitly provided and should all be numeric columns
     suffix
-        The suffix to add to the transformed columns. If you wish to replace the original ones, set suffix = "".
+        The suffix to add to the transformed columns.
     '''
     _ = type_checker(df, cols, "numeric", "cbrt_transform")
     return _dsds_with_columns(df, [pl.col(cols).cbrt().suffix(suffix)])
@@ -958,17 +981,17 @@ def linear_transform(
     '''
 
     _ = type_checker(df, cols, "numeric", "linear_transform")
-    if isinstance(coeffs, float):
+    if isinstance(coeffs, (float, int)):
         coeff_list = [coeffs]*len(cols)
     else:
         coeff_list = coeffs
 
-    if isinstance(consts, float):
+    if isinstance(consts, (float, int)):
         const_list = [consts]*len(cols)
     else:
         const_list = consts
 
-    if len(cols) != len(coeff_list) or len(cols) != len(const_list) or len(const_list) != len(coeff_list):
+    if (len(cols) != len(coeff_list)) | (len(cols) != len(const_list)) | (len(const_list) != len(coeff_list)):
         raise ValueError("The inputs `cols`, `coeffs` or `consts` must have the same length, or coeffs and consts must "
                          "be one fixed value.")
     

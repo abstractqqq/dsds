@@ -36,7 +36,7 @@ from scipy.stats import (
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from tqdm import tqdm
 from math import comb
-from dsds._rust import rs_levenshtein_dist
+from dsds._dsds_rust import rs_levenshtein_dist
 # import re
 import numpy as np
 import polars.selectors as cs

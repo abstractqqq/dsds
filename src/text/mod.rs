@@ -6,8 +6,8 @@ use crate::text::text::{
     //tfidf_vectorizer,
     //get_ref_table,
     // STEMMER
+    // hamming_dist_series,
     snowball_stem,
-    hamming_dist_series,
     hamming_dist,
     levenshtein_dist,
 };
@@ -20,7 +20,6 @@ use pyo3_polars::error::PyPolarsErr;
 use pyo3_polars::{PyDataFrame, PySeries};
 use rayon::prelude::ParallelIterator;
 
-use self::text::levenshtein_dist;
 
 // Only expose Python Layer in mod.rs, except for things that require py object.
 

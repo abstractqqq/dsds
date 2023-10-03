@@ -8,7 +8,7 @@ from .type_alias import (
     , HashableDtypes
     # , PolarsFrame
 )
-from dsds._rust import (
+from dsds._dsds_rust import (
     rs_cosine_similarity
     , rs_self_cosine_similarity
     , rs_df_inner_list_jaccard
@@ -18,9 +18,8 @@ from dsds._rust import (
     , rs_mape
     , rs_smape
     , rs_huber_loss
-    , rs_snowball_stem_series
+    # , rs_snowball_stem_series
 )
-
 # from dsds.prescreen import type_checker
 import numpy as np 
 import polars as pl
@@ -682,7 +681,7 @@ def jaccard_similarity(
     , s2:Union[pl.Series,list,np.ndarray]
     , expected_dtype: HashableDtypes = "string"
     , include_null:bool=False
-    , stem:bool = False
+    # , stem:bool = False # Removed for now
     , parallel:bool=True
 ) -> float:
     '''
@@ -699,7 +698,7 @@ def jaccard_similarity(
         Either "string" or "int". Dtype of s1 and s2.
     include_null
         If true, null will be counted as common. If false, they will not.
-    stem
+    stem : Removed temporarily
         If true and inner values are strings, then perform snowball stemming on the words. This is only useful 
         when the lists are lists of words. All stopwords will also be removed before counting. Set this to False
         if stemming doesn't matter or if you want better performance.
@@ -714,10 +713,6 @@ def jaccard_similarity(
         ss2 = pl.Series(s2, dtype=pl.Int64)
     else:
         raise TypeError(f"The argument `expected_dtype` must be either string or int. Not {expected_dtype}.")
-    
-    if stem and expected_dtype == "string":
-        ss1 = rs_snowball_stem_series(ss1, True)
-        ss2 = rs_snowball_stem_series(ss2, True)
 
     return rs_series_jaccard(ss1, ss2, expected_dtype, include_null, parallel)
 

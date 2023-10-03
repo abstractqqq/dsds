@@ -1,10 +1,12 @@
 import polars as pl
-# from polars.utils.udfs import _get_shared_lib_location
+from polars.utils.udfs import _get_shared_lib_location
 
-# lib = _get_shared_lib_location(__file__)
+print(__file__)
+lib = _get_shared_lib_location(__file__)
+print(lib)
 # import numpy as np
-_BENFORD_DIST_SERIES = (1 + 1 / pl.int_range(1, 10, eager=True)).log10()
 
+_BENFORD_DIST_SERIES = (1 + 1 / pl.int_range(1, 10, eager=True)).log10()
 @pl.api.register_expr_namespace("dsds_exprs")
 class MoreExprs:
     def __init__(self, expr: pl.Expr):
@@ -62,10 +64,9 @@ class MoreExprs:
         )
         return pl.corr(counts, pl.lit(_BENFORD_DIST_SERIES))
 
-    # def levenshtein_dist(self, ref:str) -> pl.Expr:
+    # def levenshtein_dist(self) -> pl.Expr:
     #     return self._expr._register_plugin(
     #         lib=lib,
     #         symbol="levenshtein_dist",
-    #         args = [ref],
     #         is_elementwise=True,
     #     )

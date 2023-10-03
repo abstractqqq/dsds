@@ -14,6 +14,8 @@ Welcome to DSDS, an alternative data science package that aims to be an improvem
 
 DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
 
+[Here is why in my opinion data scientists, analysts and engineers should switch to Polars!](https://medium.com/@tq9695/all-that-polars-that-make-you-forget-pandas-3dc0fdfaefbe)
+
 ## Usage
 
 Practical Feature Prescreen

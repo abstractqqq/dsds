@@ -53,7 +53,7 @@ keywords = ["data-pipeline", "EDA", "feature-screening", "feature-selection"]
 
 [tool.maturin]
 python-source = "python"
-module-name = "dsds._rust"
+module-name = "dsds._dsds_rust"
 features = ["pyo3/extension-module"]
 
 [tool.ruff]

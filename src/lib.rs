@@ -13,8 +13,8 @@ use crate::text::{
     //rs_cnt_vectorizer,
     //rs_tfidf_vectorizer,
     //rs_ref_table,
+    // rs_snowball_stem_series,
     rs_snowball_stem,
-    rs_snowball_stem_series,
     rs_levenshtein_dist,
     rs_hamming_dist,
 };
@@ -35,7 +35,7 @@ use crate::functions::{
 
 // A Python module implemented in Rust.
 #[pymodule]
-fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
+fn _dsds_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     // m.add_class::<Test>().unwrap();
     // m.add_function(wrap_pyfunction!(rs_cnt_vectorizer, m)?)?;
     // m.add_function(wrap_pyfunction!(rs_tfidf_vectorizer, m)?)?;
@@ -46,7 +46,7 @@ fn _rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rs_df_inner_list_jaccard, m)?)?;
     m.add_function(wrap_pyfunction!(rs_series_jaccard, m)?)?;
     m.add_function(wrap_pyfunction!(rs_hamming_dist, m)?)?;
-    m.add_function(wrap_pyfunction!(rs_snowball_stem_series, m)?)?;
+    // m.add_function(wrap_pyfunction!(rs_snowball_stem_series, m)?)?;
     m.add_function(wrap_pyfunction!(rs_gcc_proba_est, m)?)?;
     m.add_function(wrap_pyfunction!(rs_mape, m)?)?;
     m.add_function(wrap_pyfunction!(rs_smape, m)?)?;

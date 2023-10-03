@@ -441,7 +441,6 @@ def _ks_2_samp(
     feature: np.ndarray
     , target: np.ndarray
     , i: int
-    , check_binary: bool = True
 ) -> Tuple[float, float, int]:
     ''' 
     Computes the ks-statistics for the feature on class 0 and class 1. The bigger the ks
@@ -458,11 +457,10 @@ def _ks_2_samp(
     i
         A passthrough of the index of the feature. Not used. Only used to keep
         track of indices when this is being called in a multithreaded context.
-    check_binary
-        Whether to skip the binary checking or not.
+
     '''
-    if check_binary & (not check_binary_target_col(target)):
-        raise ValueError("Target is not properly binary.")
+    # if check_binary & (not check_binary_target_col(target)):
+    #     raise ValueError("Target is not properly binary.")
 
     # Drop nulls as they will cause problems for ks computation
     valid = ~np.isnan(feature)
@@ -509,7 +507,7 @@ def ks_statistic(
     pbar = tqdm(total=len(nums), desc="KS", position=0, leave=True)
     with ThreadPoolExecutor(max_workers=dsds.THREADS) as ex:
         futures = (
-            ex.submit(_ks_2_samp, df[c].to_numpy(), target_col, i, False)
+            ex.submit(_ks_2_samp, df[c].to_numpy(), target_col, i)
             for i, c in enumerate(nums)
         )
         for f in as_completed(futures):
