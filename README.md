@@ -55,6 +55,89 @@ output = input_df.pipe(var_removal, threshold = 0.5, target = "Clicked on Ad")\
     .pipe(mutual_info_selector, target = "Clicked on Ad", top_k = 12)
 ```
 
+Common practical Transformations for feature extraction or engineering:
+```Python
+
+import dsds.transform as t
+df = pl.DataFrame({
+    "survey":["0% of my time", "1% to 25% of my time", "75% to 99% of my time", 
+            "50% to 74% of my time", "75% to 99% of my time", 
+          "50% to 74% of my time"]
+})
+print(t.extract_patterns(df, "(\d*\.?\d+)%", ["survey"], join_by=" to "))
+
+shape: (6, 1)
+┌────────────┐
+│ survey     │
+│ ---        │
+│ str        │
+╞════════════╡
+│ 0%         │
+│ 1% to 25%  │
+│ 75% to 99% │
+│ 50% to 74% │
+│ 75% to 99% │
+│ 50% to 74% │
+└────────────┘
+
+#-----------------------------------------------------------------------------
+import dsds.transform as t
+df = pl.DataFrame({
+    "a":[1, 2, 3],
+    "b":[1, 2, 3],
+    "c":[1, 2, 3]
+})
+t.extract_horizontally(df, cols=["a", "b", "c"], extract=["min", "max", "sum"])
+
+shape: (3, 3)
+┌────────────┬────────────┬────────────┐
+│ min(a,b,c) ┆ max(a,b,c) ┆ sum(a,b,c) │
+│ ---        ┆ ---        ┆ ---        │
+│ i64        ┆ i64        ┆ i64        │
+╞════════════╪════════════╪════════════╡
+│ 1          ┆ 1          ┆ 3          │
+│ 2          ┆ 2          ┆ 6          │
+│ 3          ┆ 3          ┆ 9          │
+└────────────┴────────────┴────────────┘
+
+#-----------------------------------------------------------------------------
+import dsds.transform as t
+df = pl.DataFrame({
+    "date1":["2021-01-01", "2022-02-03", "2023-11-23"]
+    , "date2":["2021-01-01", "2022-02-03", "2023-11-23"]
+}).with_columns(
+    pl.col(c).str.to_date() for c in ["date1", "date2"]
+)
+print(df)
+
+shape: (3, 2)
+┌────────────┬────────────┐
+│ date1      ┆ date2      │
+│ ---        ┆ ---        │
+│ date       ┆ date       │
+╞════════════╪════════════╡
+│ 2021-01-01 ┆ 2021-01-01 │
+│ 2022-02-03 ┆ 2022-02-03 │
+│ 2023-11-23 ┆ 2023-11-23 │
+└────────────┴────────────┘
+
+cols = ["date1", "date2"]
+print(t.extract_dt_features(df, cols=cols))
+
+shape: (3, 8)
+┌────────────┬────────────┬────────────┬───────────┬───────────┬───────────┬───────────┬───────────┐
+│ date1      ┆ date2      ┆ date1_year ┆ date2_yea ┆ date1_qua ┆ date2_qua ┆ date1_mon ┆ date2_mon │
+│ ---        ┆ ---        ┆ ---        ┆ r         ┆ rter      ┆ rter      ┆ th        ┆ th        │
+│ date       ┆ date       ┆ u32        ┆ ---       ┆ ---       ┆ ---       ┆ ---       ┆ ---       │
+│            ┆            ┆            ┆ u32       ┆ u32       ┆ u32       ┆ u32       ┆ u32       │
+╞════════════╪════════════╪════════════╪═══════════╪═══════════╪═══════════╪═══════════╪═══════════╡
+│ 2021-01-01 ┆ 2021-01-01 ┆ 2021       ┆ 2021      ┆ 1         ┆ 1         ┆ 1         ┆ 1         │
+│ 2022-02-03 ┆ 2022-02-03 ┆ 2022       ┆ 2022      ┆ 1         ┆ 1         ┆ 2         ┆ 2         │
+│ 2023-11-23 ┆ 2023-11-23 ┆ 2023       ┆ 2023      ┆ 4         ┆ 4         ┆ 11        ┆ 11        │
+└────────────┴────────────┴────────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
+
+```
+
 Benchmarks: (using a version not available to the public yet.)
 
 ![Screenshot](./pics/benches.PNG)
@@ -66,7 +149,7 @@ Python 3.9, 3.10, 3.11+ is recommended.
 
 It should run on all versions >= 3.9.
 
-Note: scikit-learn, lightgbm, xgboost and nltk are needed for full functionalities. 
+Note: scikit-learn, lightgbm, xgboost and nltk are needed for full functionalities. I am writing a lot of things from scratch in order to minimize dependency and increase efficiency within the package. 
 
 
 # Why the name DSDS?

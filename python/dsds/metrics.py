@@ -20,12 +20,34 @@ from dsds._dsds_rust import (
     , rs_huber_loss
     # , rs_snowball_stem_series
 )
+from dataclasses import dataclass
 # from dsds.prescreen import type_checker
 import numpy as np 
 import polars as pl
 import logging
 
 logger = logging.getLogger(__name__)
+
+@dataclass(frozen=True)
+class BinaryClassifMetrics:
+    roc_auc : float
+    log_loss : float
+    brier_loss : float
+
+@dataclass(frozen=True)
+class RegressionMetrics:
+    mae : float
+    mse : float
+    rmse : float
+    rmsle : float
+    r2 : float
+    huber_loss : float
+
+@dataclass(frozen=True)
+class TimeSeriesMetrics:
+    mse : float
+    mape : float
+    smape : float
 
 # Rule of thumb: all rust functions will take Array<f64> or ArrayView<f64>.
 # Always do a astype on numpy arrays with copy set to False to minimize copying.
@@ -675,6 +697,16 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
     
 def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
     return 1 - cosine_similarity(x,y,True)
+
+def performance_report(
+    df: pl.DataFrame
+    , actual_col : str
+    , pred_col : str
+    , group_by: Optional[list[str]]
+    , metrics: str 
+) -> list:
+    
+    pass
 
 def jaccard_similarity(
     s1:Union[pl.Series,list,np.ndarray]

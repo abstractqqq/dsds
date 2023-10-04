@@ -4,6 +4,7 @@ import pandas as pd
 import dsds.sample as sa
 import dsds.metrics as me
 import dsds.transform as t
+import dsds.encoders as enc
 import numpy as np
 from polars.testing import assert_frame_equal
 from dsds.type_alias import PolarsFrame
@@ -12,6 +13,8 @@ from sklearn.metrics import roc_auc_score, log_loss, mean_absolute_percentage_er
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn import set_config
+from sklearn.datasets import fetch_openml
+from category_encoders import TargetEncoder, OneHotEncoder, WOEEncoder
 # from category_encoders import target_encoder, WOEEncoder, OneHotEncoder
 
 set_config(transform_output = "pandas")
@@ -25,6 +28,15 @@ def sklearn_train_test_split(df: pd.DataFrame, train_frac:float = 0.75) -> list:
 
 def smape_numpy(A, F):
     return 100/len(A) * np.sum(2 * np.abs(F - A) / (np.abs(A) + np.abs(F))/2)
+
+@pytest.fixture
+def encoder_test() -> pl.DataFrame:
+    data = fetch_openml(name="house_prices", as_frame=True, parser="auto")
+    use = ["Id", "MSSubClass", "MSZoning", "LotFrontage", "YearBuilt", "Heating", "CentralAir"]
+    df = data.data[use].copy()
+    df["target"] = [1 if x > 200000 else 0 for x in data.target]
+    df = pd.concat([df.copy()]*50)
+    return pl.from_pandas(df) # 73k rows
 
 @pytest.fixture
 def pldf_with_nulls() -> pl.DataFrame:
@@ -203,7 +215,15 @@ def test_roc_auc_200k_sklearn(benchmark):
 
 @pytest.mark.benchmark(group="train_test_split")
 def test_train_test_split_on_2mm_dsds(benchmark):
-    df = pl.read_parquet("./data/dunnhumby.parquet")
+    df = pl.DataFrame({
+        "a": range(2_000_000),
+        "b": range(2_000_000),
+        "c": range(2_000_000),
+        "d": range(2_000_000),
+        "e": range(2_000_000),
+        "f": range(2_000_000),
+        "g": range(2_000_000)
+    })
     _ = benchmark(
         dsds_train_test_split, df, train_frac=0.75
     )
@@ -213,10 +233,82 @@ def test_train_test_split_on_2mm_dsds(benchmark):
 
 @pytest.mark.benchmark(group="train_test_split")
 def test_train_test_split_on_2mm_sklearn(benchmark):
-    df = pd.read_parquet("./data/dunnhumby.parquet")
+    df = pl.DataFrame({
+        "a": range(2_000_000),
+        "b": range(2_000_000),
+        "c": range(2_000_000),
+        "d": range(2_000_000),
+        "e": range(2_000_000),
+        "f": range(2_000_000),
+        "g": range(2_000_000)
+    })
     _ = benchmark(
         sklearn_train_test_split, df, train_frac=0.75
     )
     train, test = sklearn_train_test_split(df, train_frac=0.75)
     assert round(len(train)/len(df),2) == 0.75
     assert round(len(test)/len(df),2) == 0.25
+
+@pytest.mark.benchmark(group="woe_encoder")
+def test_woe_encoding_74k_dsds(encoder_test, benchmark):
+
+    to_be_encoded = ["MSZoning", 'CentralAir', 'Heating']
+    df = encoder_test
+
+    encoded = benchmark(
+        enc.woe_cat_encode, df, "target", to_be_encoded
+    )
+
+    df_pd = df.to_pandas()
+    woe = WOEEncoder(cols=to_be_encoded)
+    ce_result = woe.fit_transform(X=df_pd, y=df_pd["target"])
+
+    assert_frame_equal(
+        encoded,
+        pl.from_pandas(ce_result)
+    )
+
+@pytest.mark.benchmark(group="woe_encoder")
+def test_woe_encoding_74k_category_encoders(encoder_test, benchmark):
+
+    to_be_encoded = ["MSZoning", 'CentralAir', 'Heating']
+    df = encoder_test.to_pandas()
+
+    woe = WOEEncoder(cols=to_be_encoded)
+    _ = benchmark(
+        woe.fit_transform, df, df["target"]
+    )
+    # Equality is tested in test_woe_encoding_74k_dsds
+    assert True 
+
+@pytest.mark.benchmark(group="target_encoder")
+def test_target_encoding_74k_dsds(encoder_test, benchmark):
+
+    to_be_encoded = ["MSZoning", 'CentralAir', 'Heating']
+    df = encoder_test
+
+    encoded = benchmark(
+        enc.smooth_target_encode, df, "target", to_be_encoded, 20, 10
+    )
+
+    df_pd = df.to_pandas()
+    target = TargetEncoder(cols=to_be_encoded, min_samples_leaf=20, smoothing=10)
+    ce_result = target.fit_transform(X=df_pd, y=df_pd["target"])
+
+    assert_frame_equal(
+        encoded,
+        pl.from_pandas(ce_result)
+    )
+
+@pytest.mark.benchmark(group="target_encoder")
+def test_target_encoding_74k_category_encoders(encoder_test, benchmark):
+
+    to_be_encoded = ["MSZoning", 'CentralAir', 'Heating']
+    df = encoder_test.to_pandas()
+
+    target = TargetEncoder(cols=to_be_encoded, min_samples_leaf=20, smoothing=10)
+    _ = benchmark(
+        target.fit_transform, df, df["target"]
+    )
+    # Equality is tested in test_woe_encoding_74k_dsds
+    assert True

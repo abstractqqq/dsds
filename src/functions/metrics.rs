@@ -1,6 +1,5 @@
 use ndarray::{Axis, ArrayView1, Array2};
 use ndarray::parallel::prelude::*;
-use rayon::prelude::*;
 use polars_core::utils::accumulate_dataframes_vertical;
 use polars::prelude::*;
 

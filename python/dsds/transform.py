@@ -30,14 +30,12 @@ from functools import partial
 import dsds
 import logging
 import math
-# import numpy as np
 import polars as pl
 
 # A lot of companies are still using Python < 3.10
 # So I am not using match statements
 
 logger = logging.getLogger(__name__)
-
 
 def impute(
     df:PolarsFrame
@@ -269,9 +267,10 @@ def scale(
         ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [(pl.col(c) - quantiles[len(cols) + i])/((quantiles[2*len(cols) + i] - quantiles[i])) 
                  for i,c in enumerate(cols)]
-    elif strategy == "abs_max":
+    elif strategy == "max_abs":
         max_abs = df.lazy().select(
-            pl.col(cols).abs().max().suffix("_absmax")
+            pl.max_horizontal(pl.col(c).min().abs(), pl.col(c).max().abs()).suffix("_absmax")
+            for c in cols
         ).collect(streaming=dsds.STREAM_TRANSFORM).row(0)
         exprs = [pl.col(c)/max_abs[i] for i,c in enumerate(cols)]
     elif strategy in ("const", "constant"):
@@ -289,6 +288,72 @@ def scale_by(
     , strategy:ScaleByStrategy="standard"
     , qcuts:tuple[float, float, float] = (0.25, 0.5, 0.75)
 ) -> PolarsFrame:
+    '''
+    Scaling by segment. If segment-level constant (one constant per segment) scaling is needed, 
+    please consider using a when-then expression in a custom transform.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars DataFrame
+    c
+        The column to scale
+    by 
+        The segment to scale by
+    strategy
+        ScaleByStrategy, one of "standard", "min_max", "robust", "max_abs", "mean", "median", or "max"
+    qcuts
+        If strategy = "robust", the three quantile cuts to be used.
+
+    Example
+    -------
+    >>> df = pl.DataFrame({
+    ...     "segment": ["a", "a", "a", "b", "b", "b"],
+    ...     "value": [-3,1,2,200,300,250]
+    ... })
+    >>> print(df)
+    shape: (6, 2)
+    ┌─────────┬───────┐
+    │ segment ┆ value │
+    │ ---     ┆ ---   │
+    │ str     ┆ i64   │
+    ╞═════════╪═══════╡
+    │ a       ┆ -3    │
+    │ a       ┆ 1     │
+    │ a       ┆ 2     │
+    │ b       ┆ 200   │
+    │ b       ┆ 300   │
+    │ b       ┆ 250   │
+    └─────────┴───────┘
+    >>> print(t.scale_by(df, "value", "segment", strategy="max_abs"))
+    shape: (6, 2)
+    ┌─────────┬──────────┐
+    │ segment ┆ value    │
+    │ ---     ┆ ---      │
+    │ str     ┆ f64      │
+    ╞═════════╪══════════╡
+    │ a       ┆ -1.0     │
+    │ a       ┆ 0.333333 │
+    │ a       ┆ 0.666667 │
+    │ b       ┆ 0.666667 │
+    │ b       ┆ 1.0      │
+    │ b       ┆ 0.833333 │
+    └─────────┴──────────┘
+    >>> print(t.scale_by(df, "value", "segment", strategy="min_max"))
+    shape: (6, 2)
+    ┌─────────┬───────┐
+    │ segment ┆ value │
+    │ ---     ┆ ---   │
+    │ str     ┆ f64   │
+    ╞═════════╪═══════╡
+    │ a       ┆ 0.0   │
+    │ a       ┆ 0.8   │
+    │ a       ┆ 1.0   │
+    │ b       ┆ 0.0   │
+    │ b       ┆ 1.0   │
+    │ b       ┆ 0.5   │
+    └─────────┴───────┘
+    '''
     
     _ = type_checker(df, [c], "numeric", "scale_by")    
     if strategy in ("const", "constant"):
@@ -297,7 +362,7 @@ def scale_by(
     if strategy == "standard":
         agg_exprs = [pl.col(c).mean().prefix("mean:"), pl.col(c).std().prefix("std:")]
     elif strategy == "max_abs":
-        agg_exprs = [pl.col(c).abs().max().suffix("_maxabs")]
+        agg_exprs = [pl.max_horizontal(pl.col(c).min().abs(), pl.col(c).max().abs()).suffix("_maxabs")]
     elif strategy == "min_max":
         agg_exprs = [pl.col(c).min().prefix("min:"), pl.col(c).max().prefix("max:")]
     elif strategy == "mean":
@@ -398,7 +463,7 @@ def cast_dtype(
     , dtype: pl.DataType
 ) -> PolarsFrame:
     '''
-    Casts the given columns to the given type. This type is general purpose. For things like casting boolean
+    Casts the given columns to the given type. This type is for general use. For things like casting boolean
     columns to 0s and 1s, please use more specialized functions like dsds.encoders.force_binary.
 
     This will be remembered by blueprint by default.
@@ -451,7 +516,7 @@ def merge_infreq_categories(
 ) -> PolarsFrame:
     '''
     Combines infrequent categories in string columns together. Note this does not guarantee similar
-    categories should be combined. If there is only 1 infrequent category, nothing will be done.
+    categories to be combined. If there is only 1 infrequent category, nothing will be done.
 
     This will be remembered by blueprint by default.
 
@@ -525,13 +590,6 @@ def merge_infreq_categories(
     
     return _dsds_with_columns(df, exprs)
 
-def _when_then_repl(c:str, repl_map:dict):
-    expr = pl.col(c)
-    for og, repl in repl_map.items():
-        expr = pl.when(pl.col(c).eq(og)).then(repl).otherwise(expr)
-    
-    return expr.alias(c)
-
 def feature_mapping(
     df:PolarsFrame
     , mapping: Union[dict[str, dict[Any, Any]], list[pl.Expr] , pl.Expr]
@@ -551,7 +609,8 @@ def feature_mapping(
         Either a dict like {"a": {999: None, 998: None, 997: None}, ...}, meaning that 999, 998 and 997 in column "a" 
         should be replaced by null, or a list/a single Polars (when-then) expression(s) like the following,  
         pl.when(pl.col("a") >= 997).then(None).otherwise(pl.col("a")).alias("a"), which will perform the same mapping 
-        as the dict example. Note that using Polars expression can tackle more complex replacement.
+        as the dict example. Note that using Polars expression can tackle more complex replacement. If the key 
+        is not a valid column in df, it will be ignored.
 
     Example
     -------
@@ -602,12 +661,10 @@ def feature_mapping(
     └──────┴──────┘
     '''
     if isinstance(mapping, dict):
-        exprs = []
-        for c, repl_map in mapping.items():
-            if c in df.columns:
-                exprs.append(pl.col(c).map_dict(repl_map))
-            else:
-                logger.info(f"Found key {c} is not in df. Ignored.")
+        exprs = [
+            pl.col(c).map_dict(repl_map, default=pl.first())
+            for c, repl_map in mapping.items()
+        ]
     elif isinstance(mapping, list):
         exprs = []
         for f in mapping:
@@ -979,7 +1036,6 @@ def linear_transform(
     suffix
         The suffix to add to the transformed columns. If you wish to drop the original ones, set suffix = "".
     '''
-
     _ = type_checker(df, cols, "numeric", "linear_transform")
     if isinstance(coeffs, (float, int)):
         coeff_list = [coeffs]*len(cols)

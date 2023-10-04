@@ -1,3 +1,4 @@
+import math
 import polars as pl
 from polars.utils.udfs import _get_shared_lib_location
 
@@ -38,22 +39,22 @@ class MoreExprs:
         '''
         return self._expr.std(ddof=ddof) / self._expr.mean()
     
-    def z_normalize(self) -> pl.Expr:
+    def z_normalize(self, ddof:int=1) -> pl.Expr:
         '''
-        z_normalize the given expression: remove the mean and scales by the std(ddof=1)
+        z_normalize the given expression: remove the mean and scales by the std
         '''
-        return (self._expr - self._expr.mean()) / self._expr.std()
+        return (self._expr - self._expr.mean()) / self._expr.std(ddof=ddof)
     
-    def benford_correlation(x: pl.Expr) -> pl.Expr:
+    def benford_correlation(self) -> pl.Expr:
         '''
         Returns the benford correlation for the given expression.
         '''
         counts = (
             # This when then is here because there is a precision issue that happens for 1000.
-            pl.when(x.abs() == 1000).then(
+            pl.when(self._expr.abs() == 1000).then(
                 pl.lit(1)
             ).otherwise(
-                (x.abs()/(pl.lit(10).pow((x.abs().log10()).floor())))
+                (self._expr.abs()/(pl.lit(10).pow((self._expr.abs().log10()).floor())))
             ).drop_nans()
             .drop_nulls()
             .cast(pl.UInt8)
@@ -63,6 +64,54 @@ class MoreExprs:
             .struct.field("counts") - pl.lit(1)
         )
         return pl.corr(counts, pl.lit(_BENFORD_DIST_SERIES))
+    
+    def frac(self) -> pl.Expr:
+        '''
+        Returns the fractional part of the input values. E.g. fractional part of 1.1 is 0.1
+        '''
+        return self._expr.mod(1.0)
+    
+    # def sine_wave(self, freq:float, a:float) -> pl.Expr:
+    #     '''
+    #     The column will be considered `time`, and this will perform the sine wave transform on this column
+
+    #     Parameters
+    #     ----------
+    #     freq
+    #         The frequency of the sine wave transform
+    #     a
+    #         The amplitude of the sine wave transform
+    #     '''
+    #     return pl.lit(a) * (pl.lit(2*math.pi*freq) * self._expr).sin()
+    
+    # def square_wave(self, a:float, shift:float = 0.) -> pl.Expr:
+    #     '''
+    #     The column will be considered `time`, and this will perform the square wave transform on this column
+
+    #     Parameters
+    #     ----------
+    #     a
+    #         The amplitude of the square wave transform
+    #     shift
+    #         A constant to add to the square_wave. If shift != 0, it is also called DC-shifted square wave.
+    #     '''
+    #     return pl.when(self._expr.mod(1.0) < 0.5).then(a).otherwise(-a) + pl.lit(shift)
+    
+    # def modified_sine_wave(self, freq:float, a: float) -> pl.Expr:
+    #     '''
+    #     The column will be considered `time`, and this will perform the modified sine wave transform on this column
+
+    #     Parameters
+    #     ----------
+    #     freq
+    #         The amplitude of the sine wave transform
+    #     a
+    #         The amplitude of the sine wave transform
+    #     '''
+    #     y = self._expr.mod(1.0)
+    #     return pl.when(y < 0.25).then(0.).when(y < 0.5).then(a).when(y < 0.75).then(0).otherwise(-a)
+
+
 
     # def levenshtein_dist(self) -> pl.Expr:
     #     return self._expr._register_plugin(
