@@ -3,6 +3,8 @@
 *.pkl
 *.pyd
 
+*.dll
+
 train.csv
 test.csv
 _notes/
