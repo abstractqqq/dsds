@@ -72,28 +72,6 @@ pub fn snowball_stem(word:Option<&str>, no_stopwords:bool) -> Option<String> {
     }
 }
 
-#[polars_expr(output_type=Utf8)]
-fn pl_snowball_stem(inputs: &[Series]) -> PolarsResult<Series> {
-    let ca = inputs[0].utf8()?;
-    let out: Utf8Chunked = ca
-        .par_iter()
-        .map(|op_s| snowball_stem(op_s, true))
-        .collect();
-    Ok(out.into_series())
-}
-
-// #[inline]
-// pub fn snowball_on_series(
-//     words: Series
-// ) -> Result<Option<Series>, PolarsError> {
-//     Ok(Some(
-//         words.utf8()?.par_iter()
-//         .map(|word| {
-//             Ok(snowball_stem(word, true))
-//         }).collect::<PolarsResult<ChunkedArray<Utf8Type>>>()?.into_series()
-//     ))
-// }
-
 #[inline]
 pub fn levenshtein_dist(s1:&str, s2:&str) -> u32 {
 
@@ -124,18 +102,29 @@ pub fn levenshtein_dist(s1:&str, s2:&str) -> u32 {
     dp[len1][len2]
 }
 
+// ---------------------------------- Plugins below --------------------------------
 
-#[polars_expr(output_type=Int32)]
+#[polars_expr(output_type=UInt32)]
 fn pl_levenshtein_dist(inputs: &[Series]) -> PolarsResult<Series> {
-    let ca = inputs[0].utf8()?;
-    // let reference = inputs[1].utf8()?.get(0);
-    let out: UInt32Chunked = ca.par_iter().map(|op_s| {
+    let ca1 = inputs[0].utf8()?;
+    let ca2 = inputs[1].utf8()?;
+    let reference = ca2.get(0).unwrap();
+
+    let out: UInt32Chunked = ca1.par_iter().map(|op_s| {
         if let Some(s) = op_s {
-            Some(levenshtein_dist(s, "test"))
+            Some(levenshtein_dist(s, reference))
         } else {
             None
         }
     }).collect();
+    Ok(out.into_series())
+}
+
+#[polars_expr(output_type=Utf8)]
+fn pl_snowball_stem(inputs: &[Series]) -> PolarsResult<Series> {
+    let ca = inputs[0].utf8()?;
+    let out: Utf8Chunked = ca.par_iter()
+        .map(|op_s| snowball_stem(op_s, true)).collect();
     Ok(out.into_series())
 }
 

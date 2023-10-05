@@ -71,6 +71,7 @@ def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[s
         selector = cs.numeric()
     else:
         selector = cs.numeric() & ~cs.by_name(exclude)
+
     return df.select(selector).columns
 
 def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
@@ -681,6 +682,28 @@ def str_cats_report(
     )
     return pl.concat(pl.collect_all(stats))
 
+def _time_expr_factory(
+    time_col: str,
+    interval: TimeIntervals
+) -> list[pl.Expr]:
+    
+    if interval == "monthly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.month().alias("month")]
+    elif interval == "quarterly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.quarter().alias("quarter")]
+    elif interval == "yearly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year")]
+    elif interval == "weekly":
+        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
+                                   pl.col(time_col).dt.month().alias("month"),
+                                   pl.col(time_col).dt.week().alias("week")]
+    else:
+        raise TypeError(f"The interval {interval} is not a valid interval")
+
+    return time_exprs
+
 def over_time_report(
     df: PolarsFrame
     , time_col: str
@@ -691,7 +714,8 @@ def over_time_report(
     '''
     Returns an over time report. You can choose which OverTimeMetrics to use and what on what columns
     do you want to compute these metrics. The output is wide, meaning that metrics for each column are
-    added as columns. If you want a more filter-friendly version, see over_time_report_2.
+    added as columns. If you want a more filter-friendly version, see over_time_report_num. This works for
+    all data types while over_time_report_num only works for numerical values.
 
     Parameters
     ----------
@@ -713,19 +737,8 @@ def over_time_report(
         new_cols = cols
 
     _ = type_checker(df, [time_col], "datetime", "over_time_report")
-    if interval == "monthly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
-                                   pl.col(time_col).dt.month().alias("month")]
-    elif interval == "quarterly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
-                                   pl.col(time_col).dt.quarter().alias("quarter")]
-    elif interval == "yearly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year")]
-    elif interval == "weekly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
-                                   pl.col(time_col).dt.month().alias("month"),
-                                   pl.col(time_col).dt.week().alias("week")]
-        
+
+    time_exprs = _time_expr_factory(time_col, interval)
     group_by = [e.meta.output_name() for e in time_exprs]
     if isinstance(metrics, list):
         all_metrics:list[OverTimeMetrics]= metrics
@@ -765,7 +778,7 @@ def over_time_report(
         .sort(group_by)
     )
 
-def over_time_report_2(
+def over_time_report_num(
     df: PolarsFrame
     , time_col: str
     , cols: Optional[list[str]] = None
@@ -789,37 +802,30 @@ def over_time_report_2(
         One of 'yearly', 'quarterly', 'monthly', 'weekly'
     '''
 
-    _ = type_checker(df, [time_col], "datetime", "over_time_report_2")
-
+    _ = type_checker(df, [time_col], "datetime", "over_time_report_num")
     if cols is None:
-        new_cols = df.columns
+        new_cols = get_numeric_cols(df)
     else:
+        _ = type_checker(df, cols, "numeric", "over_time_report_num")
         new_cols = cols
 
-    if interval == "monthly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
-                                   pl.col(time_col).dt.month().alias("month")]
-    elif interval == "quarterly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
-                                   pl.col(time_col).dt.quarter().alias("quarter")]
-    elif interval == "yearly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year")]
-    elif interval == "weekly":
-        time_exprs:list[pl.Expr] = [pl.col(time_col).dt.year().alias("year"),
-                                   pl.col(time_col).dt.month().alias("month"),
-                                   pl.col(time_col).dt.week().alias("week")]
+    time_exprs = _time_expr_factory(time_col, interval)
         
     dfs_all = (
         df.lazy().select(
             pl.lit(c).alias("feature"),
             (pl.col(c).null_count() / pl.count()).alias("null%_global"),
-            pl.col(c).mean().cast(pl.Float64).alias("mean_global")
+            pl.col(c).mean().alias("mean_global")
         )
         for c in new_cols
     )
     df_all = pl.concat(pl.collect_all(dfs_all))
     
-    df_local_with_time = df.with_columns(time_exprs).lazy()
+    df_local_with_time = df.lazy().select(
+        *time_exprs,
+        *new_cols
+    ).collect()
+
     group_by = [e.meta.output_name() for e in time_exprs]
     dfs_group_by = (
         df_local_with_time.group_by(
@@ -827,18 +833,19 @@ def over_time_report_2(
         ).agg(
             pl.lit(c).alias("feature"),
             pl.count(),
+            pl.col(c).quantile(0.05).alias("5%_quantile"),
+            pl.col(c).quantile(0.95).alias("95%_quantile"),
             (pl.col(c).null_count() / pl.count()).alias("null%"),
-            pl.col(c).mean().cast(pl.Float64).alias("mean")
+            pl.col(c).mean().alias("mean")
         )
         for c in new_cols
     )
 
-    new_segment = ["feature"] + group_by
     df_group_by = pl.concat(pl.collect_all(dfs_group_by))
 
     df_combined = df_all.join(
         df_group_by, on = "feature"
-    ).sort(new_segment).with_columns(
+    ).sort(["feature"] + group_by).with_columns(
         (pl.col("null%").pct_change().over("feature").fill_nan(np.inf)).alias("null_PoP_%diff"),
         (pl.col("mean").pct_change().over("feature").fill_nan(np.inf)).alias("mean_PoP_%diff"),
         ((pl.col("null%")/pl.col("null%_global") - pl.lit(1.0)).fill_nan(np.inf)).alias("null_%diff_overall"),
@@ -846,6 +853,9 @@ def over_time_report_2(
     ).drop(["null%_global", "mean_global"])
 
     return df_combined
+
+def over_time_report_str():
+    pass
 
 def old_vs_new_report(
     old_df: PolarsFrame
@@ -1213,8 +1223,8 @@ def infer_nulls(df:PolarsFrame, threshold:float=0.5) -> list[str]:
     threshold
         Columns with higher than threshold null pct will be dropped. Threshold should be between 0 and 1.
     '''
-    temp = df.lazy().with_row_count(offset=1).select(
-        pl.all().exclude("row_nr").null_count() / pl.col("row_nr").max()
+    temp = df.lazy().select(
+        pl.all().null_count() / pl.count()
     ).collect()
     return [c for c, pct in zip(temp.columns, temp.row(0)) if pct >= threshold]
 

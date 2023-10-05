@@ -1,16 +1,17 @@
 # Welcome to the DSDS
 
-This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package. This package requires the latest version of Polars.
+This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package.
 
-Welcome to DSDS, an alternative data science package that aims to be an improvement over a subset of the following packages: sklearn, categorical encoder, and feature_engine, primarily in the following areas:
+A general purpose traditional data science package for large and scalable data operations. It aims to be an improvement over a subset of functionalities in other packages like Scikit-learn, category_encoders, or feature engine, etc. The primary focus right now is:
 
-1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, etc.)
+1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, over time report etc.)
 2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, MRMR, mutual_info_score, better feature extraction APIs, etc.
-3. Cleaner pipeline construction and management, much easier to create customer "transformers" (All Polars Expressions under the hood)
-4. Consistent API with intuitive argument names and examples for not-easy-to-explain stuff.
-5. Most features are compatible with both Polars DataFrame and LazyFrames
-6. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. Just Polars.
-7. Even more performance for all of the above with the power of Rust!
+3. Cleaner pipeline construction and management, much easier to create custom "transformers" (All Polars Expressions under the hood)
+4. Consistent API with intuitive argument names and extensive docstring and examples for not-easy-to-explain stuff.
+5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. Just Polars.
+6. Better performance and faster iteration and less reliance on expensive VMs
+
+At this moment, it will not include traditional data science models, like SVM, random forest, etc. This may change once in the future when the Rust side of data science models catch up.
 
 DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
 
@@ -142,6 +143,10 @@ Benchmarks: (using a version not available to the public yet.)
 
 ![Screenshot](./pics/benches.PNG)
 
+DSDS currently provides Polars plugins but the API is subject to change.
+
+![Plugin](./pics/plugin.PNG)
+
 
 ## Dependencies
 
@@ -158,7 +163,7 @@ Originally I choose the name DSDS because it stands for Dark Side of Data Scienc
 
 # Why is this package dependent on Sklearn?
 
-You are right in the sense that this package does its best to separate itself from sklearn because of its focus and design. You do not need sklearn for pipelines, transformations, metrics, or the prescreen modules. However, for the fs (feature selection) module, right now there is no other high quality, tried and true package for random forest and logistic regression. The feature importance from these two models are used in some feature selection algorithms. Feel free to let me know if there are alternatives.
+You are right in the sense that this package does its best to separate itself from sklearn because of its focus and design. You do not need sklearn for pipelines, transformations, metrics, or the prescreen modules. However, for the fs (feature selection) module, right now there is no other high quality, tried and true package for some models. The feature importance from these two models are used in some feature selection algorithms. Feel free to let me know if there are alternatives.
 
 # Why not write more in Rust?
 
@@ -167,3 +172,7 @@ Yes. I am. I recently resumed working on traditional NLP, and this is an area wh
 # Contribution
 
 See CONTRIBUTING.md for my contact info.
+
+# Disclaimer
+
+Snowball Stemming implementation for Rust is taken from Tsoding's Seroost project.

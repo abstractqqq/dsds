@@ -6,7 +6,7 @@ from .type_alias import (
 from .blueprint import (
     _dsds_with_columns
 )
-from dsds._rust import (
+from dsds._dsds_rust import (
     # rs_ref_table, 
     rs_snowball_stem,
     rs_levenshtein_dist,
