@@ -79,7 +79,7 @@ def simple_upsample(
     df: PolarsFrame
     , subgroup: Union[dict[str, list], pl.Expr]
     , count:int
-    , epsilon: float = 1e-2
+    , epsilon: float = 1e-2 # Might remove this epsilon in the future
     , include: Optional[list[str]] = None
     , exclude: Optional[list[str]] = None
     , positive: bool = False
@@ -275,8 +275,7 @@ def train_test_split(
     """
     Split polars dataframe into train and test. If input is eager, output will be eager. If input is lazy, out
     output will be eager unless collect is false. Unlike scikit-learn, this only creates the train and test 
-    dataframe. This will not break the dataframe into X and y and so target is not a necessary input. It will 
-    always return a list of 2 dataframes, train and test.
+    dataframe. This will not break the dataframe into X and y. Only training frame and a testing frame.
 
     Parameters
     ----------
@@ -289,31 +288,32 @@ def train_test_split(
     collect
         If true, will always return eager train and test. If false and input is lazy, then output will be lazy too.
     """
+    keep = df.columns
     if isinstance(df, pl.LazyFrame):
-        keep = df.columns # with_row_count will add a row_nr column. Don't need it.
-        df_local = df.lazy().with_row_count(offset=1).set_sorted("row_nr")
-        train_size = pl.col("row_nr").max()*pl.lit(train_frac) + 1
-        df_train = df_local.filter(
-            pl.col("row_nr").shuffle(seed=seed) < train_size
-        ).select(keep)
-        df_test = df_local.filter(
-            pl.col("row_nr").shuffle(seed=seed) >= train_size
-        ).select(keep)
-        if collect:
-            train, test = pl.collect_all([df_train, df_test])
-            return train, test
+        df_local = df.lazy().with_row_count().set_sorted("row_nr")
+        train_size = pl.col("row_nr").max()*pl.lit(train_frac)
+        if collect: 
+            f1, f2 = df_local.collect().group_by(pl.col("row_nr").shuffle(seed=seed) < train_size)
+            if f1[0]:
+                return f1[1].select(keep), f2[1].select(keep)
+            else:
+                return f2[1].select(keep), f1[1].select(keep)
         else:
+            df_train = df_local.filter(
+                pl.col("row_nr").shuffle(seed=seed) < train_size
+            ).select(keep)
+            df_test = df_local.filter(
+                pl.col("row_nr").shuffle(seed=seed) >= train_size
+            ).select(keep)
             return df_train, df_test
     else:
         train_size = pl.lit(int(len(df) * train_frac))
-        df_train = df.lazy().filter(
-            pl.int_range(0, len(df)).shuffle(seed=seed) < train_size
-        )
-        df_test = df.lazy().filter(
-            pl.int_range(0, len(df)).shuffle(seed=seed) >= train_size
-        )
-        train, test = pl.collect_all([df_train, df_test])
-        return train, test
+        f1, f2 = df.group_by(pl.int_range(0, len(df)).shuffle(seed=seed) < train_size)
+        if f1[0]:
+            return f1[1].select(keep), f2[1].select(keep)
+        else:
+            return f2[1].select(keep), f1[1].select(keep)
+
 
 # Make a monthly split for monthly progression version too.
 
@@ -565,6 +565,7 @@ def time_sliding_window(
     if length >= total:
         yield df_local.sort(out_names).collect().partition_by(out_names)
     else:
+        # Terrible multiple collects
         for i in range(total - length + 1):
             subframe = reference.slice(offset=i, length=length)
             expr = pl.lit(True).and_(

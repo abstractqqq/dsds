@@ -564,12 +564,18 @@ def mrmr(
     , return_score:bool=False
 ) -> Union[list[str], Tuple[list[str], np.ndarray]]:
     '''
-    Implements MRMR. Will add a few more strategies in the future. Likely only strategies for numerators
-    , aka relevance. Right now xgb, lgbm and rf strategies only work for classification problems. A common
-    source of numerical `error` is data quality. If input data has too high null% or too low variance, some
-    methods will not work.
+    Implements MRMR. First we have to use a strategy to find the "relevance" of a feature, and then 
+    we use accumulated correlation as a criterion to select the featuers. First, we pick the top feature
+    with highest "relevance". When we pick the second feature, we look at the candidate feature's abs correlation
+    with the picked feature, rescale "relevance" by abs correlation, and select the second feature based on
+    this rescaled "relevance". When we pick the third feature, we look at the candidate feature's accumulated
+    abs correlation with the two features selected, rescale "relevance" by the accumulated abs correlation, and select
+    the next most relevant feature, and the process continues until we've selected k features.
+    
+    Note: A common source of numerical `error` is data quality. If input data has too high null% or too 
+    low variance, some methods will not work.
 
-    Currently this only supports classification.
+    Currently this only supports binary classification.
 
     Parameters
     ----------
@@ -615,7 +621,8 @@ def mrmr(
     # Init MRMR
     output_size = min(k, len(nums))
     logger.info(f"Found {len(nums)} total features to select from. Proceeding to select top {output_size} features.")
-    cumulating_abs_corr = np.zeros(len(nums)) # For each feature at index i, we keep a cumulating sum
+    # 
+    acc_abs_corr = np.zeros(len(nums)) # For each feature at index i, we keep an accumulating abs corr
     top_idx = np.argmax(scores)
     selected = [nums[top_idx]]
     pbar = tqdm(total=output_size, desc = f"MRMR, {strategy}", position=0, leave=True)
@@ -623,7 +630,7 @@ def mrmr(
     for j in range(1, output_size):
         argmax = -1
         current_max = -1
-        last_selected_col = df_local.drop_in_place(selected[-1])
+        last_selected_col:pl.Series = df_local.drop_in_place(selected[-1])
         if low_memory: # normalize if in low memory mode.
             last_selected_col = (last_selected_col - last_selected_col.mean())/last_selected_col.std()
         for i,f in enumerate(nums):
@@ -633,22 +640,20 @@ def mrmr(
                     candidate_col = (candidate_col - candidate_col.mean())/candidate_col.std()
 
                 # Correlation = E[XY] when X,Y are normalized
-                a = (last_selected_col*candidate_col).mean()
+                a = (last_selected_col.dot(candidate_col)) / last_selected_col.len()
                 # In the rare case this calculation yields a NaN, we punish by adding 1.
                 # Otherwise, proceed as usual. +1 is a punishment because
                 # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
-                cumulating_abs_corr[i] += 1 if ((np.isnan(a)) | np.isinf(a)) else np.abs(a)
-                # Left = cumulating sum of abs corr
-                # Right = abs correlation btw last_selected and f
+                acc_abs_corr[i] += 1 if (np.isnan(a) | np.isinf(a)) else np.abs(a)
 
-                denominator = cumulating_abs_corr[i]/j 
+                denominator = acc_abs_corr[i]/j 
                 new_score = scores[i] / denominator
                 if new_score > current_max:
                     current_max = new_score
                     argmax = i
+
         selected.append(nums[argmax])
         pbar.update(1)
-
     pbar.close()
     print("Output is sorted in order of selection (max relevance min redundancy).")
     if return_score:
@@ -675,7 +680,7 @@ def mrmr_selector(
     top_k
         The top_k features will ke kept
     strategy
-        One of 'f', 'xgb', 'rf', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
+        One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
     params
         If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     low_memory
@@ -700,13 +705,13 @@ def knock_out_mrmr(
     , params:Optional[dict[str,Any]] = None
 ) -> list[str]:
     '''
-    Essentially the same as vanilla MRMR. Instead of using sum(abs(corr)) to "weigh down" correlated 
+    Essentially the same as vanilla MRMR. Instead of using avg(abs(corr)) to "weigh" punish correlated 
     variables, here we use a simpler knock out rule based on absolute correlation. We go down the list
     according to importance, take top one, knock out all other features that are highly correlated with
     it, take the next top feature that has not been knocked out, continue, until we pick enough features
-    or there is no feature left.
+    or there is no feature left. This is inspired by the package Featurewiz and its creator.
 
-    Inspired by the package Featurewiz and its creator.
+    Note that this may not guarantee to return k features when most of them are highly correlated.
 
     Parameters
     ----------
@@ -719,21 +724,23 @@ def knock_out_mrmr(
     cols
         Numerical columns to select from. If not provided, all numeric columns will be used
     corr_threshold
-        The threshold above which correlation is considered too high. This means if A has high correlation to B, then
-        B will not be selected if A is
+        The correlation threshold above which is considered too high. This means if A has high 
+        correlation with B, then B will not be selected if A is already selected
     strategy
         One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
     params
-        If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
+        If any modeled relevance is used, e.g. 'lgbm', then this will be the param dict for the model
     '''
     if isinstance(cols, list):
+        _ = type_checker(df, cols, "numeric", "knock_out_mrmr")
         nums = cols
     else:
         nums = get_numeric_cols(df, exclude=[target])
 
-    scores = _mrmr_relevance(df
+    scores = _mrmr_relevance(
+        df
         , target = target
-        , nums = nums
+        , cols = nums
         , strategy = strategy
         , params = {} if params is None else params
     )
@@ -750,8 +757,8 @@ def knock_out_mrmr(
     for i, _ in scores:
         if surviving_indices[i]:
             selected.append(nums[i])
-            surviving_indices = surviving_indices & low_corr[:,i]
-            count = np.add(count, 1)
+            surviving_indices &= low_corr[:,i]
+            count += 1
             pbar.update(1)
         if count >= output_size:
             break

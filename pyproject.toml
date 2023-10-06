@@ -29,7 +29,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "polars >= 0.19.3",
+    "polars >= 0.19.7",
     "scipy >= 1.11.1",
     "numpy",
     "tqdm",
@@ -41,13 +41,13 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest >= 7.4.1",
-    "scikit-learn >= 1.2.0"
+    "scikit-learn >= 1.2.0",
+    "pandas >= 2.1",
+    "category-encoders"
 ]
 scikit-learn = ["scikit-learn >= 1.2.0"]
-xgboost = ["xgboost"]
 lightgbm = ["lightgbm"]
-# nltk = ["nltk"]
-all = ["scikit-learn", "xgboost", "lightgbm"]
+all = ["scikit-learn", "lightgbm"]
 
 keywords = ["data-pipeline", "EDA", "feature-screening", "feature-selection"]
 

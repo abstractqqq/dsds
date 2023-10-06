@@ -154,7 +154,7 @@ Python 3.9, 3.10, 3.11+ is recommended.
 
 It should run on all versions >= 3.9.
 
-Note: scikit-learn, lightgbm, xgboost and nltk are needed for full functionalities. I am writing a lot of things from scratch in order to minimize dependency and increase efficiency within the package. 
+Note: scikit-learn, lightgbm are needed for full functionalities. I am writing a lot of things from scratch in order to minimize dependency and increase efficiency within the package. 
 
 
 # Why the name DSDS?

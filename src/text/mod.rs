@@ -12,8 +12,6 @@ use crate::text::text::{
     levenshtein_dist,
 };
 
-use polars_core::prelude::*;
-
 // use polars_lazy::prelude::*;
 use pyo3::prelude::*;
 
