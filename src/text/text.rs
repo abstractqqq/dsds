@@ -108,16 +108,72 @@ pub fn levenshtein_dist(s1:&str, s2:&str) -> u32 {
 fn pl_levenshtein_dist(inputs: &[Series]) -> PolarsResult<Series> {
     let ca1 = inputs[0].utf8()?;
     let ca2 = inputs[1].utf8()?;
-    let reference = ca2.get(0).unwrap();
 
-    let out: UInt32Chunked = ca1.par_iter().map(|op_s| {
-        if let Some(s) = op_s {
-            Some(levenshtein_dist(s, reference))
-        } else {
-            None
-        }
-    }).collect();
-    Ok(out.into_series())
+    if ca2.len() == 1 {
+        let r = ca2.get(0).unwrap();
+        let out: UInt32Chunked = ca1.par_iter().map(|op_s| {
+            if let Some(s) = op_s {
+                Some(levenshtein_dist(s, r))
+            } else {
+                None
+            }
+        }).collect();
+        Ok(out.into_series())
+    } else if ca1.len() == ca2.len() {
+        let out: UInt32Chunked = ca1.par_iter_indexed()
+            .zip(ca2.par_iter_indexed())
+            .map(|(op_w1, op_w2)| {
+                if let (Some(w1), Some(w2)) = (op_w1, op_w2) {
+                    Some(levenshtein_dist(w1, w2))
+                } else {
+                    None
+                }
+            }).collect();
+        Ok(out.into_series())
+    } else {
+        Err(PolarsError::ComputeError("Inputs must have the same length.".into()))
+    }
+}
+
+#[polars_expr(output_type=Float64)]
+fn pl_str_jaccard(inputs: &[Series]) -> PolarsResult<Series> {
+    let ca1 = inputs[0].utf8()?;
+    let ca2 = inputs[1].utf8()?;
+
+    if ca2.len() == 1 {
+        let r = ca2.get(0).unwrap();
+        let s2 = PlHashSet::from_iter(r.chars());
+        let out: Float64Chunked = ca1.par_iter().map(|op_s| {
+            if let Some(s) = op_s {
+                let s1 = PlHashSet::from_iter(s.chars());
+                let intersection = s1.intersection(&s2).count();
+                Some(
+                    (intersection as f64) / ((s1.len() + s2.len() - intersection) as f64)
+                )
+            } else {
+                None
+            }
+        }).collect();
+        Ok(out.into_series())
+    } else if ca1.len() == ca2.len() {
+        let out: Float64Chunked = ca1.par_iter_indexed()
+            .zip(ca2.par_iter_indexed())
+            .map(|(op_w1, op_w2)| {
+                if let (Some(w1), Some(w2)) = (op_w1, op_w2) {
+                    let s1 = PlHashSet::from_iter(w1.chars());
+                    let s2 = PlHashSet::from_iter(w2.chars());
+                    let intersection = s1.intersection(&s2).count();
+                    Some(
+                        (intersection as f64) / ((s1.len() + s2.len() - intersection) as f64)
+                    )
+                } else {
+                    None
+                }
+            }).collect();
+        Ok(out.into_series())
+    } else {
+        Err(PolarsError::ComputeError("Inputs must have the same length.".into()))
+    }
 }
 
 #[polars_expr(output_type=Utf8)]

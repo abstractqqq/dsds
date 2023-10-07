@@ -1,13 +1,14 @@
 # import math
 # import numpy as np
 import polars as pl
+from typing import Union
 from polars.utils.udfs import _get_shared_lib_location
 
 lib = _get_shared_lib_location(__file__)
 
 _BENFORD_DIST_SERIES = (1 + 1 / pl.int_range(1, 10, eager=True)).log10()
 
-@pl.api.register_expr_namespace("dsds_exprs")
+@pl.api.register_expr_namespace("dsds_numeric")
 class DSDSExprs:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
@@ -70,46 +71,69 @@ class DSDSExprs:
         '''
         return self._expr.mod(1.0)
     
-    def levenshtein_dist(self, other:str, lowercase:bool=False) -> pl.Expr:
+@pl.api.register_expr_namespace("dsds_str")
+class DSDSStr:
+    def __init__(self, expr: pl.Expr):
+        self._expr = expr
+
+    def str_jaccard(
+        self,
+        other: Union[str, pl.Expr]
+    ) -> pl.Expr:
+        '''
+        Treats each string as a set. Duplicate chars will be removed. And computes the jaccard similarity between
+        this word and the other.
+        
+        Parameters
+        ----------
+        other
+            If this is a string, then the entire column will be compared with this string. If this 
+            is an expression, then an element-wise jaccard similarity computation between this column 
+            and the other (given by the expression) will be performed.
+        '''
+        if isinstance(other, str):
+            other_ = pl.Series([other])
+        else:
+            other_ = other
+        
+        return self._expr._register_plugin(
+            lib=lib,
+            symbol="pl_str_jaccard",
+            args = [other_],
+            is_elementwise=True,
+        )
+    
+    def levenshtein_dist(
+        self, 
+        other:Union[str, pl.Expr], 
+    ) -> pl.Expr:
         '''
         Computes the levenshtein distance between this each value in the column with the str other.
 
         Parameters
         ----------
         other
-            The string to compare with
-        lowercase
-            Whether to lowercase all strings
+            If this is a string, then the entire column will be compared with this string. If this 
+            is an expression, then an element-wise Levenshtein distance computation between this column 
+            and the other (given by the expression) will be performed.
         '''
-        if lowercase:
-            other_str = pl.Series([other.lower()])
-            expr = self._expr.str.to_lowercase()
+        if isinstance(other, str):
+            other_ = pl.Series([other])
         else:
-            other_str = pl.Series([other])
-            expr = self._expr
+            other_ = other
 
-        return expr._register_plugin(
+        return self._expr._register_plugin(
             lib=lib,
             symbol="pl_levenshtein_dist",
-            args = [other_str],
+            args = [other_],
             is_elementwise=True,
         )
     
-    def snowball(self, lowercase:bool=False) -> pl.Expr:
+    def snowball(self) -> pl.Expr:
         '''
         Applies the snowball stemmer for the column. The column is supposed to be a column of single words.
-
-        Parameters
-        ----------
-        lowercase
-            Whether to lowercase all strings
         '''
-        if lowercase:
-            expr = self._expr.str.to_lowercase()
-        else:
-            expr = self._expr
-
-        return expr._register_plugin(
+        return self._expr._register_plugin(
             lib=lib,
             symbol="pl_snowball_stem",
             is_elementwise=True,

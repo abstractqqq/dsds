@@ -19,8 +19,7 @@ pub fn mae(
     let mut diff = &y_a - &y_p;
     diff.mapv_inplace(f64::abs);
     if let Some(w) = weights {
-        diff = diff * w;
-        return diff.sum() / w.sum()
+        return diff.dot(&w) / w.sum()
     }
     diff.mean().unwrap_or(0.)
 
@@ -46,16 +45,21 @@ pub fn mape(
     y_p:ArrayView1<f64>,
     weighted: bool 
 ) -> f64 {
-
+    if (y_a.len() == 0) | (y_p.len() == 0) {
+        return 0.
+    }
     if weighted {
-        let mut diff = &y_a - &y_p;
-        diff.mapv_inplace(f64::abs);
-        diff.sum() / y_a.fold(0., |acc, x| acc + x.abs())
+        let diff = &y_a - &y_p;
+        let denominator = y_a.fold(0., |acc, x| acc + x.abs());
+        if denominator == 0. {
+            return f64::INFINITY
+        }
+        diff.fold(0., |acc, x| acc + x.abs()) / denominator
 
     } else {
-        let mut summand = 1.0 - (&y_p / &y_a);
-        summand.mapv_inplace(f64::abs);
-        summand.mean().unwrap_or(0.)
+        let summand = 1.0 - (&y_p / &y_a);
+        let sum = summand.fold(0., |acc, x| acc + x.abs());
+        sum / (y_a.len() as f64)
     }
 }
 
@@ -65,12 +69,14 @@ pub fn smape(
     y_p:ArrayView1<f64>,
     double_sum: bool
 ) -> f64 {
-
+    if (y_a.len() == 0) | (y_p.len() == 0) {
+        return 0.
+    }
     if double_sum {
         let (nom, denom) = y_a.into_iter().zip(y_p.into_iter())
             .fold((0.,0.), |acc,(a,f)| (acc.0 + (a-f).abs(), acc.1 + a + f));
         if denom == 0. {
-            return f64::MAX
+            return f64::INFINITY
         }
         nom / denom
     } else {
@@ -106,8 +112,7 @@ pub fn huber_loss(
     });
 
     if let Some(w) = weights {
-        diff = diff * w;
-        return diff.sum() / w.sum()
+        return (diff.dot(&w)) / w.sum()
     }
     diff.mean().unwrap_or(0.)
 }

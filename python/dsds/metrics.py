@@ -33,6 +33,7 @@ class BinaryClassifMetrics:
     roc_auc : float
     log_loss : float
     brier_loss : float
+    max_abs_error: float
 
 @dataclass(frozen=True)
 class RegressionMetrics:
@@ -42,12 +43,14 @@ class RegressionMetrics:
     rmsle : float
     r2 : float
     huber_loss : float
+    max_abs_error: float
 
 @dataclass(frozen=True)
 class TimeSeriesMetrics:
     mse : float
     mape : float
     smape : float
+    max_abs_error: float
 
 # Rule of thumb: all rust functions will take Array<f64> or ArrayView<f64>.
 # Always do a astype on numpy arrays with copy set to False to minimize copying.
@@ -219,8 +222,7 @@ def precision_recall(
             , pl.col("precision")
             , *exprs_for_f
         )
-    else:
-        # multi-class, must be NumPy Input
+    else: # multi-class, must be NumPy Input
         if y_actual.shape[1] != y_predicted.shape[1]:
             raise ValueError("Input shapes must agree for multiclass roc auc. Found "
                              f"actual has shape {y_actual.shape} and predicted has shape {y_predicted.shape}.")
@@ -335,13 +337,13 @@ def logloss(
         uniques = np.unique(y_a)
         if uniques.size != 2:
             raise ValueError("Currently this only supports binary classification.")
-        if not (0 in uniques) & (1 in uniques):
+        if not ((0 in uniques) & (1 in uniques)):
             raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
     if sample_weights is None:
         return pl.from_records((y_a, y_p), schema=["y", "p"]).with_columns(
             pl.col("p").log().alias("l"),
-            ((pl.lit(1., dtype=pl.Float64)-pl.col("p")).log()).alias("o"),
+            ((pl.lit(1., dtype=pl.Float64) - pl.col("p")).log()).alias("o"),
             (pl.lit(1., dtype=pl.Float64) - pl.col("y")).alias("ny")
         ).select(
             pl.sum_horizontal(
@@ -461,9 +463,9 @@ def psi(
         return table.select(pl.col("psi").sum().alias("psi")).collect()
 
 def mse(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
-    , sample_weights:Optional[np.ndarray]=None
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted:Union[pl.Series, np.ndarray]
+    , sample_weights:Optional[Union[pl.Series, np.ndarray]]=None
 ) -> float:
     '''
     Computes average mean square error of some regression model. Currently only supports 1d arrays.
@@ -477,16 +479,28 @@ def mse(
     sample_weights
         An array of size (len(y_actual), ) which provides weights to each sample
     '''
-    return rs_mse(y_actual.astype(np.float64, copy=False), 
-                  y_predicted.astype(np.float64, copy=False), 
-                  sample_weights)
+    if (isinstance(y_actual, np.ndarray)) & (isinstance(y_predicted, np.ndarray)):
+        y_a = y_actual.astype(np.float64, copy=False)
+        y_p = y_predicted.astype(np.float64, copy=False)
+        if sample_weights is None:
+            sa = None
+        else:
+            sa = sample_weights.astype(np.float64, copy=False)
+    else:
+        y_a = y_actual.to_numpy().astype(np.float64, copy=False)
+        y_p = y_predicted.to_numpy().astype(np.float64, copy=False)
+        if sample_weights is None:
+            sa = None
+        else:
+            sa = sample_weights.to_numpy().astype(np.float64, copy=False)
+    return rs_mse(y_a, y_p, sa)
     
 l2_loss = mse
 brier_loss = mse
 
 def rmse(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted:Union[pl.Series, np.ndarray]
     , sample_weights:Optional[np.ndarray]=None
 ) -> float:
     '''
@@ -504,8 +518,8 @@ def rmse(
     return np.sqrt(mse(y_actual, y_predicted, sample_weights))
 
 def rmsle(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted:Union[pl.Series, np.ndarray]
 ) -> float:
     ''' 
     Computes the Root Mean Squared Logarithmic Error.
@@ -517,20 +531,20 @@ def rmsle(
     y_predicted
         Predicted target
     '''
-    
-    df = pl.from_records([y_actual, y_predicted], schema=["a", "p"]).with_columns(
+    df = pl.from_records([y_actual, y_predicted], schema=["a", "p"]).lazy().with_columns(
         (pl.col("a") + pl.lit(1.)).alias("a1"),
         (pl.col("p") + pl.lit(1.)).alias("p1")
     ).select(
-        (pl.col("p1")/pl.col("a1")).log().pow(2).mean()
-    )
-
-    return df.item(0,0)
+        (pl.col("p1")/pl.col("a1")).log().dot(
+            (pl.col("p1")/pl.col("a1")).log()
+        ) / len(y_actual)
+    ) # Common subexpression elimination will take care of this
+    return df.collect().item(0,0)
 
 def mae(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
-    , sample_weights:Optional[np.ndarray]=None
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted:Union[pl.Series, np.ndarray]
+    , sample_weights:Optional[Union[pl.Series, np.ndarray]]=None
 ) -> float:
     '''
     Computes average L1 loss of some regression model. Currently only supports 1d target.
@@ -544,15 +558,38 @@ def mae(
     sample_weights
         An array of size (len(y_actual), ) which provides weights to each sample
     '''
-    return rs_mae(y_actual.astype(np.float64, copy=False), 
-                  y_predicted.astype(np.float64, copy=False), 
-                  sample_weights)
+    if (isinstance(y_actual, np.ndarray)) & (isinstance(y_predicted, np.ndarray)):
+        y_a = y_actual.astype(np.float64, copy=False)
+        y_p = y_predicted.astype(np.float64, copy=False)
+        if sample_weights is None:
+            sa = None
+        else:
+            sa = sample_weights.astype(np.float64, copy=False)
+    else:
+        y_a = y_actual.to_numpy().astype(np.float64, copy=False)
+        y_p = y_predicted.to_numpy().astype(np.float64, copy=False)
+        if sample_weights is None:
+            sa = None
+        else:
+            sa = sample_weights.to_numpy().astype(np.float64, copy=False)
+
+    return rs_mae(y_a, y_p, sa)
 
 l1_loss = mae
 
+def max_abs_error(
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted:Union[pl.Series, np.ndarray]
+) -> float:
+    '''
+    Returns the maximum absolute error between actual and predicted.
+    '''
+    test = (y_actual - y_predicted)
+    return np.max([np.abs(np.max(test)), np.abs(np.min(test))])
+
 def mape(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted:Union[pl.Series, np.ndarray]
     , weighted: bool = False
 ) -> float:
     '''
@@ -568,13 +605,18 @@ def mape(
         If weighted, then it is the wMAPE defined as in the wikipedia page: 
         https://en.wikipedia.org/wiki/Mean_absolute_percentage_error
     '''
-    return rs_mape(y_actual.astype(np.float64, copy=False), 
-                   y_predicted.astype(np.float64, copy=False), 
-                   weighted)
+    if (isinstance(y_actual, np.ndarray)) & (isinstance(y_predicted, np.ndarray)):
+        y_a = y_actual.astype(np.float64, copy=False)
+        y_p = y_predicted.astype(np.float64, copy=False)
+    else:
+        y_a = y_actual.to_numpy().astype(np.float64, copy=False)
+        y_p = y_predicted.to_numpy().astype(np.float64, copy=False)
+
+    return rs_mape(y_a, y_p, weighted)
 
 def smape(
-    y_actual:np.ndarray
-    , y_predicted: np.ndarray
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted: Union[pl.Series, np.ndarray]
     , double_sum: bool = False
 ) -> float:
     '''
@@ -590,9 +632,14 @@ def smape(
         If true, uses the third formulation of SMAPE in the wiki. If denominator is 0, f64::MAX is returned.
         If false, uses the formulation that is always between 0% and 100%.
     '''
-    return rs_smape(y_actual.astype(np.float64, copy=False), 
-                   y_predicted.astype(np.float64, copy=False), 
-                   double_sum)
+    if (isinstance(y_actual, np.ndarray)) & (isinstance(y_predicted, np.ndarray)):
+        y_a = y_actual.astype(np.float64, copy=False)
+        y_p = y_predicted.astype(np.float64, copy=False)
+    else:
+        y_a = y_actual.to_numpy().astype(np.float64, copy=False)
+        y_p = y_predicted.to_numpy().astype(np.float64, copy=False)
+
+    return rs_smape(y_a, y_p, double_sum)
 
 def r2(y_actual:np.ndarray, y_predicted:np.ndarray) -> float:
     '''
@@ -633,10 +680,10 @@ def adjusted_r2(
     return 1 - (1 - r2(y_actual, y_predicted)) * df_tot / (df_tot - p)
 
 def huber_loss(
-    y_actual:np.ndarray
-    , y_predicted:np.ndarray
+    y_actual:Union[pl.Series, np.ndarray]
+    , y_predicted:Union[pl.Series, np.ndarray]
     , delta:float
-    , sample_weights:Optional[np.ndarray]=None  
+    , sample_weights:Optional[Union[pl.Series, np.ndarray]]=None  
 ) -> float:
     '''
     Computes huber loss of some regression model.
@@ -654,9 +701,22 @@ def huber_loss(
     sample_weights
         An array of size (len(y_actual), ) which provides weights to each sample
     '''
-    return rs_huber_loss(y_actual.astype(np.float64, copy=False), 
-                         y_predicted.astype(np.float64, copy=False), 
-                         delta, sample_weights)
+    if (isinstance(y_actual, np.ndarray)) & (isinstance(y_predicted, np.ndarray)):
+        y_a = y_actual.astype(np.float64, copy=False)
+        y_p = y_predicted.astype(np.float64, copy=False)
+        if sample_weights is None:
+            sa = None
+        else:
+            sa = sample_weights.astype(np.float64, copy=False)
+    else:
+        y_a = y_actual.to_numpy().astype(np.float64, copy=False)
+        y_p = y_predicted.to_numpy().astype(np.float64, copy=False)
+        if sample_weights is None:
+            sa = None
+        else:
+            sa = sample_weights.to_numpy().astype(np.float64, copy=False)
+
+    return rs_huber_loss(y_a, y_p, delta, sa)
 
 def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=True) -> np.ndarray:
     '''
@@ -698,22 +758,11 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
 def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
     return 1 - cosine_similarity(x,y,True)
 
-def performance_report(
-    df: pl.DataFrame
-    , actual_col : str
-    , pred_col : str
-    , group_by: Optional[list[str]]
-    , metrics: str 
-) -> list:
-    
-    pass
-
 def jaccard_similarity(
-    s1:Union[pl.Series,list,np.ndarray]
-    , s2:Union[pl.Series,list,np.ndarray]
+    s1:Union[pl.Series, list, np.ndarray]
+    , s2:Union[pl.Series, list, np.ndarray]
     , expected_dtype: HashableDtypes = "string"
     , include_null:bool=False
-    # , stem:bool = False # Removed for now
     , parallel:bool=True
 ) -> float:
     '''
@@ -800,3 +849,66 @@ def df_jaccard_similarity(
     if append:
         return pl.concat([df, out], how="horizontal")
     return out
+
+# BinaryClassifMetrics
+def grouped_binary_metrics(
+    y_actual: Union[np.ndarray, pl.Series],
+    y_predicted: Union[np.ndarray, pl.Series],
+    check_binary: bool = True
+) -> BinaryClassifMetrics:
+    
+    if check_binary:
+        uniques = np.unique(y_actual)
+        if uniques.size != 2:
+            raise ValueError("Currently this only supports binary classification.")
+        if not ((0 in uniques) & (1 in uniques)):
+            raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
+
+    roc = roc_auc(y_actual, y_predicted)
+    ll = logloss(y_actual, y_predicted)
+    bl = mse(y_actual, y_predicted)
+    maxabs = max_abs_error(y_actual, y_predicted)
+
+    return BinaryClassifMetrics(roc, ll, bl, maxabs)
+
+def grouped_regression_metrics(
+    y_actual: Union[np.ndarray, pl.Series],
+    y_predicted: Union[np.ndarray, pl.Series],
+    delta: float
+) -> RegressionMetrics:
+    
+    if (isinstance(y_actual, np.ndarray)) & (isinstance(y_predicted, np.ndarray)):
+        y_a = y_actual.astype(np.float64, copy=False)
+        y_p = y_predicted.astype(np.float64, copy=False)
+    else:
+        y_a = y_actual.to_numpy().astype(np.float64, copy=False)
+        y_p = y_predicted.to_numpy().astype(np.float64, copy=False)
+    
+    mae_result = mae(y_a, y_p)
+    mse_result = mse(y_a, y_p)
+    rmse_result = np.sqrt(mse_result)
+    rmsle_result = rmsle(y_a, y_p)
+    r2_result = r2(y_a, y_p)
+    huber = huber_loss(y_a, y_p, delta)
+    maxabs = max_abs_error(y_a, y_p)
+
+    return RegressionMetrics(mae_result, mse_result, rmse_result, rmsle_result, r2_result, huber, maxabs)
+
+def grouped_time_series_metrics(
+    y_actual: Union[np.ndarray, pl.Series],
+    y_predicted: Union[np.ndarray, pl.Series],
+) -> TimeSeriesMetrics:
+    
+    if (isinstance(y_actual, np.ndarray)) & (isinstance(y_predicted, np.ndarray)):
+        y_a = y_actual.astype(np.float64, copy=False)
+        y_p = y_predicted.astype(np.float64, copy=False)
+    else:
+        y_a = y_actual.to_numpy().astype(np.float64, copy=False)
+        y_p = y_predicted.to_numpy().astype(np.float64, copy=False)
+    
+    mse_result = mse(y_a, y_p)
+    mape_result = mape(y_a, y_p)
+    smape_result = smape(y_a, y_p)
+    maxabs_result = max_abs_error(y_a, y_p)
+
+    return TimeSeriesMetrics(mse_result, mape_result, smape_result, maxabs_result)
