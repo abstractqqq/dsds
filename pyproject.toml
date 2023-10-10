@@ -46,8 +46,9 @@ dev = [
     "category-encoders"
 ]
 scikit-learn = ["scikit-learn >= 1.2.0"]
-lightgbm = ["lightgbm"]
-all = ["scikit-learn", "lightgbm"]
+lgbm = ["lightgbm"]
+plots = ["graphviz"]
+all = ["scikit-learn", "lightgbm", "graphviz"]
 
 keywords = ["data-pipeline", "EDA", "feature-screening", "feature-selection"]
 

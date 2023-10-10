@@ -9,14 +9,12 @@ from typing import (
 from .type_alias import (
     PolarsFrame
     , ActionType
-    , PipeFunction
     , ClassifModel
     , RegressionModel
 )
 # from datetime import datetime
 import pickle # Use pickle for now. Think about other ways to preserve.
 import polars as pl
-import importlib
 import logging
 import copy
 import dsds
@@ -32,7 +30,6 @@ class Step:
     action:ActionType
     with_columns: Optional[list[pl.Expr]] = None
     map_dict: Optional[list[pl.Expr]] = None
-    add_func: Optional[dict[str, Any]] = None
     filter: Optional[pl.Expr] = None
     select: Optional[list[Union[str, pl.Expr]]] = None
     drop: Optional[list[str]] = None
@@ -44,12 +41,6 @@ class Step:
             output += "Details: \n"
             for i,expr in enumerate(self.with_columns):
                 output += f"({i+1}) {expr}\n"
-        elif self.action == "add_func":
-            d:dict = self.add_func
-            output += f"Function Module: {d['module']}, Function Name: {d['name']}\n"
-            output += "Parameters:\n"
-            for key,value in d["kwargs"].items():
-                output += f"{key} = {value},\n"
         elif self.action == "filter":
             output += f"By condition: {self.filter}\n"
         elif self.action in ("classif", "regression"):
@@ -84,7 +75,7 @@ class Step:
     def validate(self) -> bool:
         not_nones:list[str] = []
         for field in fields(self):
-            if field.name in ("with_columns", "map_dict", "select", "drop", "add_func", "filter", "model_step"):
+            if field.name in ("with_columns", "map_dict", "select", "drop", "filter", "model_step"):
                 if getattr(self, field.name) is not None:
                     not_nones.append(field.name)
             elif field.name == "action":
@@ -109,7 +100,7 @@ class Step:
                 return value
             
     def get_expressions(self) -> list[pl.Expr]:
-        if self.action in ("model_step", "add_func"):
+        if self.action in ("model_step"):
             return []
         else:
             return copy.deepcopy(self.content())
@@ -314,22 +305,6 @@ class Blueprint:
             Step(action = "drop", drop = drop_cols)
         )
         return output
-    
-    def add_func(self
-        , df:LazyFrame # The input to the function that needs to be persisted.
-        , func:PipeFunction 
-        , kwargs:dict[str, Any]
-    ) -> LazyFrame:
-        # df: The input lazyframe to the function that needs to be persisted. We need this because:
-        # When running the function, the reference to df might be changed, therefore losing the steps
-
-        # When this is called, the actual function should be already applied.
-        output = self._ldf # .lazy()
-        output.blueprint.steps = df.blueprint.steps.copy() 
-        output.blueprint.steps.append(
-            Step(action="add_func", add_func={"module":func.__module__, "name":func.__name__, "kwargs":kwargs})
-        )
-        return output
 
     def add_classif(self
         , model:ClassifModel
@@ -446,10 +421,6 @@ class Blueprint:
                     df = df.select(s.select)
                 elif s.action == "filter":
                     df = df.filter(s.filter)
-                elif s.action == "add_func":
-                    module, name = s.add_func["module"], s.add_func["name"]
-                    func = getattr(importlib.import_module(module), name)
-                    df = df.pipe(func, **s.add_func["kwargs"])
                 elif s.action == "classif":
                     df = df.pipe(Blueprint._process_classif, **s.model_step)
                 elif s.action == "regression":
@@ -461,8 +432,21 @@ class Blueprint:
             return df.collect()
         return df
     
+    def fit(self, X:pl.DataFrame, y=None) -> None:
+        return None 
+    
     def transform(self) -> pl.DataFrame:
         return self.apply(collect=True)
+    
+    def deep_copy(self) -> "Blueprint":
+        return copy.deepcopy(self)
+    
+    # Move with_columns expressions into one context if possible, to ensure maximal parallelization
+    # at all times
+    def compactify(self):
+        pass
+
+# -------------------------------------------------------------------------------------------------------------
 
 # Right now, use Pickle. Definitely move away from Pickle in the future.
 def from_pkl(path: Union[str,Path]) -> Blueprint:

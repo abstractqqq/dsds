@@ -1,0 +1,27 @@
+// Conditional Entropy < 0.05
+digraph "Dependency Plot" {
+	Customer_Existing_Primary_Bank_Code
+	Customer_Existing_Primary_Bank_Code -> Primary_Bank_Type
+	City_Code
+	City_Code -> City_Category
+	Employer_Code
+	Employer_Code -> Employer_Category1
+	ID
+	ID -> Contacted
+	ID
+	ID -> Gender
+	ID
+	ID -> Source_Category
+	ID
+	ID -> Source
+	ID
+	ID -> Customer_Existing_Primary_Bank_Code
+	ID
+	ID -> Lead_Creation_Date
+	ID
+	ID -> City_Code
+	ID
+	ID -> DOB
+	ID
+	ID -> Employer_Code
+}

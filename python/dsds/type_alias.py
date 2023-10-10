@@ -58,8 +58,7 @@ TimeIntervals:TypeAlias = Literal["yearly", "quarterly", "monthly", "weekly"]
 
 
 # --- Blueprint ---
-ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "add_func", "filter", "classif"
-                               , "regression"]
+ActionType:TypeAlias = Literal["with_columns", "map_dict", "select", "drop", "filter", "classif", "regression"]
 # --- Types ---
 SimpleDtypes:TypeAlias = Literal["numeric", "datetime", "bool", "list", "string", "other/unknown"]
 InnerDtypes:TypeAlias = Literal["int", "string"]

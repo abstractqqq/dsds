@@ -15,7 +15,7 @@ from .blueprint import (
     _dsds_with_columns_and_drop,
     _dsds_map_dict
 )
-from typing import Optional
+from typing import Optional, Union
 import numpy as np
 import polars as pl
 import logging
@@ -108,6 +108,70 @@ def one_hot_encode(
         return _dsds_with_columns_and_drop(df, exprs, str_cols)
     else:
         return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
+    
+def reverse_one_hot_encode(
+    df: PolarsFrame
+    , root_col_name: Union[str, list[str]]
+    , separator:str = "_"
+) -> PolarsFrame:
+    '''
+    Reverses one-hot-encoded columns.
+
+    This will be remembered by blueprint by default.
+
+    Paramters
+    ---------
+    df
+        Either a lazy or eager Polars DataFrame
+    root_col_name
+        Either the root name of a single column, or a list of root names
+    separator
+        The separator used to separate root name and values in the one-hot-encoded columns
+
+    Example
+    -------
+    >>> print(test)
+    shape: (4, 5)
+    ┌─────┬─────┬─────┬─────┬─────┐
+    │ a_a ┆ a_b ┆ a_c ┆ b_n ┆ b_y │
+    │ --- ┆ --- ┆ --- ┆ --- ┆ --- │
+    │ u8  ┆ u8  ┆ u8  ┆ u8  ┆ u8  │
+    ╞═════╪═════╪═════╪═════╪═════╡
+    │ 1   ┆ 0   ┆ 0   ┆ 0   ┆ 1   │
+    │ 0   ┆ 1   ┆ 0   ┆ 1   ┆ 0   │
+    │ 0   ┆ 0   ┆ 1   ┆ 0   ┆ 1   │
+    │ 1   ┆ 0   ┆ 0   ┆ 1   ┆ 0   │
+    └─────┴─────┴─────┴─────┴─────┘
+    >>> enc.reverse_one_hot_encode(test, root_col_name=["a", "b"])
+    shape: (4, 2)
+    ┌─────┬─────┐
+    │ a   ┆ b   │
+    │ --- ┆ --- │
+    │ str ┆ str │
+    ╞═════╪═════╡
+    │ a   ┆ y   │
+    │ b   ┆ n   │
+    │ c   ┆ y   │
+    │ a   ┆ n   │
+    └─────┴─────┘
+    '''
+    
+    if isinstance(root_col_name, list):
+        all_roots = root_col_name
+    else:
+        all_roots = [root_col_name]
+
+    exprs = []
+    to_drop = []
+    for root in all_roots:
+        columns = [c for c in df.columns if c.startswith(root)]
+        mapping = dict(enumerate(c.replace(root + separator, "") for c in columns))
+        exprs.append(
+            pl.concat_list(columns).list.arg_max().map_dict(mapping).alias(root)
+        )
+        to_drop.extend(columns)
+
+    return _dsds_with_columns_and_drop(df, exprs, to_drop)
 
 def selective_one_hot_encode(
     df:PolarsFrame,

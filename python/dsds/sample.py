@@ -313,7 +313,16 @@ def train_test_split(
             return f1[1].select(keep), f2[1].select(keep)
         else:
             return f2[1].select(keep), f1[1].select(keep)
+        
+def datetime_split(
+    df: PolarsFrame
+    , dt_col: str
+    , keep_last: str
+    , whole_interval: str
+    , sort: bool = False
+) -> Tuple[pl.DataFrame, pl.DataFrame]:
 
+    pass 
 
 # Make a monthly split for monthly progression version too.
 
