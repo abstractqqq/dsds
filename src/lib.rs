@@ -18,6 +18,7 @@ use crate::text::{
     rs_levenshtein_dist,
     rs_hamming_dist,
 };
+
 use crate::functions::{
     rs_df_inner_list_jaccard,
     rs_series_jaccard,

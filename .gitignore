@@ -6,6 +6,7 @@
 # *.dll
 
 train.csv
+providers.csv
 test.csv
 _notes/
 main.rs

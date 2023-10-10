@@ -57,6 +57,11 @@ def type_checker(
     n_rows: int = 10,
 ) -> bool:
     if dsds.CHECK_COL_TYPES:
+        if len(cols) == 0:
+            raise ValueError(f"The call `{caller_name}` cannot be used with empty columns. "
+                             f"This is typically caused by using column inference but no "
+                             "matching columns can be inferred.")
+        
         checked_types = check_columns_types(df, cols, n_rows)
         if expected_type != checked_types:
             raise ValueError(f"The call `{caller_name}` can only be used on {expected_type} "
@@ -605,10 +610,10 @@ def str_meta_report(
         pl.all().max().prefix("max:"),
         pl.all().min().prefix("min:"),
         pl.all().mode().first().prefix("mode:"),
-        pl.all().str.lengths().min().prefix("min_byte_len:"),
-        pl.all().str.lengths().max().prefix("max_byte_len:"),
-        pl.all().str.lengths().mean().prefix("avg_byte_len:"),
-        pl.all().str.lengths().median().prefix("median_byte_len:"),
+        pl.all().str.len_bytes().min().prefix("min_byte_len:"),
+        pl.all().str.len_bytes().max().prefix("max_byte_len:"),
+        pl.all().str.len_bytes().mean().prefix("avg_byte_len:"),
+        pl.all().str.len_bytes().median().prefix("median_byte_len:"),
         pl.all().str.count_matches(r"\s").mean().prefix("avg_space_cnt:"),
         pl.all().str.count_matches(r"[0-9]").mean().prefix("avg_digit_cnt:"),
         pl.all().str.count_matches(r"[A-Z]").mean().prefix("avg_cap_cnt:"),
@@ -1015,15 +1020,18 @@ def infer_by_pattern(
     strs = get_string_cols(df)
     matches:set[str] = set(strs)
     for _ in range(sample_rounds):
+
         df_sample = lazy_sample(df.lazy(), sample_amt=sample_count).collect()
         sample_size = min(sample_count, len(df_sample))
-        fail = df_sample.select(
-            pl.when(pl.col(s).is_null()).then(count_null).otherwise(
-                pl.col(s).str.contains(pattern)
-            ).sum().alias(s)
-            for s in strs
-        ).transpose(include_header=True, column_names=["pattern_match_cnt"])\
-        .filter(pl.col("pattern_match_cnt") < pl.lit(int(threshold * sample_size)+1))["column"]
+        fail:pl.Series = (
+            df_sample.select(
+                pl.when(pl.col(s).is_null()).then(count_null).otherwise(
+                    pl.col(s).str.contains(pattern)
+                ).sum().alias(s)
+                for s in strs
+            ).transpose(include_header=True, column_names=["pattern_match_cnt"])\
+            .filter(pl.col("pattern_match_cnt") < pl.lit(int(threshold * sample_size)+1))
+        )["column"]
         # If the match failes in this round, remove the column.
         matches.difference_update(fail)
 
@@ -1187,8 +1195,11 @@ def infer_nan(df: PolarsFrame) -> list[str]:
     Returns all columns that contain NaN or infinite values.
     '''
     nums = get_numeric_cols(df)
-    nan_counts = df.lazy().select(((pl.col(nums).is_nan()) | (pl.col(nums).is_infinite())).sum()).collect().row(0)
-    return [col for col, cnt in zip(nums, nan_counts) if cnt > 0]
+    if len(nums) == 0:
+        return []
+    else:
+        nan_counts = df.lazy().select(((pl.col(nums).is_nan()) | (pl.col(nums).is_infinite())).sum()).collect().row(0)
+        return [col for col, cnt in zip(nums, nan_counts) if cnt > 0]
 
 def drop_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> PolarsFrame:
     '''
@@ -1248,18 +1259,21 @@ def drop_highly_null(df:PolarsFrame, threshold:float=0.5) -> PolarsFrame:
                 f"Removed a total of {len(drop_cols)} columns.")
     return _dsds_drop(df, drop_cols)
 
-def infer_by_var(df:PolarsFrame, threshold:float, target:str) -> list[str]:
+def infer_by_var(df:PolarsFrame, threshold:float) -> list[str]:
     '''Infers columns that have lower than threshold variance. Target will not be included.'''
-    nums = get_numeric_cols(df, exclude=[target])
-    vars = df.lazy().select(pl.col(nums).var()).collect()
-    return [c for c, v in zip(vars.columns, vars.row(0)) if v < threshold]
+    nums = get_numeric_cols(df)
+    if len(nums) == 0:
+        return []
+    else:
+        vars = df.lazy().select(pl.col(nums).var()).collect()
+        return [c for c, v in zip(vars.columns, vars.row(0)) if v < threshold]
 
 def drop_by_var(df:PolarsFrame, threshold:float, target:str) -> PolarsFrame:
     '''
     Drops columns with low variance. Features with > threshold variance will be kept. 
     Threshold should be positive. This will be remembered by blueprint by default.
     '''
-    drop_cols = infer_by_var(df, threshold, target) 
+    drop_cols = infer_by_var(df.select(pl.all().exclude(target)), threshold) 
     logger.info(f"The following columns are dropped because they have lower than {threshold} variance. {drop_cols}.\n"
                 f"Removed a total of {len(drop_cols)} columns.")
     return _dsds_drop(df, drop_cols)
@@ -1297,7 +1311,7 @@ def get_unique_count(
     '''
     Gets unique counts for columns in df and returns a dataframe with schema = ["column", "n_unique"]. 
     Null count is useful in knowing if null is one of the unique values and thus is included as an option. 
-    Note that null != NaN. Also note that this may run into troubles if there is object dtype in df.
+    Note that null != NaN. Also note that this will by default exclude all object dtypes.
 
     Parameters
     ----------
@@ -1307,17 +1321,30 @@ def get_unique_count(
         If true, this will return a dataframe with schema = ["column", "n_unique", "null_count"]
     '''
     n_unique = pl.all().n_unique()
+    # In rare cases, when used within other functions, 
+    # It is possible that df has no columns or something. Those typically
+    # comes from selecting all string columns from df but df only has numerical
+    # columns.
     if include_null_count:
-        temp = df.lazy().select(
+        temp = df.lazy().select(~cs.object()).select(
             n_unique,
             pl.all().null_count().suffix("_null_count")
-        ).collect().row(0)
-        n = len(df.columns)
-        return pl.from_records((df.columns, temp[:n], temp[n:]), schema=["column", "n_unique", "null_count"])
+        ).collect()
+        if len(temp) == 0:
+            return pl.DataFrame({"column":[], "n_unique":[], "null_count":[]})
+        else:
+            temp = temp.row(0)
+            n = len(df.columns)
+            return pl.from_records((df.columns, temp[:n], temp[n:]), schema=["column", "n_unique", "null_count"])
     else:
-        return df.lazy().select(
+        out = df.lazy().select(~cs.object()).select(
             n_unique
-        ).collect().transpose(include_header=True, column_names=["n_unique"])
+        ).collect()
+        if len(out) == 0:
+            return pl.DataFrame({"column":[], "n_unique":[]})
+        else:
+            return out.transpose(include_header=True, column_names=["n_unique"])
+
 
 def infer_highly_unique(df:PolarsFrame, threshold:float=0.9) -> list[str]:
     '''
@@ -1332,8 +1359,11 @@ def infer_highly_unique(df:PolarsFrame, threshold:float=0.9) -> list[str]:
         Every column with unique pct higher than this threshold will be returned.
     '''
     cols = df.select(cs.numeric() | cs.string() | cs.categorical()).columns
-    temp = df.lazy().select(pl.col(cols).n_unique() / pl.count()).collect()
-    return [c for c, pct in zip(temp.columns, temp.row(0)) if pct > threshold]
+    if len(cols) == 0:
+        return []
+    else:
+        temp = df.lazy().select(pl.col(cols).n_unique() / pl.count()).collect()
+        return [c for c, pct in zip(temp.columns, temp.row(0)) if pct > threshold]
 
 def drop_highly_unique(df:PolarsFrame, threshold:float=0.9) -> PolarsFrame:
     '''
@@ -1533,7 +1563,11 @@ def infer_nums_from_str(df:PolarsFrame, ignore_comma:bool=True) -> list[str]:
     Infers hidden numeric columns which are stored as strings like "$5.55" or "#123". If 
     ignore_comma = True, then it will first filter out all "," in the string.
     '''
-    expr = pl.col(df.select(cs.string()).columns)
+    str_cols = df.select(cs.string()).columns
+    if len(str_cols) == 0:
+        return []
+    
+    expr = pl.col(str_cols)
     if ignore_comma:
         expr = expr.str.replace_all(",", "")
 

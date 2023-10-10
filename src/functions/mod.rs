@@ -1,7 +1,7 @@
 
 pub mod metrics;
-pub mod utils;
-pub mod estimates;
+mod utils;
+mod estimates;
 
 use polars_core::prelude::*;
 use pyo3::prelude::*;

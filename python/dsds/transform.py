@@ -1403,7 +1403,7 @@ def extract_from_str(
     exprs = []
     for e in to_extract:
         if e == "len":
-            exprs.append(pl.col(cols).str.lengths().suffix("_len"))
+            exprs.append(pl.col(cols).str.len_bytes().suffix("_len"))
         elif e == "starts_with":
             exprs.append(pl.col(cols).str.starts_with(pattern).cast(pl.UInt8).suffix(f"_starts_with_{pattern}"))
         elif e == "ends_with":
@@ -1734,7 +1734,7 @@ def extract_list_features(
         elif e in ("mean", "avg"):
             exprs.append(pl.col(cols).list.mean().suffix("_mean"))
         elif e == "len":
-            exprs.append(pl.col(cols).list.lengths().suffix("_len"))
+            exprs.append(pl.col(cols).list.len().suffix("_len"))
         elif e == "first":
             exprs.append(pl.col(cols).list.first().suffix("_first"))
         elif e == "last":
@@ -1831,9 +1831,9 @@ def combine_str_cols(
         expr = expr.list.set_difference(pl.Series("", [None]))
 
     if empty_as_null and separator == "":
-        expr = pl.when(expr.list.lengths() == 0).then(None).otherwise(expr)
+        expr = pl.when(expr.list.len() == 0).then(None).otherwise(expr)
     elif separator != "":
-        expr = pl.when(expr.list.lengths() == 0).then(None).otherwise(expr.list.join(separator))
+        expr = pl.when(expr.list.len() == 0).then(None).otherwise(expr.list.join(separator))
 
     return _dsds_with_columns(df, [expr.alias(new_name)])
 

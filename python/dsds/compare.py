@@ -8,8 +8,8 @@ from typing import (
 )
 from itertools import combinations
 from .prescreen import (
-    infer_constants
-    , infer_discretes
+    get_unique_count
+    # , infer_discretes
 )
 from .type_alias import PolarsFrame
 
@@ -47,27 +47,32 @@ def _plot_from_dependency_table(
     , threshold: float 
 ) -> graphviz.Digraph:
     
-    out = df.filter(pl.col("H(x|y)") < threshold)
-    remaining_length = len(out)
-    i = 0
-    frames:list[pl.DataFrame] = [out]
-    while remaining_length > 0:
-        out = out.join(out, left_on="y", right_on="x", suffix=str(i))
-        frames.append(out.clone())
-        remaining_length = len(out)
-        i += 1
+    # Filter
+    out = df.filter(pl.col("H(x|y)") < threshold).select(
+        pl.col('x').alias("child"), # c for child
+        pl.col('y').alias("parent") # p for parent
+    )
+    cp = out.group_by("child").agg(pl.col("parent"))
+    pc = out.group_by("parent").agg(pl.col("child"))
+    child_parent:dict[str, pl.Series] = dict(zip(cp.drop_in_place("child"), cp.drop_in_place("parent")))
+    parent_child:dict[str, pl.Series] = dict(zip(pc.drop_in_place("parent"), pc.drop_in_place("child")))
 
-    _ = frames.pop()
-    dot = graphviz.Digraph('Dependency Plot', comment=f'Conditional Entropy < {threshold}', format="png") 
-    linked = {}
-    while len(frames) > 0:
-        frame = frames.pop().select(pl.col("x"), pl.col("y"))
-        for child, parent in frame.iter_rows():
-            if child not in linked:
-                linked[child] = []
-                dot.node(parent)
-                dot.edge(parent, child)
-    
+    dot = graphviz.Digraph('Dependency Plot', comment=f'Conditional Entropy < {threshold:.2f}', format="png") 
+    for c, par in child_parent.items():
+        parents_of_c = set(par)
+        for p in par:
+            # Does parent p have a child that is also a parent of c?
+            # If so, remove p.
+            children_of_p = parent_child.get(p, None)
+            if children_of_p is not None:
+                if len(parents_of_c.intersection(children_of_p)) > 0:
+                    parents_of_c.remove(p)
+
+        dot.node(c)
+        for p in parents_of_c:
+            dot.node(p)
+            dot.edge(p, c)
+
     return dot
 
 def dependency_detection(
@@ -91,6 +96,8 @@ def dependency_detection(
     situations and be an interesting metric to look at. E.g. Conditional entropy is intimately connected to 
     feature importance in decision tree.
 
+    It is advised to run this with selected columns.
+
     Parameters
     ----------
     df
@@ -112,22 +119,23 @@ def dependency_detection(
         use_cols = df.select(cs.string()).columns # infer_discretes(df)
 
     df_local = df.select(use_cols)
-    constants = infer_constants(df_local)
+    n_unique = get_unique_count(df_local, False).sort("n_unique").set_sorted("n_unique")
+    # .with_row_count(offset=1).set_sorted("row_nr")
+    # df_length = unique_counts.filter(pl.col("column") == "row_nr").item(0, 1)
+    constants = n_unique.filter(pl.col("n_unique") == 1)["column"].to_list()
     if len(constants) > 0:
         logger.info(f"The following columns are not considered because they are constants: {constants}")
         df_local = df_local.select(pl.all().exclude(constants))
 
-    use_cols = df_local.columns
+    # already sorted
+    n_unique_nonconst = n_unique.filter(pl.col("n_unique") > 1)
+    use_cols = n_unique_nonconst["column"].to_list()
+    df_local = df_local.select(use_cols)
     if len(use_cols) == 0:
-        logger.info("All given columns are constants. Nothing is done.")
-        return pl.DataFrame()
-
-    n_unique = df_local.lazy().select(
-        pl.all().n_unique()
-    ).collect().row(0)
-    n_unique_asc = sorted(zip(n_unique, use_cols))
-    use_cols = [x[1] for x in n_unique_asc]
-
+        logger.info("No available column. Either there is no string in the dataframe, or there is no column "
+                    "provided by the user, or all columns are constant. Nothing is done.")
+        return pl.DataFrame(), None
+    
     frames = (
         _cond_entropy(df_local, x, y) for x, y in combinations(use_cols, 2)
     )

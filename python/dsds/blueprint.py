@@ -458,22 +458,27 @@ def from_pkl(path: Union[str,Path]) -> Blueprint:
             raise ValueError("The object in the pickled file is not a Blueprint object.")
 
 def _dsds_with_columns(df:PolarsFrame, exprs:list[pl.Expr]) -> PolarsFrame:
+    if len(exprs) == 0:
+        return df
     if isinstance(df, pl.LazyFrame) & dsds.PERSIST_IN_BLUEPRINT:
         return df.blueprint.with_columns(exprs)
-    else:
-        return df.with_columns(exprs)
+    return df.with_columns(exprs)
     
 def _dsds_map_dict(df:PolarsFrame, exprs:list[pl.Expr]) -> PolarsFrame:
+    if len(exprs) == 0:
+        return df
     if isinstance(df, pl.LazyFrame) & dsds.PERSIST_IN_BLUEPRINT:
         return df.blueprint.map_dict(exprs)
-    else:
-        return df.with_columns(exprs)
+    return df.with_columns(exprs)
     
 def _dsds_with_columns_and_drop(df:PolarsFrame, exprs:list[pl.Expr], to_drop: list[str]) -> PolarsFrame:
+    if len(to_drop) == 0:
+        return _dsds_with_columns(df, exprs)
+    if len(exprs) == 0:
+        return df
     if isinstance(df, pl.LazyFrame) & dsds.PERSIST_IN_BLUEPRINT:
         return df.blueprint.with_columns(exprs).blueprint.drop(to_drop)
-    else:
-        return df.with_columns(exprs).drop(to_drop)
+    return df.with_columns(exprs).drop(to_drop)
     
 def _dsds_select(
     df:PolarsFrame
@@ -485,6 +490,8 @@ def _dsds_select(
 
     Set persist = True so that this will be remembered by the blueprint.
     '''
+    if len(selector) == 0:
+        return df
     if isinstance(df, pl.LazyFrame) & persist & dsds.PERSIST_IN_BLUEPRINT:
         return df.blueprint.select(selector)
     return df.select(selector)
@@ -494,6 +501,8 @@ def _dsds_drop(df:PolarsFrame, to_drop:list[str], persist:bool=True) -> PolarsFr
     A pipeline compatible way to drop the given columns, which will be remembered by the blueprint
     by default.
     '''
+    if len(to_drop) == 0:
+        return df
     if isinstance(df, pl.LazyFrame) & persist & dsds.PERSIST_IN_BLUEPRINT:
         return df.blueprint.drop(to_drop)
     return df.drop(to_drop)
