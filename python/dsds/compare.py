@@ -59,12 +59,12 @@ def _plot_from_dependency_table(
 
     _ = frames.pop()
     dot = graphviz.Digraph('Dependency Plot', comment=f'Conditional Entropy < {threshold}', format="png") 
-    linked = set()
+    linked = {}
     while len(frames) > 0:
         frame = frames.pop().select(pl.col("x"), pl.col("y"))
         for child, parent in frame.iter_rows():
             if child not in linked:
-                linked.add(child)
+                linked[child] = []
                 dot.node(parent)
                 dot.edge(parent, child)
     
@@ -84,7 +84,8 @@ def dependency_detection(
 
     This method will return a full table of conditional entropies between all possible pairs of (child, parent)
     columns regardless of threshold, and optionally with a Digraph which is constructed according to the 
-    *threshold* given.
+    *threshold* given. Right now only one potential parent of each node is shown in the graph. Other parents can
+    be inferred from the first dataframe output. I will update this when I figure out how to do MST efficiently.
 
     The reason conditional entropies are returned regardless of threshold is that it might be useful in other 
     situations and be an interesting metric to look at. E.g. Conditional entropy is intimately connected to 
