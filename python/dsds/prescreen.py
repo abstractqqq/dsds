@@ -89,7 +89,7 @@ def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[st
 
 def get_datetime_cols(df:PolarsFrame) -> list[str]:
     '''Returns only datetime columns. This will not try to infer date from strings.'''
-    return df.select(cs.datetime()).columns
+    return df.select(cs.datetime() | cs.date()).columns
 
 def get_bool_cols(df:PolarsFrame) -> list[str]:
     '''Returns boolean columns.'''
@@ -833,7 +833,7 @@ def over_time_report_num(
 
     group_by = [e.meta.output_name() for e in time_exprs]
     dfs_group_by = (
-        df_local_with_time.group_by(
+        df_local_with_time.lazy().group_by(
             group_by
         ).agg(
             pl.lit(c).alias("feature"),
@@ -963,7 +963,8 @@ def infer_highly_correlated(
         The threshold for highly correlated columns
     '''
     constants = infer_constants(df)
-    logger.info(f"These columns are constants and will be excluded from this report: {constants}")
+    if len(constants) > 0:
+        logger.info(f"These columns are constants and will be excluded from this report: {constants}")
     df_local = df.select(cs.numeric())
     num_cols = list(set(df_local.columns).difference(constants))
 
@@ -1083,10 +1084,9 @@ def infer_dates(df:PolarsFrame) -> list[str]:
     strings = get_string_cols(df)
     # MIGHT REWRITE THIS LOGIC
     # Might be memory intensive on big dataframes.
-    sample_size = min(len(df), 100_000)
-    sample_df = df.lazy().select(strings)\
-        .drop_nulls().collect()\
-        .sample(n = sample_size).select(
+    df_local = df.lazy().select(strings).drop_nulls().collect()
+    sample_size = min(len(df_local)-1, 100_000)
+    sample_df = df_local.sample(n = sample_size).select(
             # Cleaning the string first. Only try to catch string dates which are in the first split by space
            pl.col(s).str.strip().str.replace_all("(/|\.)", "-").str.split(by=" ").list.first() 
            for s in strings
