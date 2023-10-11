@@ -1,6 +1,7 @@
 import polars as pl
 import graphviz
 import polars.selectors as cs
+import logging
 
 from typing import (
     Optional, 
@@ -13,7 +14,6 @@ from .prescreen import (
 )
 from .type_alias import PolarsFrame
 
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _cond_entropy(df: PolarsFrame, x:str, y:str) -> pl.LazyFrame:
     Computes the conditional entropy H of x given y, usually denoted H(x|y).
     '''
 
-    out = df.lazy().group_by(x, y).agg(
+    out = df.lazy().group_by(pl.col(x), pl.col(y)).agg(
         pl.count()
     ).with_columns(
         (pl.col("count").sum().over(y) / pl.col("count").sum()).alias("prob(y)"),
@@ -75,6 +75,49 @@ def _plot_from_dependency_table(
 
     return dot
 
+def dependency_violation(
+    df: PolarsFrame
+    , conditional_entropy: pl.DataFrame
+    , threshold: float = 0.05
+) -> list[pl.DataFrame]:
+    '''
+    Given conditional entropy, run a diagnosis and find problematic data points in the original df. This
+    will return a list of dataframes, with each representing
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe. It is highly recommended that the dataframe is loaded into
+        memory.
+    conditional_entropy
+        A dataframe with the same schema as the output of dependency_detection call.
+    threshold
+        The threshold to use to confirm dependency. The lower the stricter.
+    '''
+    
+    possible_violations = conditional_entropy.filter(
+        pl.col("H(x|y)").is_between(0, threshold, closed="none")
+    )
+    child = possible_violations.drop_in_place("x")
+    parent = possible_violations.drop_in_place("y")
+
+    frames = (
+        df.lazy().group_by(p).agg(
+            pl.count(),
+            pl.col(c).value_counts()
+        ).filter(
+            pl.col(c).list.len() > 1
+        ).select(
+            pl.col(p).alias(f"Column Name: {p}"),
+            pl.col("count"),
+            pl.col(c).alias(f"Col {c}: Value & Count"),
+            pl.lit(f"`{p}` should uniquely determine `{c}`").alias("Reason")
+        )
+        for c, p in zip(child, parent)
+    )
+    out = pl.collect_all(frames)
+    return out
+
 def dependency_detection(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
@@ -82,7 +125,7 @@ def dependency_detection(
     , plot_tree:bool = True
 ) -> Tuple[pl.DataFrame, Optional[graphviz.Digraph]]:
     '''
-    This method will use `conditional entropy` as a means to meansure dependency between columns. For two discrete
+    This method will use `conditional entropy` to meansure dependency between columns. For two discrete
     random variables x, y, the lower the conditional entropy of x given y, denoted H(x|y), the more likely that 
     y determines x. E.g. y = Zipcode, x = State. Then H(x|y) should be low, because knowing the zipcode almost 
     always mean knowing the state.
@@ -96,8 +139,6 @@ def dependency_detection(
     situations and be an interesting metric to look at. E.g. Conditional entropy is intimately connected to 
     feature importance in decision tree.
 
-    It is advised to run this with selected columns.
-
     Parameters
     ----------
     df
@@ -107,7 +148,8 @@ def dependency_detection(
         If provided, will use the conditional entropy method to find all dependencies among the given columns.
         If not provided, will use all string columns.
     threshold
-        The dependency threshold to be used when constructing the tree.
+        The threshold to use to confirm dependency. The lower the stricter. It will also be used when 
+        constructing the dependency tree.
     plot_tree
         If true, will return a Digraph with the edges connected when conditional entropy is < threshold. You 
         should only turn this off when you want conditional entropy information and runtime is important to you.
@@ -120,8 +162,6 @@ def dependency_detection(
 
     df_local = df.select(use_cols)
     n_unique = get_unique_count(df_local, False).sort("n_unique").set_sorted("n_unique")
-    # .with_row_count(offset=1).set_sorted("row_nr")
-    # df_length = unique_counts.filter(pl.col("column") == "row_nr").item(0, 1)
     constants = n_unique.filter(pl.col("n_unique") == 1)["column"].to_list()
     if len(constants) > 0:
         logger.info(f"The following columns are not considered because they are constants: {constants}")

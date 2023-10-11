@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dsds"
-version = "0.0.3"
+version = "0.0.31"
 requires-python = ">=3.9"
 authors = [
     {name = "Tianren Qin", email = "tq9695@gmail.com"}
