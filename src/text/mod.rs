@@ -2,11 +2,6 @@ pub mod text;
 mod consts;
 
 use crate::text::text::{
-    //count_vectorizer,
-    //tfidf_vectorizer,
-    //get_ref_table,
-    // STEMMER
-    // hamming_dist_series,
     snowball_stem,
     hamming_dist,
     levenshtein_dist,

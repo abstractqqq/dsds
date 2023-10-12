@@ -848,12 +848,32 @@ def over_time_report_num(
 
     df_group_by = pl.concat(pl.collect_all(dfs_group_by))
 
+    zero_null_pct = pl.col("null%") == 0
     df_combined = df_all.join(
         df_group_by, on = "feature"
     ).sort(["feature"] + group_by).with_columns(
-        (pl.col("null%").pct_change().over("feature").fill_nan(np.inf)).alias("null_PoP_%diff"),
+        pl.when(zero_null_pct).then(
+            pl.when(zero_null_pct.shift(1)).then(
+                pl.lit(0.)
+            ).otherwise(
+                np.nan
+            )
+        ).otherwise(
+            pl.col("null%").pct_change()
+        ).over("feature").alias("null_PoP_%chg"),
+
         (pl.col("mean").pct_change().over("feature").fill_nan(np.inf)).alias("mean_PoP_%diff"),
-        ((pl.col("null%")/pl.col("null%_global") - pl.lit(1.0)).fill_nan(np.inf)).alias("null_%diff_overall"),
+
+        pl.when(pl.col("null%_global") == 0).then(
+            pl.when(pl.col("null%") == 0).then(
+                pl.lit(0.)
+            ).otherwise(
+                np.nan
+            )
+        ).otherwise(
+            pl.col("null%")/pl.col("null%_global") - pl.lit(1.0)
+        ).alias("null_%chg_overall"),
+
         ((pl.col("mean")/pl.col("mean_global") - pl.lit(1.0)).fill_nan(np.inf)).alias("mean_%diff_overall")
     ).drop(["null%_global", "mean_global"])
 

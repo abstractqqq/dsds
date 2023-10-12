@@ -3,6 +3,9 @@ use crate::text::consts::EN_STOPWORDS;
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 use rayon::prelude::*;
+use std::str;
+
+
 // use polars_lazy::dsl::GetOutput;
 // use polars_core::prelude::*;
 // use polars_lazy::prelude::*;
@@ -23,22 +26,6 @@ use rayon::prelude::*;
 //     }
 // }
 
-// #[inline]
-// pub fn hamming_dist_series(a: &Series, b: &Series) -> PolarsResult<UInt32Chunked> {
-//     Ok(
-//         a.utf8()?
-//         .into_iter()
-//         .zip(b.utf8()?)
-//         .map(|(lhs, rhs)| {
-//             if let (Some(l), Some(r)) = (lhs, rhs) {
-//                 hamming_dist(l, r)
-//             } else {
-//                 None
-//             }
-//         }).collect()
-//     )
-// }
-
 #[inline]
 pub fn hamming_dist(s1:&str, s2:&str) -> Option<u32> {
     if s1.len() != s2.len() {
@@ -47,10 +34,10 @@ pub fn hamming_dist(s1:&str, s2:&str) -> Option<u32> {
     let x = s1.as_bytes();
     let y = s2.as_bytes();
     Some(
-            x.iter()
-            .zip(y)
-            .fold(0, |a, (b, c)| a + (*b ^ *c).count_ones() as u32)
-        )
+        x.iter()
+        .zip(y)
+        .fold(0, |a, (b, c)| a + (*b ^ *c).count_ones() as u32)
+    )
 }
 
 #[inline]
@@ -74,6 +61,8 @@ pub fn snowball_stem(word:Option<&str>, no_stopwords:bool) -> Option<String> {
 
 #[inline]
 pub fn levenshtein_dist(s1:&str, s2:&str) -> u32 {
+    // It is possible to go faster by not using a matrix to represent the 
+    // data structure it seems.
 
     // https://en.wikipedia.org/wiki/Wagner%E2%80%93Fischer_algorithm
 
@@ -139,13 +128,28 @@ fn pl_levenshtein_dist(inputs: &[Series]) -> PolarsResult<Series> {
 fn pl_str_jaccard(inputs: &[Series]) -> PolarsResult<Series> {
     let ca1 = inputs[0].utf8()?;
     let ca2 = inputs[1].utf8()?;
+    let ca3 = inputs[2].u32()?;
+    let n = ca3.get(0).unwrap() as usize;
 
     if ca2.len() == 1 {
+
         let r = ca2.get(0).unwrap();
-        let s2 = PlHashSet::from_iter(r.chars());
+        let s2 = if r.len() > n {
+            PlHashSet::from_iter(
+                r.as_bytes().windows(n).map(|sl| str::from_utf8(sl).unwrap()
+            )
+        )} else {
+            PlHashSet::from_iter([r])
+        };
         let out: Float64Chunked = ca1.par_iter().map(|op_s| {
             if let Some(s) = op_s {
-                let s1 = PlHashSet::from_iter(s.chars());
+                let s1 = if s.len() > n {
+                    PlHashSet::from_iter(
+                        s.as_bytes().windows(n).map(|sl| str::from_utf8(sl).unwrap())
+                    )
+                } else {
+                    PlHashSet::from_iter([s])
+                };
                 let intersection = s1.intersection(&s2).count();
                 Some(
                     (intersection as f64) / ((s1.len() + s2.len() - intersection) as f64)
@@ -156,16 +160,58 @@ fn pl_str_jaccard(inputs: &[Series]) -> PolarsResult<Series> {
         }).collect();
         Ok(out.into_series())
     } else if ca1.len() == ca2.len() {
+
         let out: Float64Chunked = ca1.par_iter_indexed()
             .zip(ca2.par_iter_indexed())
             .map(|(op_w1, op_w2)| {
                 if let (Some(w1), Some(w2)) = (op_w1, op_w2) {
-                    let s1 = PlHashSet::from_iter(w1.chars());
-                    let s2 = PlHashSet::from_iter(w2.chars());
-                    let intersection = s1.intersection(&s2).count();
-                    Some(
-                        (intersection as f64) / ((s1.len() + s2.len() - intersection) as f64)
-                    )
+                    if (w1.len() >= n) & (w2.len() >= n) {
+                        let s1 = PlHashSet::from_iter(
+                            w1.as_bytes().windows(n).map(|sl| str::from_utf8(sl).unwrap())
+                        );
+                        let s2 = PlHashSet::from_iter(
+                            w2.as_bytes().windows(n).map(|sl| str::from_utf8(sl).unwrap())
+                        );
+                        let intersection = s1.intersection(&s2).count();
+                        Some(
+                            (intersection as f64) / ((s1.len() + s2.len() - intersection) as f64)
+                        )
+                    } else if (w1.len() < n) & (w2.len() < n) {
+                        Some(((w1 == w2) as u8) as f64)
+                    } else {
+                        Some(0.)
+                    }
+                } else {
+                    None
+                }
+            }).collect();
+        Ok(out.into_series())
+    } else {
+        Err(PolarsError::ComputeError("Inputs must have the same length.".into()))
+    }
+}
+
+#[polars_expr(output_type=UInt32)]
+fn pl_hamming_dist(inputs: &[Series]) -> PolarsResult<Series> {
+    let ca1 = inputs[0].utf8()?;
+    let ca2 = inputs[1].utf8()?;
+
+    if ca2.len() == 1 {
+        let r = ca2.get(0).unwrap();
+        let out: UInt32Chunked = ca1.par_iter().map(|op_s| {
+            if let Some(w) = op_s {
+                hamming_dist(w, r)
+            } else {
+                None
+            }            
+        }).collect();
+        Ok(out.into_series())
+    } else if ca1.len() == ca2.len() {
+        let out: UInt32Chunked = ca1.par_iter_indexed()
+            .zip(ca2.par_iter_indexed())
+            .map(|(op_w1, op_w2)| {
+                if let (Some(w1), Some(w2)) = (op_w1, op_w2) {
+                    hamming_dist(w1, w2)
                 } else {
                     None
                 }

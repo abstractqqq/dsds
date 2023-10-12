@@ -1,7 +1,8 @@
 import polars as pl
 import graphviz
-import polars.selectors as cs
+# import polars.selectors as cs
 import logging
+import math
 
 from typing import (
     Optional, 
@@ -48,9 +49,9 @@ def _plot_from_dependency_table(
 ) -> graphviz.Digraph:
     
     # Filter
-    out = df.filter(pl.col("H(x|y)") < threshold).select(
-        pl.col('x').alias("child"), # c for child
-        pl.col('y').alias("parent") # p for parent
+    out = df.filter(pl.col("CE") < threshold).select(
+        pl.col('dependent').alias("child"), # c for child
+        pl.col('depends_on').alias("parent") # p for parent
     )
     cp = out.group_by("child").agg(pl.col("parent"))
     pc = out.group_by("parent").agg(pl.col("child"))
@@ -79,10 +80,11 @@ def dependency_violation(
     df: PolarsFrame
     , conditional_entropy: pl.DataFrame
     , threshold: float = 0.05
-) -> list[pl.DataFrame]:
+) -> dict[str, pl.DataFrame]:
     '''
     Given conditional entropy, run a diagnosis and find problematic data points in the original df. This
-    will return a list of dataframes, with each representing
+    will return a dictionary of keys representing the dependency with values being dataframes and representing
+    the records that violated the dependency. 
 
     Parameters
     ----------
@@ -96,10 +98,10 @@ def dependency_violation(
     '''
     
     possible_violations = conditional_entropy.filter(
-        pl.col("H(x|y)").is_between(0, threshold, closed="none")
+        pl.col("CE").is_between(0, threshold, closed="none")
     )
-    child = possible_violations.drop_in_place("x")
-    parent = possible_violations.drop_in_place("y")
+    child = possible_violations.drop_in_place("dependent")
+    parent = possible_violations.drop_in_place("depends_on")
 
     frames = (
         df.lazy().group_by(p).agg(
@@ -116,13 +118,15 @@ def dependency_violation(
         for c, p in zip(child, parent)
     )
     out = pl.collect_all(frames)
-    return out
+    keys = (f"{c}-{p}" for c, p in zip(child, parent))
+    return dict(zip(keys , out))
 
 def dependency_detection(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
     , threshold:float = 0.05
     , plot_tree:bool = True
+    , return_full_table: bool = False
 ) -> Tuple[pl.DataFrame, Optional[graphviz.Digraph]]:
     '''
     This method will use `conditional entropy` to meansure dependency between columns. For two discrete
@@ -130,14 +134,12 @@ def dependency_detection(
     y determines x. E.g. y = Zipcode, x = State. Then H(x|y) should be low, because knowing the zipcode almost 
     always mean knowing the state.
 
-    This method will return a full table of conditional entropies between all possible pairs of (child, parent)
-    columns regardless of threshold, and optionally with a Digraph which is constructed according to the 
-    *threshold* given. Right now only one potential parent of each node is shown in the graph. Other parents can
-    be inferred from the first dataframe output. I will update this when I figure out how to do MST efficiently.
+    The first output of this function is a table with 3 columns: "dependent", "depends_on", and "CE", where CE
+    stands for conditional entropy.
 
-    The reason conditional entropies are returned regardless of threshold is that it might be useful in other 
-    situations and be an interesting metric to look at. E.g. Conditional entropy is intimately connected to 
-    feature importance in decision tree.
+    This method will return a table of conditional entropies between all possible pairs of (child, parent)
+    columns, and optionally with a Digraph which is constructed according to the *threshold* given. This 
+    function always returns a 2-tuple. When plot_tree is false, None is returned as the second output.
 
     Parameters
     ----------
@@ -146,7 +148,8 @@ def dependency_detection(
         memory.
     cols
         If provided, will use the conditional entropy method to find all dependencies among the given columns.
-        If not provided, will use all string columns.
+        If not provided, will use all the columns in the dataframe. This is not recommended when there are more
+        than hundreds of columns in the dataframe.
     threshold
         The threshold to use to confirm dependency. The lower the stricter. It will also be used when 
         constructing the dependency tree.
@@ -158,7 +161,9 @@ def dependency_detection(
     if isinstance(cols, list):
         use_cols = [c for c in cols if c in df.columns]
     else:
-        use_cols = df.select(cs.string()).columns # infer_discretes(df)
+        use_cols = df.columns
+        total = math.comb(len(use_cols), 2)
+        logger.info(f"Detecting dependency for all columns in dataframe. A total of {total} comparisons will be done.")
 
     df_local = df.select(use_cols)
     n_unique = get_unique_count(df_local, False).sort("n_unique").set_sorted("n_unique")
@@ -167,7 +172,6 @@ def dependency_detection(
         logger.info(f"The following columns are not considered because they are constants: {constants}")
         df_local = df_local.select(pl.all().exclude(constants))
 
-    # already sorted
     n_unique_nonconst = n_unique.filter(pl.col("n_unique") > 1)
     use_cols = n_unique_nonconst["column"].to_list()
     df_local = df_local.select(use_cols)
@@ -185,10 +189,24 @@ def dependency_detection(
     conditional_entropy = (
         pl.concat(pl.collect_all(frames))
     )
-
-    if plot_tree:
-        tree = _plot_from_dependency_table(conditional_entropy, threshold=threshold)
-        return conditional_entropy, tree 
+    
+    if return_full_table:
+        out_table = conditional_entropy.rename({
+            "x":"dependent",
+            "y":"depends_on",
+            "H(x|y)":"CE"
+        })
     else:
-        return conditional_entropy, None
+        out_table = conditional_entropy.filter(
+            pl.col("H(x|y)") < threshold
+        ).rename({
+            "x":"dependent",
+            "y":"depends_on",
+            "H(x|y)":"CE"
+        })
+    if plot_tree:
+        tree = _plot_from_dependency_table(out_table, threshold=threshold)
+        return out_table, tree 
+    else:
+        return out_table, None
 

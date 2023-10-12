@@ -9,7 +9,7 @@ lib = _get_shared_lib_location(__file__)
 _BENFORD_DIST_SERIES = (1 + 1 / pl.int_range(1, 10, eager=True)).log10()
 
 @pl.api.register_expr_namespace("dsds_numeric")
-class DSDSExprs:
+class NumericExt:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
 
@@ -72,13 +72,14 @@ class DSDSExprs:
         return self._expr.mod(1.0)
     
 @pl.api.register_expr_namespace("dsds_str")
-class DSDSStr:
+class StrExt:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
 
     def str_jaccard(
         self,
-        other: Union[str, pl.Expr]
+        other: Union[str, pl.Expr],
+        substr_size: int = 2
     ) -> pl.Expr:
         '''
         Treats each string as a set. Duplicate chars will be removed. And computes the jaccard similarity between
@@ -90,6 +91,9 @@ class DSDSStr:
             If this is a string, then the entire column will be compared with this string. If this 
             is an expression, then an element-wise jaccard similarity computation between this column 
             and the other (given by the expression) will be performed.
+        substr_size 
+            The substring size for Jaccard similarity. E.g. if substr_size = 2, "apple" will be decomposed into
+            the set ('ap', 'pp', 'pl', 'le') before being compared.
         '''
         if isinstance(other, str):
             other_ = pl.Series([other])
@@ -99,7 +103,7 @@ class DSDSStr:
         return self._expr._register_plugin(
             lib=lib,
             symbol="pl_str_jaccard",
-            args = [other_],
+            args = [other_, pl.lit(substr_size, dtype=pl.UInt32)],
             is_elementwise=True,
         )
     
@@ -125,6 +129,33 @@ class DSDSStr:
         return self._expr._register_plugin(
             lib=lib,
             symbol="pl_levenshtein_dist",
+            args = [other_],
+            is_elementwise=True,
+        )
+    
+    def hamming_dist(
+        self, 
+        other:Union[str, pl.Expr], 
+    ) -> pl.Expr:
+        '''
+        Computes the hamming distance between two strings. If they do not have the same length, null will
+        be returned.
+
+        Parameters
+        ----------
+        other
+            If this is a string, then the entire column will be compared with this string. If this 
+            is an expression, then an element-wise hamming distance computation between this column 
+            and the other (given by the expression) will be performed.
+        '''
+        if isinstance(other, str):
+            other_ = pl.Series([other])
+        else:
+            other_ = other
+
+        return self._expr._register_plugin(
+            lib=lib,
+            symbol="pl_hamming_dist",
             args = [other_],
             is_elementwise=True,
         )

@@ -1,5 +1,8 @@
-use ndarray::{Axis, ArrayView1, Array2};
+use ndarray::{Axis, ArrayView1, ArrayView2, Array2};
 use ndarray::parallel::prelude::*;
+//use faer_core::Scale;
+//use faer::{prelude::*, IntoNdarray};
+//use faer_core::mul::matmul;
 use polars_core::utils::accumulate_dataframes_vertical;
 use polars::prelude::*;
 
@@ -117,6 +120,10 @@ pub fn huber_loss(
     diff.mean().unwrap_or(0.)
 }
 
+fn lempel_ziv_complexity(){
+    todo!()
+}
+
 #[inline]
 pub fn cosine_similarity(
     mut mat1:Array2<f64>,
@@ -131,6 +138,7 @@ pub fn cosine_similarity(
         mat1.dot(&mat2.t())
     }
 }
+
 
 #[inline]
 pub fn self_cosine_similarity(

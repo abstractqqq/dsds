@@ -1,10 +1,10 @@
 [build-system]
-requires = ["maturin~=1.2.1"]
+requires = ["maturin>=1.2.1"]
 build-backend = "maturin"
 
 [project]
 name = "dsds"
-version = "0.0.31"
+version = "0.0.32"
 requires-python = ">=3.9"
 authors = [
     {name = "Tianren Qin", email = "tq9695@gmail.com"}

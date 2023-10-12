@@ -60,16 +60,14 @@ def get_numpy(
         y = y.ravel()
     
     if low_memory:
-        columns = []
-        for c in features:
-            columns.append(
-                df_local.drop_in_place(c).to_numpy().reshape((-1,1))
-            )
+        columns = [
+            df_local.drop_in_place(c).to_numpy().reshape((-1,1))
+            for c in features
+        ]
         X = np.concatenate(columns, axis=1)
     else:
         X = df_local[features].to_numpy()
 
-    df = df.clear() # Reset to empty.
     return NumPyDataCube(X, y, features, target)
 
 def dump_blueprint(df:pl.LazyFrame, path:Union[str,Path]) -> pl.LazyFrame:
