@@ -13,6 +13,9 @@ CHECK_COL_TYPES: bool = True
 FETCH_ROW_NUM: int = 10
 # For all functions that expect binary target, should we do a safeguard?
 
+# Progress bar. Print progress bar or not? Not implemented yet.
+PROGRESS_BAR = True
+
 # Number of threads to use by default in non-Polars settings.
 THREADS:int = os.cpu_count() - 1
 # Whether to persis in Blueprint or not

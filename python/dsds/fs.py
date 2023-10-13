@@ -560,7 +560,6 @@ def mrmr(
     , cols:Optional[list[str]] = None
     , strategy: MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
-    , low_memory:bool=False
     , return_score:bool=False
 ) -> Union[list[str], Tuple[list[str], np.ndarray]]:
     '''
@@ -575,12 +574,14 @@ def mrmr(
     Note: A common source of numerical `error` is data quality. If input data has too high null% or too 
     low variance, some methods will not work.
 
-    Currently this only supports binary classification.
+    Currently this only supports binary classification. It is possible to make it run even faster if we allow
+    the computation of correlation matrix upfront. But in practice that often creates memory problems and therefore
+    that option is removed.
 
     Parameters
     ----------
     df
-        An eager Polars Dataframe
+        Either a lazy or eager Polars Dataframe. This method will collect internally.
     target
         Target column
     k
@@ -592,32 +593,26 @@ def mrmr(
     params
         Optional. If a model strategy is selected (`rf`, `xgb`, `lgbm`), params is a dict of 
         parameters for the model.
-    low_memory
-        Whether to do some computation all at once, which uses more memory at once, or do some 
-        computation when needed, which uses less memory at any given time.
     return_score
         If true, the relevance score will be returned as well
     '''
     if isinstance(cols, list):
-        nums = cols
+        nums = [c for c in cols if c !=target and c in df.columns]
+        _ = type_checker(df, nums, "numeric", "mrmr")
     else:
         nums = get_numeric_cols(df, exclude=[target])
 
+    # Unlike knockout MRMR, here we should proceed with eager
+    df_local = df.lazy().select(nums + [target]).collect()
     scores = _mrmr_relevance(
-        df
-        , target = target
-        , cols = nums
-        , strategy = strategy
+        df_local
+        , target
+        , nums
+        , strategy
         , params = {} if params is None else params
     )
 
-    # Set up input df according low_memory or not
-    if low_memory:
-        df_local = df.select(nums)
-    else: # this could potentially double memory usage. so I provided a low_memory flag.
-        df_local = df.select(nums).with_columns(
-            (pl.col(nums) - pl.col(nums).mean())/pl.col(nums).std()
-        ) # Note that if we get a const column, the entire column will be NaN
+    # Always do low memory option. Do not scale upfront.
 
     # Init MRMR
     output_size = min(k, len(nums))
@@ -631,22 +626,20 @@ def mrmr(
     for j in range(1, output_size):
         argmax = -1
         current_max = -1
-        last_selected_col:pl.Series = df_local.drop_in_place(selected[-1])
-        if low_memory: # normalize if in low memory mode.
-            last_selected_col = (last_selected_col - last_selected_col.mean())/last_selected_col.std()
-        for i,f in enumerate(nums):
-            if f not in selected:
-                candidate_col = df_local.get_column(f)
-                if low_memory: # normalize if in low memory mode.
-                    candidate_col = (candidate_col - candidate_col.mean())/candidate_col.std()
+        last = selected[-1]
+        last_selected_col: pl.Series = (df_local[last] - df_local[last].mean())
+        last_selected_std: float = df_local[last].std()
 
-                # Correlation = E[XY] when X,Y are normalized
-                a = (last_selected_col.dot(candidate_col)) / last_selected_col.len()
+        for i, candidate in enumerate(nums):
+            if candidate not in selected:
+                candidate_col = df_local[candidate] 
+                candidate_std = candidate_col.std()
+                candidate_col -= candidate_col.mean()
+                a = (last_selected_col.dot(candidate_col)) / (len(df_local) * candidate_std * last_selected_std)
                 # In the rare case this calculation yields a NaN, we punish by adding 1.
                 # Otherwise, proceed as usual. +1 is a punishment because
                 # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
                 acc_abs_corr[i] += 1 if (np.isnan(a) | np.isinf(a)) else np.abs(a)
-
                 denominator = acc_abs_corr[i]/j 
                 new_score = scores[i] / denominator
                 if new_score > current_max:
@@ -667,7 +660,6 @@ def mrmr_selector(
     , top_k:int
     , strategy:MRMRStrategy = "fscore"
     , params:Optional[dict[str,Any]] = None
-    , low_memory:bool=False
 ) -> PolarsFrame:
     '''
     Keeps only the top_k (first k) features selected by MRMR and the ones that cannot be processed by the algorithm.
@@ -687,17 +679,16 @@ def mrmr_selector(
     low_memory
         If true, use less memory. But the computation will take longer
     '''
-    input_data:pl.DataFrame = df.lazy().collect()
-    nums = get_numeric_cols(input_data, exclude=[target])
+    nums = get_numeric_cols(df, exclude=[target])
     s = clean_strategy_str(strategy)
-    to_select = mrmr(input_data, target, top_k, nums, s, params, low_memory)
+    to_select = mrmr(df, target, top_k, nums, s, params)
     logger.info(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
     to_select.extend(f for f in df.columns if f not in nums)
     return _dsds_select(df, to_select, persist=True)
 
 def knock_out_mrmr(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , k:int 
     , cols:Optional[list[str]] = None
@@ -714,10 +705,13 @@ def knock_out_mrmr(
 
     Note that this may not guarantee to return k features when most of them are highly correlated.
 
+    It is possible to make it run even faster if we allow the computation of correlation matrix upfront. 
+    But in practice that often creates memory problems and therefore that option is removed.
+
     Parameters
     ----------
     df
-        An eager Polars Dataframe
+        Either a lazy or eager Polars Dataframe. This method will collect internally.
     target
         The target column
     k
@@ -733,13 +727,14 @@ def knock_out_mrmr(
         If any modeled relevance is used, e.g. 'lgbm', then this will be the param dict for the model
     '''
     if isinstance(cols, list):
-        _ = type_checker(df, cols, "numeric", "knock_out_mrmr")
-        nums = cols
+        nums = [c for c in cols if c !=target and c in df.columns]
+        _ = type_checker(df, nums, "numeric", "knock_out_mrmr")
     else:
         nums = get_numeric_cols(df, exclude=[target])
 
+    df_local = df.lazy().select(nums + [target]).collect()
     scores = _mrmr_relevance(
-        df
+        df_local
         , target = target
         , cols = nums
         , strategy = strategy
@@ -747,7 +742,6 @@ def knock_out_mrmr(
     )
 
     # Set up
-    low_corr = np.abs(df[nums].corr().to_numpy()) < corr_threshold
     surviving_indices = np.full(shape=len(nums), fill_value=True) # an array of booleans
     scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
@@ -757,8 +751,18 @@ def knock_out_mrmr(
     # Run the knock outs
     for i, _ in scores:
         if surviving_indices[i]:
-            selected.append(nums[i])
-            surviving_indices &= low_corr[:,i]
+            feat = nums[i]
+            selected.append(feat)
+            feat_expr = pl.col(feat) - pl.col(feat).mean() 
+            low_corr = df_local.select(
+                (
+                    (feat_expr.dot(pl.col(x) - pl.col(x).mean())).truediv(pl.count()).lt(
+                        corr_threshold * pl.col(feat).std() * pl.col(x).std()
+                    )
+                ).alias(x)
+                for x in nums
+            ).to_numpy()[0, :]
+            surviving_indices &= low_corr
             count += 1
             pbar.update(1)
         if count >= output_size:
@@ -799,11 +803,10 @@ def knock_out_mrmr_selector(
     params
         If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     '''
-    input_data:pl.DataFrame = df.lazy().collect()
     nums = get_numeric_cols(df, exclude=[target])
     complement = [f for f in df.columns if f not in nums]
     s = clean_strategy_str(strategy)
-    to_select = knock_out_mrmr(input_data, target, top_k, nums, s, corr_threshold, params)
+    to_select = knock_out_mrmr(df, target, top_k, nums, s, corr_threshold, params)
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
     
