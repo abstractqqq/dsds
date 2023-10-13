@@ -4,12 +4,14 @@ This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a dev
 
 A general purpose traditional data science package for large and scalable data operations. It aims to be an improvement over a subset of functionalities in other packages like Scikit-learn, category_encoders, or feature engine, etc. The primary focus right now is:
 
+0. Treating dataframes as first-class citizen, using Rust, NumPy, SciPy as tools to support. No more other core dependency. 
 1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, over time report etc.)
-2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, MRMR, mutual_info_score, better feature extraction APIs, etc.
-3. Cleaner pipeline construction and management, much easier to create custom "transformers" (All Polars Expressions under the hood)
-4. Consistent API with intuitive argument names and extensive docstring and examples for not-easy-to-explain stuff.
+2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, MRMR, mutual_info_score, better feature extraction and engineering, etc.
+3. Cleaner pipeline construction and management, much easier to create custom "transformers" (All Polars Expressions are acceptable as "transformers".)
+4. Consistent API with intuitive argument names and extensive docstring and examples. No function side effect. Always return one type of output.
 5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. Just Polars.
 6. Better performance and faster iteration and less reliance on expensive VMs
+7. Minimum dependency on Python side.
 
 At this moment, it will not include traditional data science models, like SVM, random forest, etc. This may change once in the future when the Rust side of data science models catch up.
 
@@ -139,7 +141,7 @@ shape: (3, 8)
 
 ```
 
-Benchmarks: (using a version not available to the public yet.)
+Benchmarks:
 
 ![Screenshot](./pics/benches.PNG)
 
@@ -159,11 +161,11 @@ Note: scikit-learn, lightgbm are needed for full functionalities. I am writing a
 
 # Why the name DSDS?
 
-Originally I choose the name DSDS because it stands for Dark Side of Data Science. I thought it is kind of cool and since I am doing things differently, it justifies "dark side". I think data science/modelling infrastructure is the most foundational work that is also the most under-appreciated. Feature selection is often considered a dark art, too. So the name DarkSide/dsds really makes sense to me.
+Originally I choose the name DSDS because it stands for Dark Side of Data Science. I thought it is kind of cool and since I am doing things differently, it justifies "dark side". I think data science/modelling infrastructure is the most foundational work that is also the most under-appreciated. Pipelines are buried "in darkness" most of the time. Feature selection is often considered a dark art, too. So the name DarkSide/dsds really makes sense to me. But right now, DSDS is just a name. I don't know think calling it Dark Side of Data Science helps with recoginition and I personally wouldn't call the way I am doing things the "dark side" any more. It is simply a new way of doing things not explored by people before.
 
 # Why is this package dependent on Sklearn?
 
-You are right in the sense that this package does its best to separate itself from sklearn because of its focus and design. You do not need sklearn for pipelines, transformations, metrics, or the prescreen modules. However, for the fs (feature selection) module, right now there is no other high quality, tried and true package for some models. The feature importance from these two models are used in some feature selection algorithms. Feel free to let me know if there are alternatives.
+You are right in the sense that this package does its best to separate itself from sklearn because of its focus and design. You only need scikit-learn for the fs (feature selection) module because some model based feature selection methods rely on scikit-learn's models. Feel free to let me know if there are alternatives.
 
 # Why not write more in Rust?
 
