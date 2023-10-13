@@ -1,7 +1,7 @@
 import logging
 import os
 
-__version__ = "0.0.32"
+__version__ = "0.0.33"
 
 logging.basicConfig(level=logging.INFO)
 

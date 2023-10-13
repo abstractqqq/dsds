@@ -294,7 +294,7 @@ def mutual_info_selector(
     input_data:pl.DataFrame = df.lazy().collect()
     nums = get_numeric_cols(df, exclude=[target])
     complement = [f for f in df.columns if f not in nums]
-    to_select = mutual_info(input_data, target, nums, n_neighbors, seed, n_threads)\
+    to_select = mutual_info(input_data, target, nums, n_neighbors, seed)\
                 .top_k(by="estimated_mi", k = top_k)["feature"].to_list()
 
     logger.info(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
@@ -603,9 +603,10 @@ def mrmr(
     else:
         nums = get_numeric_cols(df, exclude=[target])
 
-    scores = _mrmr_relevance(df
+    scores = _mrmr_relevance(
+        df
         , target = target
-        , nums = nums
+        , cols = nums
         , strategy = strategy
         , params = {} if params is None else params
     )

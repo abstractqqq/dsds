@@ -182,6 +182,8 @@ def simple_upsample(
         new_c = pl.Series(c, sub[c].to_numpy() + noise).fill_nan(None) 
         sub = sub.replace_at_idx(sub.find_idx_by_name(c), new_c)
 
+    if isinstance(df, pl.LazyFrame):
+        return pl.concat([df, sub.lazy()])
     return pl.concat([df, sub])
 
 def simple_downsample(
