@@ -273,7 +273,7 @@ def train_test_split(
     , train_frac:float = 0.75
     , seed:int = 42
     , collect: bool = True
-) -> tuple[PolarsFrame]:
+) -> tuple[PolarsFrame, PolarsFrame]:
     """
     Split polars dataframe into train and test. If input is eager, output will be eager. If input is lazy, out
     output will be eager unless collect is false. Unlike scikit-learn, this only creates the train and test 

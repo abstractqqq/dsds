@@ -79,12 +79,16 @@ def get_numeric_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[s
 
     return df.select(selector).columns
 
-def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None) -> list[str]:
+def get_string_cols(df:PolarsFrame, exclude:Optional[list[str]]=None, include_cat:bool=False) -> list[str]:
     '''Returns string columns except those in exclude.'''
     if exclude is None:
         selector = cs.string()
     else:
         selector = cs.string() & ~cs.by_name(exclude)
+
+    if include_cat:
+        selector = selector | cs.categorical()
+
     return df.select(selector).columns
 
 def get_datetime_cols(df:PolarsFrame) -> list[str]:
@@ -968,9 +972,17 @@ def drop_non_numeric(df:PolarsFrame, include_bools:bool=False) -> PolarsFrame:
     
     return _dsds_drop(df, non_nums)
 
+def infer_str_cols(
+    df: PolarsFrame
+    , include_cat: bool =True
+) -> list[str]:
+    if include_cat:
+        return df.select(cs.string() | cs.categorical()).columns
+    return df.select(cs.string()).columns
+
 def infer_highly_correlated(
-    df: PolarsFrame,
-    threshold: float = 0.8,
+    df: PolarsFrame
+    , threshold: float = 0.8,
 ) -> pl.DataFrame:
     '''
     Returns a dataframe that shows which features are highly correlated with which.
@@ -1185,6 +1197,38 @@ def infer_infreq_categories(
         for c in str_cols
     )
     return pl.concat(pl.collect_all(dfs))
+
+def infer_str_most_common_len(
+    df: PolarsFrame
+) -> list[Tuple[str, int, float]]:
+    '''
+    Infers the length of strings in string columns. E.g. if an id column is a string column, 
+    most likely it has uniform length. For every string column, this returns a list of 3-tuples 
+    (column name, most common length, percentage with the most common length). This is useful 
+    in identifying id-string columns, or other string columns with fix-length formats. It is also
+    useful in detecting problems. E.g. if 99% of strings in this column have the same length, then
+    it is worth some effort to look into the strings that do not.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe
+    '''
+    str_cols = df.select(cs.string()).columns
+    if len(str_cols) == 0:
+        return []
+    data = df.lazy().select(
+        pl.struct(
+            pl.col(c).str.len_bytes().value_counts(sort=True).first().struct.field(c).alias("top"),
+            pl.col(c).str.len_bytes().value_counts(sort=True).first().struct.field("counts")
+            .truediv(pl.count()).alias("pct")
+        ).alias(c)
+        for c in str_cols
+    ).collect().row(0)
+    return [
+        (c, d["top"], d["pct"])
+        for c, d in zip(str_cols, data)
+    ]
 
 def infer_invalid_numeric(df:PolarsFrame, threshold:float=0.5, include_null:bool=False) -> list[str]:
     '''

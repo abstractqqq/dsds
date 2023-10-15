@@ -22,7 +22,7 @@ from .sample import (
     train_test_split
 )
 from .metrics import (
-    logloss
+    log_loss
     , roc_auc
 )
 from typing import (
@@ -44,6 +44,9 @@ import math
 import dsds
 
 logger = logging.getLogger(__name__)
+
+# DO NOT WORK MORE ON SELECTOR
+# WAIT UNTIL I DECIDE ON A FUNCTION SIGNATURE 
 
 def abs_corr(
     df: PolarsFrame
@@ -200,6 +203,8 @@ def mutual_info(
     4. Conti_cols are supposed to be "continuous" variables. In sklearn's mutual_info_classif, if you input a dense 
         matrix X, it will always be treated as continuous, and if X is sparse, it will be treated as discrete.
 
+    Null values will be dropped. Please do not feed high null column into the algorithm.
+
     Parameters
     ----------
     df
@@ -223,33 +228,29 @@ def mutual_info(
     rng = np.random.default_rng(seed)
     target_col = df[target].to_numpy().ravel()
     unique_targets = np.unique(target_col)
-    all_masks = {}
-    for t in unique_targets:
-        all_masks[t] = target_col == t
+    all_masks = {
+        t: target_col == t for t in unique_targets
+    }
+    for t in all_masks:
         if np.sum(all_masks[t]) <= n_neighbors:
-            raise ValueError(f"The target class {t} must have more than {n_neighbors} values in the dataset.")        
+            raise ValueError(f"The target class {t} must have more than {n_neighbors} values in the dataset.")    
 
     estimates = []
     psi_n_and_k = psi(n) + psi(n_neighbors)
     pbar = tqdm(total = len(conti_cols), desc = "Mutual Info")
     for col in df.select(conti_cols).get_columns():
-        if col.null_count() > 0:
-            logger.warn(f"Found column {col.name} has null values. It is filled with the mean of the column. "
-                        "It is highly recommended that you impute the column beforehand.")
-            c = col.fill_null(col.mean()).cast(pl.Float64).to_numpy().reshape(-1,1)
-        else:
-            c = col.cast(pl.Float64).to_numpy().reshape(-1,1)
+        c = col.drop_nulls().cast(pl.Float64).to_numpy(zero_copy_only=True)
         # Add random noise here because if inpute data is too big, then adding
         # a random matrix of the same size will require a lot of memory upfront.
-        c = c + (1e-10 * np.mean(c) * rng.standard_normal(size=c.shape)) 
+        c = c + (1e-12 * np.mean(c) * rng.standard_normal(size=c.shape)) 
         radius = np.empty(n)
         label_counts = np.empty(n)
         for t in unique_targets:
             mask = all_masks[t]
             c_masked = c[mask]
             kd1 = KDTree(data=c_masked, leafsize=40)
-            # dd = distances from the points the the k nearest points. +1 because this starts from 0. It is 1 off from 
-            # sklearn's kdtree.
+            # dd = distances from the points the the k nearest points. +1 because this starts from 0. 
+            # It is 1 off from sklearn's kdtree.
             dd, _ = kd1.query(c_masked, k = n_neighbors + 1, workers=dsds.THREADS)
             radius[mask] = np.nextafter(dd[:, -1], 0)
             label_counts[mask] = np.sum(mask)
@@ -270,11 +271,11 @@ def mutual_info_selector(
     , target:str
     , n_neighbors:int=3
     , top_k:int = 50
-    , n_threads:int= dsds.THREADS
     , seed:int=42
 ) -> PolarsFrame:
     '''
-    Keeps only the top_k features in terms of mutual_info_score and the ones that cannot be processed by the algorithm.
+    Keeps only the top_k features in terms of mutual_info_score and the ones that cannot be processed 
+    by the algorithm.
 
     Parameters
     ----------
@@ -286,8 +287,6 @@ def mutual_info_selector(
         The n_neighbors parameter in the approximation method
     top_k
         The top_k features will ke kept
-    n_threads
-        The max number of workers for multithreading
     seed
         Random seed used in approximation to generate noise
     '''
@@ -437,6 +436,7 @@ def f_score_selector(
 
     return _dsds_select(df, to_select + complement, persist=True)
 
+#[Rustify]
 def _ks_2_samp(
     feature: np.ndarray
     , target: np.ndarray
@@ -451,16 +451,13 @@ def _ks_2_samp(
     Parameters
     ----------
     feature
-        Feature column. Either numpy array or polars series
+        Feature column.
     target
-        Target column. Either numpy array of polars series
+        Target column.
     i
         A passthrough of the index of the feature. Not used. Only used to keep
         track of indices when this is being called in a multithreaded context.
-
     '''
-    # if check_binary & (not check_binary_target_col(target)):
-    #     raise ValueError("Target is not properly binary.")
 
     # Drop nulls as they will cause problems for ks computation
     valid = ~np.isnan(feature)
@@ -468,9 +465,7 @@ def _ks_2_samp(
     use_target = target[valid]
     # Start computing
     class_0 = (use_target == 0)
-    feature_0 = use_feature[class_0]
-    feature_1 = use_feature[~class_0]
-    res = ks_2samp(feature_1, feature_0)
+    res = ks_2samp( use_feature[~class_0], use_feature[class_0])
     return (res.statistic, res.pvalue, i)
 
 def ks_statistic(
@@ -498,7 +493,7 @@ def ks_statistic(
         _ = type_checker(df, nums, "numeric", "ks_statistic")
         nums = [c for c in cols if c != target]
 
-    target_col = df[target].to_numpy(zero_copy_only=True)
+    target_col = df[target].to_numpy()
     if not check_binary_target_col(target_col):
         raise ValueError("KS statistic only works when target is binary.")
 
@@ -539,8 +534,10 @@ def _mrmr_relevance(
         lgbm = LGBMClassifier(**params)
         lgbm.fit(df[cols].to_numpy(), df[target].to_numpy().ravel())
         scores = lgbm.feature_importances_
+    elif s == "ks":
+        scores = ks_statistic(df, target, cols).drop_in_place("ks").to_numpy()
     else: # Pythonic nonsense
-        raise ValueError(f"The strategy {strategy} is not a valid MRMR Strategy.")
+        raise ValueError(f"The strategy {strategy} is not a valid MRMR Strategy. Check for typos, spelling, etc.")
     
     invalid = np.isinf(scores) | np.isnan(scores)
     if invalid.any():
@@ -619,34 +616,34 @@ def mrmr(
     logger.info(f"Found {len(nums)} total features to select from. Proceeding to select top {output_size} features.")
     # 
     acc_abs_corr = np.zeros(len(nums)) # For each feature at index i, we keep an accumulating abs corr
-    top_idx = np.argmax(scores)
-    selected = [nums[top_idx]]
+    selected = [nums[int(np.argmax(scores))]]
     pbar = tqdm(total=output_size, desc = f"MRMR, {strategy}", position=0, leave=True)
     pbar.update(1)
+    # Memoization, only for mean and std
+    # If we memoize the scaled series, memory footprint will still be huge
+    mean_std = df_local.lazy().select(
+        pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0))
+        for c in nums
+    ).collect().row(0)
+    memo:dict[str, Tuple[float, float]] = dict(zip(nums, mean_std))
     for j in range(1, output_size):
-        argmax = -1
-        current_max = -1
         last = selected[-1]
-        last_selected_col: pl.Series = (df_local[last] - df_local[last].mean())
-        last_selected_std: float = df_local[last].std()
-
-        for i, candidate in enumerate(nums):
-            if candidate not in selected:
-                candidate_col = df_local[candidate] 
-                candidate_std = candidate_col.std()
-                candidate_col -= candidate_col.mean()
-                a = (last_selected_col.dot(candidate_col)) / (len(df_local) * candidate_std * last_selected_std)
+        last_mean, last_std = memo[last]        
+        last_col: pl.Series = df_local[last] - last_mean
+        # cdd: candidate
+        for i, cdd in enumerate(nums):
+            if cdd in selected:
+                acc_abs_corr[i] = -1
+            else:
+                cdd_mean, cdd_std = memo[cdd]   
+                cdd_col = df_local[cdd] - cdd_mean
+                a = last_col.dot(cdd_col) / (len(df_local) * cdd_std * last_std)
                 # In the rare case this calculation yields a NaN, we punish by adding 1.
-                # Otherwise, proceed as usual. +1 is a punishment because
-                # |corr| can be at most 1. So we are enlarging the denominator, thus reducing the score.
+                # Otherwise, proceed as usual. +1 is a punishment because |corr| can be at most 1.
                 acc_abs_corr[i] += 1 if (np.isnan(a) | np.isinf(a)) else np.abs(a)
-                denominator = acc_abs_corr[i]/j 
-                new_score = scores[i] / denominator
-                if new_score > current_max:
-                    current_max = new_score
-                    argmax = i
 
-        selected.append(nums[argmax])
+        new_score = j * scores / acc_abs_corr
+        selected.append(nums[int(np.argmax(new_score))])
         pbar.update(1)
     pbar.close()
     print("Output is sorted in order of selection (max relevance min redundancy).")
@@ -735,9 +732,9 @@ def knock_out_mrmr(
     df_local = df.lazy().select(nums + [target]).collect()
     scores = _mrmr_relevance(
         df_local
-        , target = target
-        , cols = nums
-        , strategy = strategy
+        , target
+        , nums
+        , strategy
         , params = {} if params is None else params
     )
 
@@ -745,32 +742,37 @@ def knock_out_mrmr(
     surviving_indices = np.full(shape=len(nums), fill_value=True) # an array of booleans
     scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
-    count = np.int32(0)
     output_size = min(k, len(nums))
     pbar = tqdm(total=output_size, desc = f"Knock out MRMR, {strategy}", position=0, leave=True)
+    # Memoization, only for mean and std
+    # If we memoize the scaled series, memory footprint will still be huge
+    mean_std = df_local.lazy().select(
+        pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0))
+        for c in nums
+    ).collect().row(0)
+    memo:dict[str, Tuple[float, float]] = dict(zip(nums, mean_std))
     # Run the knock outs
     for i, _ in scores:
         if surviving_indices[i]:
             feat = nums[i]
             selected.append(feat)
-            feat_expr = pl.col(feat) - pl.col(feat).mean() 
-            low_corr = df_local.select(
+            feat_expr = pl.col(feat) - memo[feat][0] 
+            low_corr = df_local.lazy().select(
                 (
-                    (feat_expr.dot(pl.col(x) - pl.col(x).mean())).truediv(pl.count()).lt(
-                        corr_threshold * pl.col(feat).std() * pl.col(x).std()
+                    (feat_expr.dot(pl.col(x) - memo[x][0])).truediv(pl.count()).lt(
+                        corr_threshold * memo[feat][1] * memo[x][1]
                     )
                 ).alias(x)
                 for x in nums
-            ).to_numpy()[0, :]
+            ).collect().to_numpy()[0, :]
             surviving_indices &= low_corr
-            count += 1
             pbar.update(1)
-        if count >= output_size:
+        if len(selected) >= output_size:
             break
 
     pbar.close()
-    if count < k:
-        print(f"Found only {count}/{k} number of values because most of them are highly correlated and the knock out "
+    if len(selected) < k:
+        print(f"Found only {len(selected)}/{k} number of values because most of them are highly correlated and the knock out "
               "rule eliminates most of them.")
 
     print("Output is sorted in order of selection (max relevance min redundancy).")
@@ -885,20 +887,23 @@ def _binary_model_init(
     if "n_jobs" not in params:
         params["n_jobs"] = -1
 
-    if model_str in ("logistic", "lr"):
-        from sklearn.linear_model import LogisticRegression
-        model = LogisticRegression(**params)
-    elif model_str in ("rf", "random_forest"):
-        from sklearn.ensemble import RandomForestClassifier
-        model = RandomForestClassifier(**params)
-    elif model_str in ("xgb", "xgboost"):
-        from xgboost import XGBClassifier
-        model = XGBClassifier(**params)
-    elif model_str in ("lgbm", "lightgbm"):
+    if model_str in ("lgbm", "lightgbm"):
         from lightgbm import LGBMClassifier
         model = LGBMClassifier(**params)
     else:
         raise ValueError(f"The model {model_str} is not available.")
+    # if model_str in ("logistic", "lr"):
+    #     from sklearn.linear_model import LogisticRegression
+    #     model = LogisticRegression(**params)
+    # elif model_str in ("rf", "random_forest"):
+    #     from sklearn.ensemble import RandomForestClassifier
+    #     model = RandomForestClassifier(**params)
+    # elif model_str in ("xgb", "xgboost"):
+    #     from xgboost import XGBClassifier
+    #     model = XGBClassifier(**params)
+    # elif model_str in ("lgbm", "lightgbm"):
+    #     from lightgbm import LGBMClassifier
+    #     model = LGBMClassifier(**params)
     
     return model
 
@@ -918,7 +923,7 @@ def _fc_fi(
     Parameters
     ----------
     model_str
-        One of 'lr', 'lgbm', 'xgb', 'rf'
+        Only 'lgbm'
     params
         The parameters for the model specified
     target
@@ -936,7 +941,7 @@ def _fc_fi(
     y_test = test[target].to_numpy()
     fc_rec = (
         features,
-        logloss(y_test, y_pred, check_binary=False),
+        log_loss(y_test, y_pred, check_binary=False),
         roc_auc(y_test, y_pred, check_binary=False)
     )
     if model_str in ("lr", "logistic"):
@@ -982,7 +987,7 @@ def ebfs(
     target
         The target column
     model_str
-        one of 'lr', 'lgbm', 'xgb', 'rf'
+        Only 'lgbm'
     params
         Parameters for the model
     n_comb
@@ -993,15 +998,17 @@ def ebfs(
     records = []
     pbar = tqdm(total=math.comb(len(features), n_comb), desc="Combinations")
     df_keep = df.select(features + [target])
-    for comb in combinations(features, r=n_comb):
+    for comb in combinations(features, r = n_comb):
         train, test = train_test_split(df_keep, train_frac)
         fc_rec, fi_rec = _fc_fi(model_str, params, target, comb, train, test) 
         records.append(fc_rec)
-        for f, i in zip(fc_rec[0], fi_rec):
-            fi[f].append(i)
+        for f, imp in zip(fc_rec[0], fi_rec):
+            fi[f].append(imp)
         pbar.update(1)
 
     fc_summary = pl.from_records(records, schema=["combination", "logloss", "roc_auc"])
+    fi_summary = pl.from_dict(fi)
+
     stats = [
         (f, len(fi[f]), np.min(fi[f]), np.mean(fi[f]), np.max(fi[f]), np.std(fi[f])) for f in fi
     ]
@@ -1073,9 +1080,7 @@ def permutation_importance(
 ) -> pl.DataFrame:
     '''
     Computes permutation importance for every non-target column in df. Please make sure all columns are properly 
-    encoded or transformed before calling this.
-    
-    Only works for binary classification and score = roc_auc for now.
+    encoded or transformed before calling this. Only works for binary classification and score = roc_auc for now.
 
     Parameters
     ----------
@@ -1084,7 +1089,7 @@ def permutation_importance(
     target
         The target column
     model_str
-        One of 'lr', 'lgbm', 'xgb', 'rf'
+        Only 'lgbm'
     params
         Parameters for the model
     k
@@ -1094,11 +1099,10 @@ def permutation_importance(
     features.remove(target)
     _ = type_checker(df, features, "numeric", "permutation_importance")
     estimator = _binary_model_init(model_str, params)
-    estimator.fit(df[features], df[target])
-    X = df[features]
-    y = df[target].to_numpy()
+    X, y = df[features], df[target].to_numpy()
+    estimator.fit(X, y)
     score = roc_auc(y, estimator.predict_proba(X)[:, -1])
-    pbar = tqdm(total=len(features), desc="Analyzing Features")
+    pbar = tqdm(total=len(features), desc="Permuting Features")
     imp = np.zeros(shape=len(features))
     with ThreadPoolExecutor(max_workers=dsds.THREADS) as ex:
         futures = (

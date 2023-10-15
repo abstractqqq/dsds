@@ -4,6 +4,7 @@ import pandas as pd
 import dsds.sample as sa
 import dsds.metrics as me
 import dsds.transform as t
+import dsds.fs as fs
 import dsds.encoders as enc
 import numpy as np
 from polars.testing import assert_frame_equal
@@ -13,8 +14,9 @@ from sklearn.metrics import roc_auc_score, log_loss, mean_absolute_percentage_er
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn import set_config
-from sklearn.datasets import fetch_openml
+from sklearn.datasets import fetch_openml, make_classification
 from category_encoders import TargetEncoder, OneHotEncoder, WOEEncoder
+from mrmr import mrmr_classif
 # from category_encoders import target_encoder, WOEEncoder, OneHotEncoder
 
 set_config(transform_output = "pandas")
@@ -311,4 +313,36 @@ def test_target_encoding_74k_category_encoders(encoder_test, benchmark):
         target.fit_transform, df, df["target"]
     )
     # Equality is tested in test_woe_encoding_74k_dsds
+    assert True
+
+@pytest.fixture
+def mrmr_pl_df() -> pl.DataFrame:
+    orig_x, orig_y = make_classification(n_samples = 50_000, n_features = 500, n_informative = 60, n_redundant = 440)
+    df_pl = pl.from_numpy(orig_x).insert_at_idx(0, pl.Series("target", orig_y))
+    return df_pl
+
+def mrmr_package(df:pd.DataFrame, target:str, k:int) -> list[str]:
+    features = list(df.columns)
+    features.remove(target)
+    X = df[features]
+    y = df[target]
+    output = mrmr_classif(X, y, K = k)
+    return output
+
+@pytest.mark.benchmark(group="MRMR")
+def test_mrmr_dsds(mrmr_pl_df, benchmark):
+    
+    result = benchmark(
+        fs.mrmr, mrmr_pl_df, "target", 50
+    )
+    result2 = mrmr_package(mrmr_pl_df.to_pandas(), "target", 50)
+    assert result == result2
+
+@pytest.mark.benchmark(group="MRMR")
+def test_mrmr_package(mrmr_pl_df, benchmark):
+
+    df_pd = mrmr_pl_df.to_pandas()
+    _ = benchmark(
+        mrmr_package, df_pd, "target", 50
+    )
     assert True

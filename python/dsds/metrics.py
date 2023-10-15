@@ -114,15 +114,6 @@ def get_sample_weight(
     else:
         raise TypeError(f"Unknown weight strategy: {strategy}.")
 
-def _flatten_input(y_actual: np.ndarray, y_predicted:np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    y_a = y_actual.ravel()
-    if y_predicted.ndim == 2:
-        y_p = y_predicted[:, -1] # .ravel()
-    else:
-        y_p = y_predicted.ravel()
-
-    return y_a, y_p
-
 def _tp_fp_frame(
     y_actual:Union[np.ndarray, pl.Series],
     y_predicted:Union[np.ndarray, pl.Series],
@@ -309,7 +300,7 @@ def roc_auc(
         raise ValueError("Input shapes must be either both 1 dim or both 2 dim. Found "
                         f"actual has shape {y_actual.shape} and predicted has shape {y_predicted.shape}.")
 
-def logloss(
+def log_loss(
     y_actual:Union[np.ndarray, pl.Series]
     , y_predicted:Union[np.ndarray, pl.Series]
     , sample_weights:Optional[np.ndarray]=None
@@ -332,16 +323,17 @@ def logloss(
         log(0). If p < min_prob, log(min_prob) will be computed instead.
     '''
     # Takes about 1/3 time of sklearn's log_loss because we parallelized some computations
-    y_a, y_p = _flatten_input(y_actual, y_predicted)
+
     if check_binary:
-        uniques = np.unique(y_a)
+        uniques = np.unique(y_actual)
         if uniques.size != 2:
             raise ValueError("Currently this only supports binary classification.")
         if not ((0 in uniques) & (1 in uniques)):
             raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
+    n = len(y_actual)
     if sample_weights is None:
-        return pl.from_records((y_a, y_p), schema=["y", "p"]).with_columns(
+        return pl.from_records((y_actual, y_predicted), schema=["y", "p"]).with_columns(
             pl.col("p").log().alias("l"),
             ((pl.lit(1., dtype=pl.Float64) - pl.col("p")).log()).alias("o"),
             (pl.lit(1., dtype=pl.Float64) - pl.col("y")).alias("ny")
@@ -349,11 +341,11 @@ def logloss(
             pl.sum_horizontal(
                 pl.col("y").dot(pl.col("l")),
                 pl.col("ny").dot(pl.col("o"))
-            ) * pl.lit((-1/len(y_a)), dtype=pl.Float64)
+            ) * pl.lit(-1/n, dtype=pl.Float64)
         ).item(0,0)
     else:
         s = sample_weights.ravel()
-        return pl.from_records((y_a, y_p, s), schema=["y", "p", "s"]).with_columns(
+        return pl.from_records((y_actual, y_predicted, s), schema=["y", "p", "s"]).with_columns(
             (pl.col("s") * pl.col("p").log()).alias("l"),
             (pl.col("s") * (pl.lit(1., dtype=pl.Float64) - pl.col("p")).log()).alias("o"),
             (pl.lit(1., dtype=pl.Float64) - pl.col("y")).alias("ny")
@@ -361,7 +353,7 @@ def logloss(
             pl.sum_horizontal(
                 pl.col("y").dot(pl.col("l")),
                 pl.col("ny").dot(pl.col("o"))
-            ) * pl.lit((-1/len(y_a)), dtype=pl.Float64)
+            ) * pl.lit(-1/n, dtype=pl.Float64)
         ).item(0,0)
     
 def psi_discrete(
@@ -865,7 +857,7 @@ def grouped_binary_metrics(
             raise ValueError("Currently this only supports binary classification with 0 and 1 target.")
 
     roc = roc_auc(y_actual, y_predicted)
-    ll = logloss(y_actual, y_predicted)
+    ll = log_loss(y_actual, y_predicted)
     bl = mse(y_actual, y_predicted)
     maxabs = max_abs_error(y_actual, y_predicted)
 

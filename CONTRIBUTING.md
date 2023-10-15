@@ -14,6 +14,8 @@
 
 Contact me on Discord: t.q
 
+Put `#[Rustify]` on top the function if you think we should Rustify this function.
+
 # So, what am I working on what am I planning?
 
 You are welcomed to work on any of the areas mentioned below.

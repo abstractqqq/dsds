@@ -28,7 +28,7 @@ POLARS_NUMERICAL_TYPES:Final[Tuple[pl.DataType]] = (pl.UInt8, pl.UInt16, pl.UInt
 POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date)
 
 # --- Strategies ---
-MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "mis", "mutual_info_score", "lgbm", "lightgbm"]
+MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "ks","mis", "mutual_info_score", "lgbm", "lightgbm"]
 ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant", "robust", "max_abs"]
 ScaleByStrategy:TypeAlias = Literal["standard", "min_max", "robust", "max_abs", "mean", "median", "max"]
 SimpleImputeStrategy:TypeAlias = Literal["mean", "avg", "median", "const", 
@@ -38,8 +38,9 @@ PowerTransformStrategy:TypeAlias = Literal["yeo_johnson", "yeojohnson", "box_cox
 WeightStrategy: TypeAlias = Literal["none", "balanced", "custom"]
 ZeroOneCombineStrategy = Literal["union", "intersection", "same"]
 
-# --- Models ---
-BinaryModels:TypeAlias = Literal["logistic", "lr", "lightgbm", "lgbm", "xgboost", "xgb", "random_forest", "rf"]
+# --- Models & Metrics ---
+BinaryModels:TypeAlias = Literal["lgbm"]
+BinaryMetrics:TypeAlias = Literal["auc", "log_loss", "brier_loss"]
 
 # --- Extracts ---
 DateExtract:TypeAlias = Literal["year", "quarter", "month", "week", "day_of_week", "day_of_year"]

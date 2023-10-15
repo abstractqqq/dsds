@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dsds"
-version = "0.0.33"
+version = "0.0.34"
 requires-python = ">=3.9"
 authors = [
     {name = "Tianren Qin", email = "tq9695@gmail.com"}
@@ -45,10 +45,11 @@ dev = [
     "pandas >= 2.1",
     "category-encoders"
 ]
-scikit-learn = ["scikit-learn >= 1.2.0"]
-lgbm = ["lightgbm"]
+tuning = ["optuna >= 3.3"]
+lgbm = ["lightgbm >= 4.1"]
 plots = ["graphviz"]
-all = ["scikit-learn", "lightgbm", "graphviz"]
+fs = ["lightgbm >= 4.1", "optuna >= 3.3"]
+all = ["lightgbm >= 4.1", "graphviz", "optuna >= 3.3"]
 
 keywords = ["data-pipeline", "EDA", "feature-screening", "feature-selection"]
 

@@ -4,14 +4,13 @@ This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a dev
 
 A general purpose traditional data science package for large and scalable data operations. It aims to be an improvement over a subset of functionalities in other packages like Scikit-learn, category_encoders, or feature engine, etc. The primary focus right now is:
 
-0. Treating dataframes as first-class citizen, using Rust, NumPy, SciPy as tools to support. No more other core dependency. 
+0. Treating dataframes as first-class citizen, using Rust, NumPy, SciPy as tools to support. No more other core dependency. Will rely more on Rust as time goes. Python side dependency should be minimized. 
 1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, over time report etc.)
-2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, MRMR, mutual_info_score, better feature extraction and engineering, etc.
+2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, mutual_info_score, better feature extraction and engineering, etc. Currently, DSDS provides MRMR with more than 90% speed up than the most popular MRMR package on github. For model details, see [here](./FEATURE_SELECTION.md)
 3. Cleaner pipeline construction and management, much easier to create custom "transformers" (All Polars Expressions are acceptable as "transformers".)
 4. Consistent API with intuitive argument names and extensive docstring and examples. No function side effect. Always return one type of output.
 5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. Just Polars.
 6. Better performance and faster iteration and less reliance on expensive VMs
-7. Minimum dependency on Python side.
 
 At this moment, it will not include traditional data science models, like SVM, random forest, etc. This may change once in the future when the Rust side of data science models catch up.
 
@@ -21,26 +20,24 @@ DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-r
 
 ## Usage
 
-Practical Feature Prescreen
+Practical Feature Prescreen and Data 
 ```python
 from dsds.prescreen import (
-    drop_if_exists,
-    drop_by_pattern,
-    drop_by_regex,
-    drop_by_var,
-    drop_highly_unique,
-    drop_constants,
-    drop_dates,
-    drop_highly_null,
+    infer_highly_correlated,
+    infer_str_cols,
+    infer_by_var,
     infer_invalid_numeric,
     infer_conti,
     infer_emails,
     infer_nulls,
+    infer_by_pattern,
+    over_time_report_num,
 ) # and a lot more!
-
 ```
+![dd](./pics/dependency_detection.PNG)
 
-Functional Pipeline Interface which supports both Eager and LazyFrames! And it can be pickled and load back and reapplied! See more in the examples on github.
+
+Functional Pipeline Interface which supports both Eager and LazyFrames! And it can be pickled and load back and reapplied! See more in the [examples on github.](./examples/pipeline.ipynb)
 
 ```python
 from dsds.prescreen import *
@@ -60,7 +57,6 @@ output = input_df.pipe(var_removal, threshold = 0.5, target = "Clicked on Ad")\
 
 Common practical Transformations for feature extraction or engineering:
 ```Python
-
 import dsds.transform as t
 df = pl.DataFrame({
     "survey":["0% of my time", "1% to 25% of my time", "75% to 99% of my time", 
@@ -82,7 +78,6 @@ shape: (6, 1)
 │ 75% to 99% │
 │ 50% to 74% │
 └────────────┘
-
 #-----------------------------------------------------------------------------
 import dsds.transform as t
 df = pl.DataFrame({
@@ -102,7 +97,6 @@ shape: (3, 3)
 │ 2          ┆ 2          ┆ 6          │
 │ 3          ┆ 3          ┆ 9          │
 └────────────┴────────────┴────────────┘
-
 #-----------------------------------------------------------------------------
 import dsds.transform as t
 df = pl.DataFrame({
@@ -138,7 +132,6 @@ shape: (3, 8)
 │ 2022-02-03 ┆ 2022-02-03 ┆ 2022       ┆ 2022      ┆ 1         ┆ 1         ┆ 2         ┆ 2         │
 │ 2023-11-23 ┆ 2023-11-23 ┆ 2023       ┆ 2023      ┆ 4         ┆ 4         ┆ 11        ┆ 11        │
 └────────────┴────────────┴────────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
-
 ```
 
 Benchmarks:
@@ -156,8 +149,6 @@ Python 3.9, 3.10, 3.11+ is recommended.
 
 It should run on all versions >= 3.9.
 
-Note: scikit-learn, lightgbm are needed for full functionalities. I am writing a lot of things from scratch in order to minimize dependency and increase efficiency within the package. 
-
 
 # Why the name DSDS?
 
@@ -165,11 +156,11 @@ Originally I choose the name DSDS because it stands for Dark Side of Data Scienc
 
 # Why is this package dependent on Sklearn?
 
-You are right in the sense that this package does its best to separate itself from sklearn because of its focus and design. You only need scikit-learn for the fs (feature selection) module because some model based feature selection methods rely on scikit-learn's models. Feel free to let me know if there are alternatives.
+As of 0.0.34, the package does not explicitly rely on Scikit-learn any more. The only modelled "feature_importance" the package will accept is LightGBM, which is an optional dependency.
 
 # Why not write more in Rust?
 
-Yes. I am. I recently resumed working on traditional NLP, and this is an area where Rust really shines. It is well-known that Stemmers in NLTK has terrible performance, but stemming is an important operations for many traditional NLP algorithms. To combat this, I have decided to move stemming and other heavy string manipulations to Rust and leave only a very thin wrapper in Python. That said, using Rust can greatly improve performance in many other modules, not just dsds.text. But because development in Rust is relatively slow, I do not want to blindly 'rewrite' in Rust. In near future, I do not have plans to 'rewrite' in Rust, if performance gain is less than 10%.
+Yes. I am. I recently resumed working on traditional NLP, and this is an area where Rust really shines. It is well-known that Stemmers in NLTK has terrible performance, but stemming is an important operations for many traditional NLP algorithms. To combat this, I have decided to move stemming and other heavy string manipulations to Rust and leave only a very thin wrapper in Python. That said, using Rust can greatly improve performance in many other modules, not just dsds.text. But because development in Rust is relatively slow, I do not want to blindly 'rewrite' in Rust.
 
 # Contribution
 
