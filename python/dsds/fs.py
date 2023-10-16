@@ -21,10 +21,6 @@ from .blueprint import(
 from .sample import (
     train_test_split
 )
-from .metrics import (
-    log_loss
-    , roc_auc
-)
 from typing import (
     Any,
     Optional, 
@@ -37,6 +33,7 @@ from scipy.spatial import KDTree
 from scipy.stats import ks_2samp
 from scipy.special import fdtrc, psi
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import dsds.metrics as me
 import logging
 import polars as pl
 import numpy as np
@@ -519,7 +516,6 @@ def _mrmr_relevance(
     , target:str
     , cols:list[str]
     , strategy:MRMRStrategy
-    , params:dict[str,Any]
 ) -> np.ndarray:
     
     logger.info(f"Running {strategy} to determine feature relevance...")
@@ -529,11 +525,16 @@ def _mrmr_relevance(
     elif s in ("mis", "mutual_info_score"):
         scores = mutual_info(df, conti_cols=cols, target=target).get_column("estimated_mi").to_numpy().ravel()
     elif s in ("lgbm", "lightgbm"):
-        from lightgbm import LGBMClassifier
-        print("LightGBM is not deterministic by default. Results may vary.")
-        lgbm = LGBMClassifier(**params)
-        lgbm.fit(df[cols].to_numpy(), df[target].to_numpy().ravel())
-        scores = lgbm.feature_importances_
+        from dsds.optuna_integration import suggest_b_lgbm_hyperparams
+        import lightgbm as lgb
+        use_cols = cols if target in cols else cols + [target]
+        params, _ = suggest_b_lgbm_hyperparams(df[use_cols], target, 30, "log_loss")
+        logger.info("LightGBM tuning is not deterministic by default. Results may vary.")
+        logger.info(f"Recommended hyperparameters: {params}")
+        X, y = df[cols].to_numpy(), df[target].to_numpy()
+        data = lgb.Dataset(X, label=y)
+        lgbm = lgb.train(params, data)
+        scores = lgbm.feature_importance()
     elif s == "ks":
         scores = ks_statistic(df, target, cols).drop_in_place("ks").to_numpy()
     else: # Pythonic nonsense
@@ -556,8 +557,6 @@ def mrmr(
     , k:int
     , cols:Optional[list[str]] = None
     , strategy: MRMRStrategy = "fscore"
-    , params:Optional[dict[str,Any]] = None
-    , return_score:bool=False
 ) -> Union[list[str], Tuple[list[str], np.ndarray]]:
     '''
     Implements MRMR. First we have to use a strategy to find the "relevance" of a feature, and then 
@@ -594,7 +593,7 @@ def mrmr(
         If true, the relevance score will be returned as well
     '''
     if isinstance(cols, list):
-        nums = [c for c in cols if c !=target and c in df.columns]
+        nums = [c for c in cols if c != target and c in df.columns]
         _ = type_checker(df, nums, "numeric", "mrmr")
     else:
         nums = get_numeric_cols(df, exclude=[target])
@@ -606,7 +605,6 @@ def mrmr(
         , target
         , nums
         , strategy
-        , params = {} if params is None else params
     )
 
     # Always do low memory option. Do not scale upfront.
@@ -647,8 +645,6 @@ def mrmr(
         pbar.update(1)
     pbar.close()
     print("Output is sorted in order of selection (max relevance min redundancy).")
-    if return_score:
-        return selected, scores 
     return selected
 
 def mrmr_selector(
@@ -656,7 +652,6 @@ def mrmr_selector(
     , target:str
     , top_k:int
     , strategy:MRMRStrategy = "fscore"
-    , params:Optional[dict[str,Any]] = None
 ) -> PolarsFrame:
     '''
     Keeps only the top_k (first k) features selected by MRMR and the ones that cannot be processed by the algorithm.
@@ -671,14 +666,12 @@ def mrmr_selector(
         The top_k features will ke kept
     strategy
         One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
-    params
-        If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
     low_memory
         If true, use less memory. But the computation will take longer
     '''
-    nums = get_numeric_cols(df, exclude=[target])
+    nums = get_numeric_cols(df)
     s = clean_strategy_str(strategy)
-    to_select = mrmr(df, target, top_k, nums, s, params)
+    to_select = mrmr(df, target, top_k, nums, s)
     logger.info(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
           "algorithm cannot process. They are also returned.")
     to_select.extend(f for f in df.columns if f not in nums)
@@ -691,7 +684,6 @@ def knock_out_mrmr(
     , cols:Optional[list[str]] = None
     , corr_threshold:float = 0.7
     , strategy:MRMRStrategy = "fscore"
-    , params:Optional[dict[str,Any]] = None
 ) -> list[str]:
     '''
     Essentially the same as vanilla MRMR. Instead of using avg(abs(corr)) to "weigh" punish correlated 
@@ -720,14 +712,15 @@ def knock_out_mrmr(
         correlation with B, then B will not be selected if A is already selected
     strategy
         One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
-    params
-        If any modeled relevance is used, e.g. 'lgbm', then this will be the param dict for the model
     '''
     if isinstance(cols, list):
-        nums = [c for c in cols if c !=target and c in df.columns]
+        nums = [c for c in cols if c != target and c in df.columns]
         _ = type_checker(df, nums, "numeric", "knock_out_mrmr")
     else:
         nums = get_numeric_cols(df, exclude=[target])
+
+    if target not in nums:
+        nums.append(target)
 
     df_local = df.lazy().select(nums + [target]).collect()
     scores = _mrmr_relevance(
@@ -735,7 +728,6 @@ def knock_out_mrmr(
         , target
         , nums
         , strategy
-        , params = {} if params is None else params
     )
 
     # Set up
@@ -784,7 +776,6 @@ def knock_out_mrmr_selector(
     , top_k:int 
     , corr_threshold:float = 0.7
     , strategy:MRMRStrategy = "fscore"
-    , params:Optional[dict[str,Any]] = None
 ) -> PolarsFrame:
     '''
     Keeps only the top_k (first k) features selected by MRMR and the ones that cannot be processed by the algorithm.
@@ -801,14 +792,12 @@ def knock_out_mrmr_selector(
         The threshold above which correlation is considered too high. This means if A has high correlation to B, then
         B will not be selected if A is
     strategy
-        One of 'f', 'xgb', 'rf', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
-    params
-        If any modeled relevance is used, e.g. 'rf', 'lgbm' or 'xgb', then this will be the param dict for the model
+        One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
     '''
-    nums = get_numeric_cols(df, exclude=[target])
+    nums = get_numeric_cols(df)
     complement = [f for f in df.columns if f not in nums]
     s = clean_strategy_str(strategy)
-    to_select = knock_out_mrmr(df, target, top_k, nums, s, corr_threshold, params)
+    to_select = knock_out_mrmr(df, target, top_k, nums, s, corr_threshold)
     print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
           "algorithm cannot process. They are also returned.")
     
@@ -941,8 +930,8 @@ def _fc_fi(
     y_test = test[target].to_numpy()
     fc_rec = (
         features,
-        log_loss(y_test, y_pred, check_binary=False),
-        roc_auc(y_test, y_pred, check_binary=False)
+        me.log_loss(y_test, y_pred, check_binary=False),
+        me.roc_auc(y_test, y_pred, check_binary=False)
     )
     if model_str in ("lr", "logistic"):
         fi_rec = np.abs(estimator.coef_).ravel()
@@ -1067,7 +1056,7 @@ def _permute_importance(
         shuffled_df = X.with_columns(
             pl.col(c).shuffle(seed=42)
         )
-        test_score += roc_auc(y, model.predict_proba(shuffled_df)[:, -1])
+        test_score += me.roc_auc(y, model.predict_proba(shuffled_df)[:, -1])
 
     return test_score, index
 
@@ -1101,7 +1090,7 @@ def permutation_importance(
     estimator = _binary_model_init(model_str, params)
     X, y = df[features], df[target].to_numpy()
     estimator.fit(X, y)
-    score = roc_auc(y, estimator.predict_proba(X)[:, -1])
+    score = me.roc_auc(y, estimator.predict_proba(X)[:, -1])
     pbar = tqdm(total=len(features), desc="Permuting Features")
     imp = np.zeros(shape=len(features))
     with ThreadPoolExecutor(max_workers=dsds.THREADS) as ex:

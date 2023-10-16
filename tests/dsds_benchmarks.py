@@ -173,7 +173,7 @@ def test_logloss_200k_dsds(benchmark):
     actual = np.round(np.random.random(size=200_000)).astype(np.int8)
 
     dsds_res = benchmark(
-        me.logloss, actual, predicted
+        me.log_loss, actual, predicted
     )
 
     sklearn_res = round(log_loss(actual, predicted), 12)

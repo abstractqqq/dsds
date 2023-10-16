@@ -1,7 +1,7 @@
 import lightgbm as lgb
 import polars as pl
 import optuna
-# import dsds
+import dsds
 import dsds.sample as sa
 import dsds.metrics as me
 import dsds.prescreen as ps
@@ -78,7 +78,9 @@ def suggest_b_lgbm_hyperparams(
         param = {
             "objective": "binary",
             "metric": metric_word,
-            "verbosity": -1,
+            "verbosity": 0,
+            "max_depth":trial.suggest_int("max_depth", 2,16),
+            "num_iterations": trial.suggest_int("num_iterations", 50, 200),
             "boosting_type": "gbdt",
             "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 10.0, log=True),
             "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 10.0, log=True),
@@ -91,7 +93,7 @@ def suggest_b_lgbm_hyperparams(
         # Add a callback for pruning.
         pruning_callback = optuna.integration.LightGBMPruningCallback(trial, metric_word)
         lgbm_ = lgb.train(param, dtrain, valid_sets=[dvalid], callbacks=[pruning_callback])
-        preds = lgbm_.predict(valid)  
+        preds = lgbm_.predict(valid)
         return metric_func(valid_y, preds)
 
     study = optuna.create_study(
@@ -99,7 +101,8 @@ def suggest_b_lgbm_hyperparams(
         , direction=direction
     )
 
-    study.optimize(objective, n_trials=max_trials, timeout=timeout, gc_after_trial=True)
+    # Maybe no need for parallel here. Need to test on larger datasets
+    study.optimize(objective, n_trials=max_trials, n_jobs=dsds.THREADS, timeout=timeout, gc_after_trial=True)
     trial = study.best_trial
     print(f"Best trial: {trial}, Value: {trial.value}")
     return study.best_params, study
