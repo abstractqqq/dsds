@@ -18,6 +18,7 @@ from dsds._dsds_rust import (
     , rs_mape
     , rs_smape
     , rs_huber_loss
+    , rs_lempel_ziv_complexity
     # , rs_snowball_stem_series
 )
 from dataclasses import dataclass
@@ -750,10 +751,26 @@ def cosine_similarity(x:np.ndarray, y:Optional[np.ndarray]=None, normalize:bool=
 def cosine_dist(x:np.ndarray, y:Optional[np.ndarray]=None) -> np.ndarray:
     return 1 - cosine_similarity(x,y,True)
 
+def lempel_ziv_complexity(b: bytes, as_ratio:bool=False) -> Union[int, float]:
+    '''
+    A Python wrapper for a Rust implementation of Lempel Ziv Complexity.
+    
+    Parameters
+    ----------
+    b
+        Bytes.
+    as_ratio
+        If true, will return the complexity / len(b)
+    '''
+    c = rs_lempel_ziv_complexity(b)
+    if as_ratio:
+        return c/len(b)
+    return c
+
+
 def jaccard_similarity(
     s1:Union[pl.Series, list, np.ndarray]
     , s2:Union[pl.Series, list, np.ndarray]
-    , expected_dtype: HashableDtypes = "string"
     , include_null:bool=False
     , parallel:bool=True
 ) -> float:
@@ -767,8 +784,6 @@ def jaccard_similarity(
         The first list/series/array
     s2
         The second list/series/array
-    expected_dtype
-        Either "string" or "int". Dtype of s1 and s2.
     include_null
         If true, null will be counted as common. If false, they will not.
     stem : Removed temporarily
@@ -778,12 +793,15 @@ def jaccard_similarity(
     parallel
         Whether to hash values in the lists in parallel. Only applies when internal data type is string.
     '''
-    if expected_dtype in ("str", "string"):
-        ss1 = pl.Series(s1, dtype=pl.Utf8)
-        ss2 = pl.Series(s2, dtype=pl.Utf8)
-    elif expected_dtype == "int":
-        ss1 = pl.Series(s1, dtype=pl.Int64)
-        ss2 = pl.Series(s2, dtype=pl.Int64)
+    ss1 = pl.Series(s1)
+    ss2 = pl.Series(s2)
+    if (ss1.dtype == pl.Utf8) & (ss2.dtype == pl.Utf8):
+        expected_dtype = "string"
+    elif (ss1.is_numeric() & ss2.is_numeric()):
+        # If cannot cast, raise error
+        ss1 = ss1.cast(pl.Int64)
+        ss2 = ss2.cast(pl.Int64)
+        expected_dtype = "int"
     else:
         raise TypeError(f"The argument `expected_dtype` must be either string or int. Not {expected_dtype}.")
 

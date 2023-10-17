@@ -1,16 +1,21 @@
-use ndarray::{Axis, ArrayView1, ArrayView2, Array2};
+use ndarray::{Axis, ArrayView1, Array2};
 use ndarray::parallel::prelude::*;
 //use faer_core::Scale;
 //use faer::{prelude::*, IntoNdarray};
 //use faer_core::mul::matmul;
 use polars_core::utils::accumulate_dataframes_vertical;
 use polars::prelude::*;
-
+use pyo3::pyfunction;
+use pyo3_polars::derive::polars_expr;
+use std::collections::HashSet;
 use super::utils::split_offsets;
 
 // Don't use these functions in Rust.. They shouldn't be in place operations
 // from a user experience point of view. But they are copied from Python input
 // and only serve this purpose. So I decided on these in place operations.
+
+
+// Distance/Error Metrics
 
 #[inline]
 pub fn mae(
@@ -25,7 +30,6 @@ pub fn mae(
         return diff.dot(&w) / w.sum()
     }
     diff.mean().unwrap_or(0.)
-
 }
 
 #[inline]
@@ -120,9 +124,7 @@ pub fn huber_loss(
     diff.mean().unwrap_or(0.)
 }
 
-fn lempel_ziv_complexity(){
-    todo!()
-}
+// Cosine Similarity
 
 #[inline]
 pub fn cosine_similarity(
@@ -162,7 +164,7 @@ fn normalize_in_place(mat:&mut Array2<f64>, axis:Axis) {
     });
 }
 
-// 
+// Jaccard Similarity
 
 pub enum HashableType {
     STRING,
@@ -282,3 +284,55 @@ pub fn series_jaccard_similarity(
     Ok(s3_len as f64 / (s1_len + s2_len - s3_len) as f64)
 }
 
+// Complexity Metrics
+
+#[pyfunction]
+pub fn rs_lempel_ziv_complexity(
+    s: &[u8]
+) -> usize {
+
+    let mut ind:usize = 0;
+    let mut inc:usize = 1;
+
+    let mut sub_strings: HashSet<&[u8]> = HashSet::new();
+    while ind + inc <= s.len() {
+        let subseq: &[u8] = &s[ind..ind+inc];
+        if sub_strings.contains(subseq) {
+            inc += 1;
+        } else {
+            sub_strings.insert(subseq);
+            ind += inc;
+            inc = 1;
+        }
+    }
+    sub_strings.len()
+}
+
+#[polars_expr(output_type=UInt32)]
+fn pl_lempel_ziv_complexity(inputs: &[Series]) -> PolarsResult<Series>  {
+    
+    let input: &Series = &inputs[0];
+    let bytes: Vec<u8> = match input.dtype() {
+        DataType::Boolean => {
+            let ca = input.bool()?;
+            ca.into_iter().map(
+                |x| {
+                    if let Some(b) = x {
+                        b as u8
+                    } else {
+                        0
+                    }
+                }
+            ).collect()
+        }
+        , _ => {
+            return Err(
+                PolarsError::ComputeError("Input series must be bool.".into())
+            )
+        }
+    };
+
+    let c: usize = rs_lempel_ziv_complexity(&bytes);
+    Ok(Series::from_iter([c as u64]))
+
+}

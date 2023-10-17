@@ -135,7 +135,12 @@ def hot_deck_impute(
     '''
     Imputes column c according to the segment it is in. Performance will hurt if columns in group_by has 
     too many segments (combinations). Note that cols shouldn't have any column in common with columns in 
-    group_by.
+    group_by. In the case that a new combination which was not in training data appears, the null will 
+    be mapped to the default value.
+
+    In the example below, let's say a new combination (cat, 1) appears, which was not in training, 
+    and col(a) is null, then the missing value will remain missing. If you want to handle that case,
+    you can chain an imputation step after this.
     
     This will be remembered by blueprint by default.
 
@@ -180,7 +185,9 @@ def hot_deck_impute(
 
     # Probably not the most performant.
     references = (
-        df.lazy().group_by(group_by).agg(_get_agg_impute_expr(c, strategy))
+        df.lazy().group_by(group_by).agg(
+            _get_agg_impute_expr(c, strategy)
+        )
         for c in cols
     )
     dfs = pl.collect_all(references, streaming=dsds.STREAM_TRANSFORM)
@@ -189,9 +196,12 @@ def hot_deck_impute(
         expr = pl.col(c)
         for row_dict in ref.iter_rows(named=True):
             impute = row_dict.pop(strategy)
-            expr = pl.when(pl.col(c).is_null().and_(
-                *(pl.col(k) == pl.lit(v) for k,v in row_dict.items())
-            )).then(impute).otherwise(expr)
+            expr = pl.when(
+                pl.all_horizontal(
+                    pl.col(c).is_null()
+                    , *(pl.col(k) == pl.lit(v) for k,v in row_dict.items())
+                )
+            ).then(impute).otherwise(expr)
         expr = expr.alias(c)
         exprs.append(expr)
 

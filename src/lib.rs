@@ -10,10 +10,6 @@ pub use numpy::{
     IntoPyArray
 };
 use crate::text::{
-    //rs_cnt_vectorizer,
-    //rs_tfidf_vectorizer,
-    //rs_ref_table,
-    // rs_snowball_stem_series,
     rs_snowball_stem,
     rs_levenshtein_dist,
     rs_hamming_dist,
@@ -29,6 +25,7 @@ use crate::functions::{
     rs_mae,
     rs_huber_loss,
     metrics::{  
+        rs_lempel_ziv_complexity,
         cosine_similarity,
         self_cosine_similarity,
     }
@@ -37,11 +34,8 @@ use crate::functions::{
 // A Python module implemented in Rust.
 #[pymodule]
 fn _dsds_rust(_py: Python, m: &PyModule) -> PyResult<()> {
-    // m.add_class::<Test>().unwrap();
-    // m.add_function(wrap_pyfunction!(rs_cnt_vectorizer, m)?)?;
-    // m.add_function(wrap_pyfunction!(rs_tfidf_vectorizer, m)?)?;
-    // m.add_function(wrap_pyfunction!(rs_ref_table, m)?)?;
-    // m.add_function(wrap_pyfunction!(rs_hamming_dist_series, m)?)?;
+
+
     m.add_function(wrap_pyfunction!(rs_snowball_stem, m)?)?;
     m.add_function(wrap_pyfunction!(rs_levenshtein_dist, m)?)?;
     m.add_function(wrap_pyfunction!(rs_df_inner_list_jaccard, m)?)?;
@@ -54,6 +48,7 @@ fn _dsds_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rs_mae, m)?)?;
     m.add_function(wrap_pyfunction!(rs_mse, m)?)?;
     m.add_function(wrap_pyfunction!(rs_huber_loss, m)?)?;
+    m.add_function(wrap_pyfunction!(rs_lempel_ziv_complexity, m)?)?;
 
     #[pyfn(m)]
     fn rs_cosine_similarity<'py>(
@@ -64,7 +59,7 @@ fn _dsds_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     ) -> &'py PyArray2<f64> {
         cosine_similarity(
             mat1.as_array().to_owned(),
-            mat2.as_array().to_owned(), 
+            mat2.as_array().to_owned(),
             normalize
         ).into_pyarray(py)
     }

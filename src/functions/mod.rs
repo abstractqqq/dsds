@@ -1,6 +1,7 @@
 pub mod metrics;
 mod utils;
 mod estimates;
+mod math;
 
 use polars_core::prelude::*;
 use pyo3::prelude::*;
@@ -19,6 +20,7 @@ use self::metrics::{
     HashableType
 };
 use self::estimates::gcc_monte_carlo_prob_est;
+
 
 #[pyfunction]
 pub fn rs_df_inner_list_jaccard(
@@ -42,7 +44,7 @@ pub fn rs_series_jaccard(
     , s2: PySeries
     , list_type: &str
     , include_null: bool
-    , parallel: bool    
+    , parallel: bool
 ) -> PyResult<f64> {
 
     let st: HashableType = HashableType::from_str(list_type).unwrap();

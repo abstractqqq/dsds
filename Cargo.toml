@@ -19,6 +19,7 @@ ndarray = {version = "0.15.6", features = ["rayon", "matrixmultiply-threading"]}
 numpy = "*"
 rand = "0.8.5"
 chrono = "0.4.31"
+num = "0.4.1"
 # faer = {version = "0.12.0", features = ["polars", "ndarray", "nalgebra"]}
 # faer-core = "0.12.0"
 # rustfft = "6.1.0"

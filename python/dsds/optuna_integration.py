@@ -101,8 +101,7 @@ def suggest_b_lgbm_hyperparams(
         , direction=direction
     )
 
-    # Maybe no need for parallel here. Need to test on larger datasets
     study.optimize(objective, n_trials=max_trials, n_jobs=dsds.THREADS, timeout=timeout, gc_after_trial=True)
     trial = study.best_trial
-    print(f"Best trial: {trial}, Value: {trial.value}")
+    print(f"Best params: {trial.params}.\nFound at trial: {trial.number}.\nTime took: {trial.duration}")
     return study.best_params, study

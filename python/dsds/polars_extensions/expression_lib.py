@@ -8,8 +8,8 @@ lib = _get_shared_lib_location(__file__)
 
 _BENFORD_DIST_SERIES = (1 + 1 / pl.int_range(1, 10, eager=True)).log10()
 
-@pl.api.register_expr_namespace("dsds_numeric")
-class NumericExt:
+@pl.api.register_expr_namespace("dsds_num")
+class NumExt:
     def __init__(self, expr: pl.Expr):
         self._expr = expr
 
@@ -71,6 +71,67 @@ class NumericExt:
         '''
         return self._expr.mod(1.0)
     
+    def gcd(self, other:Union[int, pl.Expr]) -> pl.Expr:
+        '''
+        Computes GCD of two integer columns.
+
+        Parameters
+        ----------
+        other
+            Either an int or a Polars expression
+        '''
+        if isinstance(other, int):
+            other_ = pl.lit(other, dtype=pl.Int64)
+        else:
+            other_ = other.cast(pl.Int64)
+        
+        return self._expr.cast(pl.Int64)._register_plugin(
+            lib=lib,
+            symbol="pl_gcd",
+            args = [other_],
+            is_elementwise=True,
+        )
+    
+    def lcm(self, other:Union[int, pl.Expr]) -> pl.Expr:
+        '''
+        Computes LCM of two integer columns.
+
+        Parameters
+        ----------
+        other
+            Either an int or a Polars expression
+        '''
+        if isinstance(other, int):
+            other_ = pl.lit(other, dtype=pl.Int64)
+        else:
+            other_ = other.cast(pl.Int64)
+        
+        return self._expr.cast(pl.Int64)._register_plugin(
+            lib=lib,
+            symbol="pl_lcm",
+            args = [other_],
+            is_elementwise=True,
+        )
+    
+    def lempel_ziv_complexity(self, as_ratio:bool=False) -> pl.Expr:
+        '''
+        Computes the Lempel Ziv Complexity. Input must be a boolean column.
+
+        Parameters
+        ----------
+        as_ratio
+            If true, will return the complexity / the length of the column
+        '''
+        out = self._expr._register_plugin(
+            lib=lib,
+            symbol="pl_lempel_ziv_complexity",
+            is_elementwise=True,
+        )
+        if as_ratio:
+            return out / self._expr.len()
+        return out
+
+    
 @pl.api.register_expr_namespace("dsds_str")
 class StrExt:
     def __init__(self, expr: pl.Expr):
@@ -96,7 +157,7 @@ class StrExt:
             the set ('ap', 'pp', 'pl', 'le') before being compared.
         '''
         if isinstance(other, str):
-            other_ = pl.Series([other])
+            other_ = pl.lit(other)
         else:
             other_ = other
         
@@ -122,7 +183,7 @@ class StrExt:
             and the other (given by the expression) will be performed.
         '''
         if isinstance(other, str):
-            other_ = pl.Series([other])
+            other_ = pl.lit(other)
         else:
             other_ = other
 
@@ -149,7 +210,7 @@ class StrExt:
             and the other (given by the expression) will be performed.
         '''
         if isinstance(other, str):
-            other_ = pl.Series([other])
+            other_ = pl.lit(other)
         else:
             other_ = other
 
