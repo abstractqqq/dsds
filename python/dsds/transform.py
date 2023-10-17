@@ -508,12 +508,7 @@ def binarize(
         Dict with keys representing column names, and value representing some boolean condition 
         given as polars expression
     '''
-    one = pl.lit(1, dtype=pl.UInt8)
-    zero = pl.lit(0, dtype=pl.UInt8)
-    exprs = [
-        pl.when(cond).then(one).otherwise(zero).alias(c)
-        for c, cond in rules.items()
-    ]
+    exprs = [cond.cast(pl.UInt8).alias(c) for c, cond in rules.items()]
     return _dsds_with_columns(df, exprs)
 
 def merge_infreq_categories(
@@ -804,11 +799,7 @@ def combine_zero_ones(
     elif rule == "intersection":
         expr = pl.min_horizontal([pl.col(cols)]).cast(pl.UInt8).alias(new_name)
     elif rule == "same":
-        expr = pl.when(pl.sum_horizontal([pl.col(cols)]).is_in((0, len(cols)))).then(
-                    pl.lit(1, dtype=pl.UInt8)
-                ).otherwise(
-                    pl.lit(0, dtype=pl.UInt8)
-                ).alias(new_name)
+        expr = pl.sum_horizontal([pl.col(cols)]).is_in((0, len(cols))).cast(pl.UInt8).alias(new_name)
     else:
         raise TypeError(f"The input `{rule}` is not a valid ZeroOneCombineStrategy.")
 

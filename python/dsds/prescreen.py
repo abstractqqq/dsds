@@ -1064,7 +1064,7 @@ def infer_by_pattern(
                 for s in strs
             ).transpose(include_header=True, column_names=["pattern_match_cnt"])\
             .filter(pl.col("pattern_match_cnt") < pl.lit(int(threshold * sample_size)+1))
-        )["column"]
+        ).get_column("column")
         # If the match failes in this round, remove the column.
         matches.difference_update(fail)
 
@@ -1479,7 +1479,7 @@ def infer_discretes(df:PolarsFrame
     return temp.filter(
         ((pl.col("n_unique") < max_n_unique) | (pl.col("n_unique") < len_df * threshold)) 
         & (~pl.col("column").is_in(exclude_list)) # is not in
-    )["column"].to_list()
+    ).get_column("column").to_list()
 
 def infer_conti(
     df:PolarsFrame
@@ -1522,7 +1522,7 @@ def infer_constants(df:PolarsFrame, include_null:bool=True) -> list[str]:
     if include_null:
         condition = condition | ((pl.col("n_unique") == 2) & (pl.col("null_count") > 0))
 
-    return get_unique_count(df, True).filter(condition)["column"].to_list()
+    return get_unique_count(df, True).filter(condition).get_column("column").to_list()
 
 def infer_multicategorical(
     df: PolarsFrame
@@ -1555,7 +1555,7 @@ def infer_binary(df:PolarsFrame, include_null:bool=True) -> list[str]:
     if include_null:
         condition = condition | ((pl.col("n_unique") == 3) & (pl.col("null_count") > 0))
 
-    return get_unique_count(df, True).filter(condition)["column"].to_list()
+    return get_unique_count(df, True).filter(condition).get_column("column").to_list()
 
 def infer_n_unique(df:PolarsFrame, n:int, include_null:bool=True, leq:bool=False) -> list[str]:
     ''' 
@@ -1583,7 +1583,7 @@ def infer_n_unique(df:PolarsFrame, n:int, include_null:bool=True, leq:bool=False
     if include_null:
         condition = condition1 | (condition2 & (pl.col("null_count") > 0))
 
-    return get_unique_count(df, True).filter(condition)["column"].to_list()
+    return get_unique_count(df, True).filter(condition).get_column("column").to_list()
 
 def get_complement(
     df: PolarsFrame,

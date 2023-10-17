@@ -188,7 +188,7 @@ def test_logloss_200k_sklearn(benchmark):
         log_loss, actual, predicted
     )
 
-    dsds_res = round(me.logloss(actual, predicted), 12)
+    dsds_res = round(me.log_loss(actual, predicted), 12)
     assert dsds_res == round(sklearn_res, 12)
 
 @pytest.mark.benchmark(group="roc_auc")
@@ -317,7 +317,7 @@ def test_target_encoding_74k_category_encoders(encoder_test, benchmark):
 
 @pytest.fixture
 def mrmr_pl_df() -> pl.DataFrame:
-    orig_x, orig_y = make_classification(n_samples = 50_000, n_features = 500, n_informative = 60, n_redundant = 440)
+    orig_x, orig_y = make_classification(n_samples = 50_000, n_features = 300, n_informative = 60, n_redundant = 240)
     df_pl = pl.from_numpy(orig_x).insert_at_idx(0, pl.Series("target", orig_y))
     return df_pl
 

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def missing_indicator(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
-    , include_nan:bool = True
+    , include_nan:bool = False
     , suffix: str = "_missing"
 ) -> PolarsFrame:
     '''
@@ -46,14 +46,17 @@ def missing_indicator(
         The suffix given to the missing indicator columns
     '''
     to_add = df.columns if cols is None else cols
-    one = pl.lit(1, dtype=pl.UInt8)
-    zero = pl.lit(0, dtype=pl.UInt8)
     if include_nan:
-        exprs = [pl.when((pl.col(c).is_nan())|(pl.col(c).is_infinite())|(pl.col(c).is_null()))
-                 .then(one).otherwise(zero).suffix(suffix) 
-                 for c in to_add]
+        exprs = [
+            pl.any_horizontal(
+                pl.col(c).is_nan(),
+                pl.col(c).is_infinite(),
+                pl.col(c).is_null()
+            ).cast(pl.UInt8).suffix(suffix) 
+            for c in to_add
+        ]
     else:
-        exprs = [pl.when(pl.col(c).is_null()).then(one).otherwise(zero).suffix(suffix) for c in to_add]
+        exprs = [pl.col(to_add).is_null().cast(pl.UInt8).suffix(suffix)]
 
     return _dsds_with_columns(df, exprs)
 
@@ -64,7 +67,8 @@ def one_hot_encode(
     , drop_first:bool=False
 ) -> PolarsFrame:
     '''
-    One-hot-encode the given columns.
+    One-hot-encode the given columns. Null will always be dropped. If a one-hot-encoded null indicator
+    is desired, please see dsds.encoders.missing_indicator.
 
     This will be remembered by blueprint by default.
 
@@ -87,27 +91,23 @@ def one_hot_encode(
     else:
         str_cols = get_string_cols(df)
 
-    if isinstance(df, pl.LazyFrame):
-        temp = df.lazy().select(
-            pl.col(str_cols).unique().implode().list.sort()
-        )
-        exprs:list[pl.Expr] = []
-        start_index = int(drop_first)
-        one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
-        zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
-        for t in temp.collect().get_columns():
-            u:pl.List = t[0] # t is a Series which contains a single series/list, so u is a series/list
-            if len(u) > 1:
-                exprs.extend(
-                    pl.when(pl.col(t.name) == u[i]).then(one).otherwise(zero).alias(t.name + separator + u[i])
-                    for i in range(start_index, len(u))
-                )
-            else:
-                logger.info(f"During one-hot-encoding, the column {t.name} is found to have 1 unique value. Dropped.")
-        
-        return _dsds_with_columns_and_drop(df, exprs, str_cols)
-    else:
-        return df.to_dummies(columns=str_cols, separator=separator, drop_first=drop_first)
+    temp = df.lazy().select(
+        pl.col(str_cols).unique().drop_nulls().implode().list.sort()
+    )
+    exprs:list[pl.Expr] = []
+    start_index = int(drop_first)
+    for t in temp.collect().get_columns():
+        u:pl.Series = t[0] # t is a Series which contains a single series, so u is a series
+        if len(u) > 1:
+            exprs.extend(
+                pl.col(t.name).eq(u[i]).fill_null(False).cast(pl.UInt8).alias(t.name + separator + u[i])
+                for i in range(start_index, len(u))
+            )
+        else:
+            logger.info(f"During one-hot-encoding, the column {t.name} is found to have 1 unique value. Dropped.")
+    
+    return _dsds_with_columns_and_drop(df, exprs, str_cols)
+
     
 def reverse_one_hot_encode(
     df: PolarsFrame
@@ -191,7 +191,7 @@ def selective_one_hot_encode(
         Either a lazy or eager Polars DataFrame
     selected
         A dictionary where the key refers to column names, and values are the values of the string column that 
-        will be one-hot encoded.
+        will be one-hot encoded. A value of None will be ignored.
     separator
         The separator used in the names of the new columns
 
@@ -221,11 +221,9 @@ def selective_one_hot_encode(
     _ = type_checker(df, str_cols, "string", "selective_one_hot_encode")
 
     exprs = []
-    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
-    zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     for c, vals in selected.items(): # Python's dict is ordered.
         exprs.extend(
-            pl.when(pl.col(c) == v).then(one).otherwise(zero).alias(c+separator+v) for v in vals
+            pl.col(c).eq(v).fill_null(False).cast(pl.UInt8).alias(c+separator+v) for v in vals if v is not None
         )
     return _dsds_with_columns_and_drop(df, exprs, str_cols)
 
@@ -235,7 +233,8 @@ def sum_encode(
     , separator:str="_"
 ) -> PolarsFrame:
     '''
-    Sum encoding for the given string columns.
+    Sum encoding for the given string columns. Null will always be dropped. If a one-hot-encoded null indicator
+    is desired, please see dsds.encoders.missing_indicator.
     
     This will be remembered by blueprint by default.
 
@@ -260,18 +259,15 @@ def sum_encode(
         str_cols = get_string_cols(df)
 
     temp = df.lazy().select(
-        pl.col(str_cols).unique().implode().list.sort()
+        pl.col(str_cols).unique().drop_nulls().implode().list.sort()
     )
     exprs:list[pl.Expr] = []
-    one = pl.lit(1, dtype=pl.Int8) # Avoid casting 
-    zero = pl.lit(0, dtype=pl.Int8) # Avoid casting
-    minus_one = pl.lit(-1, dtype=pl.Int8) # Avoid casting
     for t in temp.collect().get_columns():
         u:pl.List = t[0] # t is a Series which contains a single series/list, so u is a series/list
         if len(u) > 1:
             exprs.extend(
-                pl.when(pl.col(t.name) == u[0]).then(minus_one).otherwise(
-                    pl.when(pl.col(t.name) == u[i]).then(one).otherwise(zero)
+                pl.when(pl.col(t.name).eq(u[0])).then(pl.lit(-1, dtype=pl.Int8)).otherwise(
+                    pl.col(t.name).eq(u[i]).cast(pl.Int8)
                 ).alias(t.name + separator + u[i])
                 for i in range(1, len(u))
             )
@@ -285,7 +281,8 @@ def rank_hot_encode(
     , col_ranks: dict[str, list[str]]
 ) -> PolarsFrame:
     '''
-    Performs rank hot encoding. Currently this only supports string columns.
+    Performs rank hot encoding. Currently this only supports string columns. Null values will remain 
+    null in the encoded columns.
 
     This will be remembered by blueprint by default.
 
@@ -334,13 +331,11 @@ def rank_hot_encode(
         k: {key:i for i, key in enumerate(r)}
         for k, r in ranks.items()
     }
-    one = pl.lit(1, dtype=pl.UInt8)
-    zero = pl.lit(0, dtype=pl.UInt8)
     exprs = []
     for key, ref in ref_dicts.items():
         exprs.extend(
-            (pl.when(pl.col(key).map_dict(ref, default=len(ref)) >= i).then(one).otherwise(zero).suffix(f">={v}")
-            for v, i in ref.items() if v != ranks[key][0])
+            pl.col(key).map_dict(ref, default=len(ref)).ge(i).cast(pl.UInt8).suffix(f">={v}")
+            for v, i in ref.items() if v != ranks[key][0]
         )
 
     return _dsds_with_columns_and_drop(df, exprs, cols)
@@ -348,7 +343,8 @@ def rank_hot_encode(
 def force_binary(df:PolarsFrame) -> PolarsFrame:
     '''
     Force every binary column, no matter what data type, into 0s and 1s according to the order of the 
-    elements. If a column has two unique values, like [null, "haha"], then null will be mapped to 0 and "haha" to 1.
+    elements. If a column has two unique values, like [null, "haha"], then null will be mapped 
+    to 0 and "haha" to 1. This is not reversible.
 
     This will be remembered by blueprint by default.
 
@@ -362,10 +358,8 @@ def force_binary(df:PolarsFrame) -> PolarsFrame:
     temp = df.lazy().select(
         pl.col(binary_list).unique().implode().list.sort()
     )
-    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting 
-    zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     exprs:list[pl.Expr] = [
-        pl.when(pl.col(t.name) == t[0][0]).then(zero).otherwise(one).alias(t.name)
+        pl.col(t.name).eq(t[0][0]).cast(pl.UInt8).alias(t.name)
         for t in temp.collect().get_columns()
     ] # t is a Series which contains a single list which contains the 2 unique values 
     return _dsds_with_columns(df, exprs)
@@ -381,8 +375,8 @@ def multicat_one_hot_encode(
     column with strings like `aaa|bbb|ccc`, which means this row belongs to categories aaa, bbb, and ccc. Typically, 
     such a column will contain strings separated by a delimiter. This method will collect all unique strings separated 
     by the delimiter and one hot encode the corresponding column, e.g. by checking if `aaa` is contained in values of 
-    this column. Nulls will be mapped to 0 in the generated one-hot columns. If you wish to have a null mask, take a 
-    look at `dsds.encoders.missing_indicator`.
+    this column. Null values will be mapped to 0 always. If a one-hot-encoded null indicator is desired, please 
+    see dsds.encoders.missing_indicator.
 
     This will be remembered by blueprint by default.
 
@@ -433,17 +427,15 @@ def multicat_one_hot_encode(
         multicats = infer_multicategorical(df, delimiter=delimiter)
 
     temp = df.lazy().select(
-        pl.col(multicats).str.split(delimiter).explode().unique().implode().list.sort()
+        pl.col(multicats).str.split(delimiter).explode().unique().drop_nulls().implode().list.sort()
     )
-    one = pl.lit(1, dtype=pl.UInt8) # Avoid casting
-    zero = pl.lit(0, dtype=pl.UInt8) # Avoid casting
     exprs = []
     start_index = int(drop_first)
     for c in temp.collect().get_columns():
         u = c[0]
         if len(u) > 1:
             exprs.extend(
-                pl.when(pl.col(c.name).str.contains(u[i])).then(one).otherwise(zero).alias(c.name + delimiter + u[i])
+                pl.col(c.name).str.contains(u[i]).fill_null(False).cast(pl.UInt8).alias(c.name + delimiter + u[i])
                 for i in range(start_index, len(u)) if isinstance(u[i], str)
             )
         else:
@@ -460,7 +452,7 @@ def ordinal_auto_encode(
     '''
     Automatically applies ordinal encoding to the provided columns by the order of the elements. This method is 
     great for string columns like age ranges, with values like ["10-20", "20-30"], etc. (Beware of string lengths,
-    e.g. if "100-110" exists in age range, then it may mess up the natural order.)
+    e.g. if "100-110" exists in age range, then it may mess up the natural order.).
 
     This will be remembered by blueprint by default.
         
@@ -610,6 +602,7 @@ def custom_binning(
     '''
     return _dsds_with_columns(df, [pl.col(cols).cut(cuts).cast(pl.Utf8).suffix(suffix)])
 
+# Can make it completely lazy
 def fixed_sized_binning(
     df:PolarsFrame
     , cols:list[str]
