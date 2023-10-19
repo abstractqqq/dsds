@@ -371,12 +371,12 @@ def multicat_one_hot_encode(
     , drop_first: bool = True
 ) -> PolarsFrame:
     '''
-    Expands multicategorical columns into several one-hot-encoded columns respectively. A multicategorical column is a 
-    column with strings like `aaa|bbb|ccc`, which means this row belongs to categories aaa, bbb, and ccc. Typically, 
-    such a column will contain strings separated by a delimiter. This method will collect all unique strings separated 
-    by the delimiter and one hot encode the corresponding column, e.g. by checking if `aaa` is contained in values of 
-    this column. Null values will be mapped to 0 always. If a one-hot-encoded null indicator is desired, please 
-    see dsds.encoders.missing_indicator.
+    Expands multivalued categorical columns into several one-hot-encoded columns respectively. A multivalued categorical
+    column is a column with strings like `aaa|bbb|ccc`, which means this row belongs to categories aaa, bbb, and ccc. 
+    Typically, such a column will contain strings separated by a delimiter. This method will collect all unique strings 
+    separated by the delimiter and one hot encode the corresponding column, e.g. by checking if `aaa` is contained in 
+    values of this column. Null values will be mapped to 0 always. If a one-hot-encoded null indicator is desired, 
+    please see dsds.encoders.missing_indicator.
 
     This will be remembered by blueprint by default.
 
@@ -435,7 +435,9 @@ def multicat_one_hot_encode(
         u = c[0]
         if len(u) > 1:
             exprs.extend(
-                pl.col(c.name).str.contains(u[i]).fill_null(False).cast(pl.UInt8).alias(c.name + delimiter + u[i])
+                pl.col(c.name).str.contains(u[i], literal=True).fill_null(False).cast(pl.UInt8).alias(
+                    c.name + delimiter + u[i]
+                )
                 for i in range(start_index, len(u)) if isinstance(u[i], str)
             )
         else:

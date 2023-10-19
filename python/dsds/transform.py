@@ -1527,11 +1527,12 @@ def extract_first_number(
         string columns.
     ignore_comma
         If true, remove the "," in the string before matching for numbers. If you know there won't be 
-        comma, turn this to False can improve performance.
+        comma, turn this to False can improve performance. Note this replaces "," by the empty string,
+        which may cause problems for comma-separated formats.
     dtype
         A valid Polars numeric type, like pl.Float64, that you want to cast the numbers to.
     default
-        If not none, then will add a fill null step this default value. Note that default will have numerical
+        If not none, then will add a fill null step with this default value. Note that default will have numerical
         dtype as provided by dtype.
 
     Example
