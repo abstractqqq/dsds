@@ -10,9 +10,9 @@ from .prescreen import (
 
 from .type_alias import (
     PolarsFrame
-    , MRMRStrategy
+    , MRMRRelevance
+    , MRMRSelectStrategy
     , BinaryModels
-    , clean_strategy_str
     , ClassifModel
 )
 from .blueprint import(
@@ -511,252 +511,196 @@ def ks_statistic(
     pbar.close()
     return pl.from_records([nums, ks_values, p_values], schema=["feature", "ks", "p_value"])
 
+# ----------------------------------------- MRMR ----------------------------------------------
+
 def _mrmr_relevance(
-    df:pl.DataFrame
+    df:PolarsFrame
     , target:str
     , cols:list[str]
-    , strategy:MRMRStrategy
-) -> np.ndarray:
-    
-    logger.info(f"Running {strategy} to determine feature relevance...")
-    s = clean_strategy_str(strategy)
-    if s in ("fscore", "f", "f_score"):
+    , relevance:MRMRRelevance
+) -> dict[str, float]:
+    use_cols = cols if target in cols else cols + [target]
+    logger.info(f"Running {relevance} to determine feature relevance...")
+    if relevance == "f":
         scores = _f_score(df, target, cols)
-    elif s in ("mis", "mutual_info_score"):
-        scores = mutual_info(df, conti_cols=cols, target=target).get_column("estimated_mi").to_numpy().ravel()
-    elif s in ("lgbm", "lightgbm"):
+    elif relevance == "mis":
+        df_local = df.lazy().select(use_cols).collect()
+        scores = (
+            mutual_info(df_local, conti_cols=cols, target=target)
+            .get_column("estimated_mi").to_numpy().ravel()
+        )
+    elif relevance == "lgbm":
         from dsds.optuna_integration import suggest_b_lgbm_hyperparams
         import lightgbm as lgb
-        use_cols = cols if target in cols else cols + [target]
-        params, _ = suggest_b_lgbm_hyperparams(df[use_cols], target, 30, "log_loss")
+        df_local = df.lazy().select(use_cols).collect()
+        params, _ = suggest_b_lgbm_hyperparams(df_local, target, 30, "log_loss")
+        params['verbosity'] = -1
         logger.info("LightGBM tuning is not deterministic by default. Results may vary.")
         logger.info(f"Recommended hyperparameters: {params}")
-        X, y = df[cols].to_numpy(), df[target].to_numpy()
+        X, y = df_local[cols].to_numpy(), df_local[target].to_numpy()
         data = lgb.Dataset(X, label=y)
         lgbm = lgb.train(params, data)
         scores = lgbm.feature_importance()
-    elif s == "ks":
-        scores = ks_statistic(df, target, cols).drop_in_place("ks").to_numpy()
+    elif relevance == "ks":
+        df_local = df.lazy().select(use_cols).collect()
+        scores = ks_statistic(df_local, target, cols).drop_in_place("ks").to_numpy()
     else: # Pythonic nonsense
-        raise ValueError(f"The strategy {strategy} is not a valid MRMR Strategy. Check for typos, spelling, etc.")
+        raise ValueError(f"The relevance strategy {relevance} is not a valid MRMR Strategy. "
+                         "Check for typos, spelling, etc.")
     
+    # Clean up
     invalid = np.isinf(scores) | np.isnan(scores)
     if invalid.any():
         invalid_cols = [cols[i] for i, v in enumerate(invalid) if v]
         logger.info(f"Found Inf/NaN in relevance score computation. {invalid_cols}")
         logger.info("They will be set to 0. The cause is usually high null, or low variance, or "
-                    "the algorithm chosen cannot handle the input data type.")        
+                    "the chosen algorithm cannot handle the input data type.")        
         scores[invalid] = 0.
 
-    return scores
+    return dict(zip(cols, scores))
 
-# Add an option for a score the user can pass in?
-def mrmr(
-    df:pl.DataFrame
-    , target:str
-    , k:int
-    , cols:Optional[list[str]] = None
-    , strategy: MRMRStrategy = "fscore"
-) -> Union[list[str], Tuple[list[str], np.ndarray]]:
+def _accum_corr_mrmr(
+    df: PolarsFrame
+    , k: int
+    , cols: list[str]
+    , scores: np.ndarray
+    , k_weighted: bool = False
+    , verbose: bool = False
+) -> list[str]:
     '''
-    Implements MRMR. First we have to use a strategy to find the "relevance" of a feature, and then 
-    we use accumulated correlation as a criterion to select the featuers. First, we pick the top feature
-    with highest "relevance". When we pick the second feature, we look at the candidate feature's abs correlation
-    with the picked feature, rescale "relevance" by abs correlation, and select the second feature based on
-    this rescaled "relevance". When we pick the third feature, we look at the candidate feature's accumulated
-    abs correlation with the two features selected, rescale "relevance" by the accumulated abs correlation, and select
-    the next most relevant feature, and the process continues until we've selected k features.
-    
-    Note: A common source of numerical `error` is data quality. If input data has too high null% or too 
-    low variance, some methods will not work.
+    Given `relevance scores`, run MRMR with accumulated absolute correlation strategy. E.g. for round j,
+    there are j features already selected. We pick the j+1 -th feature by
+        
+        max_{x, x not selected} (score / ((sum_{f, f selected} abs_corr(x, f))/j)
 
-    Currently this only supports binary classification. It is possible to make it run even faster if we allow
-    the computation of correlation matrix upfront. But in practice that often creates memory problems and therefore
-    that option is removed.
+    The denominator is the average abs corr of this feature with selected features. Note that denominator
+    is always <= 1. So if the denominator is smaller (overall, x is less correlated with selected features),
+    the relative score in this round will be bigger.
 
     Parameters
     ----------
     df
-        Either a lazy or eager Polars Dataframe. This method will collect internally.
-    target
-        Target column
+        Either a lazy or eager Polars dataframe
     k
-        Top k features to keep
-    cols
-        Optional. A list of numerical columns. If not provided, all numerical columns will be used.
-    strategy
-        MRMR strategy. By default, `fscore` will be used.
-    params
-        Optional. If a model strategy is selected (`rf`, `xgb`, `lgbm`), params is a dict of 
-        parameters for the model.
-    return_score
-        If true, the relevance score will be returned as well
+        The number of features to pick
+    scores
+        MRMR Relevance score
+    k_weighted
+        If true, the correlation of x with the first selected feature will be weighted by 1, the correlation
+        of x with the second selected feature will be weighted by (1 - 1/k), ..., the correlation of x with
+        the j-th selected feature will be weighted by (1 - j/k)
+    verbose
+        If true, will print out some detail about the scores, accumulated correlation for each round.
     '''
-    if isinstance(cols, list):
-        nums = [c for c in cols if c != target and c in df.columns]
-        _ = type_checker(df, nums, "numeric", "mrmr")
-    else:
-        nums = get_numeric_cols(df, exclude=[target])
 
-    # Unlike knockout MRMR, here we should proceed with eager
-    df_local = df.lazy().select(nums + [target]).collect()
-    scores = _mrmr_relevance(
-        df_local
-        , target
-        , nums
-        , strategy
-    )
-
-    # Always do low memory option. Do not scale upfront.
-
-    # Init MRMR
-    output_size = min(k, len(nums))
-    logger.info(f"Found {len(nums)} total features to select from. Proceeding to select top {output_size} features.")
-    # 
-    acc_abs_corr = np.zeros(len(nums)) # For each feature at index i, we keep an accumulating abs corr
-    selected = [nums[int(np.argmax(scores))]]
-    pbar = tqdm(total=output_size, desc = f"MRMR, {strategy}", position=0, leave=True)
+    kw = int(k_weighted)
+    output_size = min(k, len(cols))
+    logger.info(f"Found {len(cols)} total features to select from. Proceeding to select top {output_size} features.")
+    acc_abs_corr = np.zeros(len(cols)) # For each feature at index i, we keep an accumulating abs corr
+    selected = [cols[int(np.argmax(scores))]]
+    pbar = tqdm(total=output_size, desc = "MRMR", position=0, leave=True)
     pbar.update(1)
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will still be huge
-    mean_std = df_local.lazy().select(
+    mean_std = df.lazy().select(
         pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0))
-        for c in nums
+        for c in cols
     ).collect().row(0)
-    memo:dict[str, Tuple[float, float]] = dict(zip(nums, mean_std))
+    memo:dict[str, Tuple[float, float]] = dict(zip(cols, mean_std))
     for j in range(1, output_size):
         last = selected[-1]
         last_mean, last_std = memo[last]        
-        last_col: pl.Series = df_local[last] - last_mean
-        # cdd: candidate
-        for i, cdd in enumerate(nums):
-            if cdd in selected:
-                acc_abs_corr[i] = -1
-            else:
-                cdd_mean, cdd_std = memo[cdd]   
-                cdd_col = df_local[cdd] - cdd_mean
-                a = last_col.dot(cdd_col) / (len(df_local) * cdd_std * last_std)
-                # In the rare case this calculation yields a NaN, we punish by adding 1.
-                # Otherwise, proceed as usual. +1 is a punishment because |corr| can be at most 1.
-                acc_abs_corr[i] += 1 if (np.isnan(a) | np.isinf(a)) else np.abs(a)
+        last_col: pl.Expr = pl.col(last) - last_mean
+        all_exprs = (
+            pl.lit(-k).alias(x)
+            if x in selected else 
+            last_col.dot(pl.col(x) - memo[x][0]).abs().truediv(pl.count() * memo[x][1] * last_std).alias(x)
+            for x in cols 
+        ) # x: candidate
+        # Compute all abs correlation that we need
+        abs_corrs = df.lazy().select(
+            all_exprs
+        ).collect().to_numpy()[0, :]
+        nan_or_inf = (np.isnan(abs_corrs) | np.isinf(abs_corrs))
+        abs_corrs[nan_or_inf] = 1.0 # Punish by setting |corr| to 1 if NaN of Inf. 
+        # Add to accumulated abs correlation
+        acc_abs_corr += (1 - kw * j/k)  * abs_corrs
 
-        new_score = j * scores / acc_abs_corr
-        selected.append(nums[int(np.argmax(new_score))])
+        # Compute the scaled score (the relative score)
+        new_score = j * scores / acc_abs_corr # Selected ones will have negative values, so won't affect argmax 
+        
+        if verbose:
+            top = sorted(zip(cols, new_score, acc_abs_corr), key = lambda x:x[1], reverse=True)[:20]
+            top = [t for t in top if t[2] > 0]
+            logger.info(f"Round {j+1}: The top {len(top)} features, relative score, and "
+                        f"the accumulated correlation are the following:\n{top}")
+            logger.info(f"The selected feature is {top[0][0]}")
+
+        selected.append(cols[int(np.argmax(new_score))])
         pbar.update(1)
     pbar.close()
     print("Output is sorted in order of selection (max relevance min redundancy).")
     return selected
 
-def mrmr_selector(
-    df:PolarsFrame
-    , target:str
-    , top_k:int
-    , strategy:MRMRStrategy = "fscore"
-) -> PolarsFrame:
-    '''
-    Keeps only the top_k (first k) features selected by MRMR and the ones that cannot be processed by the algorithm.
-
-    Parameters
-    ----------
-    df
-        Either an eager or lazy Polars dataframe. If lazy, it will be collected
-    target
-        The target column
-    top_k
-        The top_k features will ke kept
-    strategy
-        One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
-    low_memory
-        If true, use less memory. But the computation will take longer
-    '''
-    nums = get_numeric_cols(df)
-    s = clean_strategy_str(strategy)
-    to_select = mrmr(df, target, top_k, nums, s)
-    logger.info(f"Selected {len(to_select)} features. There are {len(df.columns) - len(to_select)} columns the "
-          "algorithm cannot process. They are also returned.")
-    to_select.extend(f for f in df.columns if f not in nums)
-    return _dsds_select(df, to_select, persist=True)
-
-def knock_out_mrmr(
-    df:PolarsFrame
-    , target:str
-    , k:int 
-    , cols:Optional[list[str]] = None
-    , corr_threshold:float = 0.7
-    , strategy:MRMRStrategy = "fscore"
+def _knock_out_mrmr(
+    df: PolarsFrame
+    , k: int
+    , cols: list[str]
+    , scores: np.ndarray
+    , corr_threshold: float
+    , verbose: bool = False
 ) -> list[str]:
     '''
-    Essentially the same as vanilla MRMR. Instead of using avg(abs(corr)) to "weigh" punish correlated 
-    variables, here we use a simpler knock out rule based on absolute correlation. We go down the list
-    according to importance, take top one, knock out all other features that are highly correlated with
-    it, take the next top feature that has not been knocked out, continue, until we pick enough features
-    or there is no feature left. This is inspired by the package Featurewiz and its creator.
-
-    Note that this may not guarantee to return k features when most of them are highly correlated.
-
-    It is possible to make it run even faster if we allow the computation of correlation matrix upfront. 
-    But in practice that often creates memory problems and therefore that option is removed.
+    Given `relevance scores`, run MRMR with simple knock out strategy. E.g. for round j, pick
+    a the top remaining feature. Find all remaining features with absolute correlation that is
+    higher than corr_threshold with the selected feature. Knock them out. Then find the next 
+    highest-score feature remaining, and continue. 
 
     Parameters
     ----------
     df
-        Either a lazy or eager Polars Dataframe. This method will collect internally.
-    target
-        The target column
+        Either a lazy or eager Polars dataframe
     k
-        The top k features to return
-    cols
-        Numerical columns to select from. If not provided, all numeric columns will be used
+        The number of features to pick
+    scores
+        MRMR Relevance score
     corr_threshold
-        The correlation threshold above which is considered too high. This means if A has high 
-        correlation with B, then B will not be selected if A is already selected
-    strategy
-        One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
+        The absolute correlation threshold to perform the knock out
     '''
-    if isinstance(cols, list):
-        nums = [c for c in cols if c != target and c in df.columns]
-        _ = type_checker(df, nums, "numeric", "knock_out_mrmr")
-    else:
-        nums = get_numeric_cols(df, exclude=[target])
-
-    if target not in nums:
-        nums.append(target)
-
-    df_local = df.lazy().select(nums + [target]).collect()
-    scores = _mrmr_relevance(
-        df_local
-        , target
-        , nums
-        , strategy
-    )
-
+    
     # Set up
-    surviving_indices = np.full(shape=len(nums), fill_value=True) # an array of booleans
+    surviving_indices = np.full(shape=len(cols), fill_value=True) # an array of booleans
     scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
-    output_size = min(k, len(nums))
-    pbar = tqdm(total=output_size, desc = f"Knock out MRMR, {strategy}", position=0, leave=True)
+    output_size = min(k, len(cols))
+    pbar = tqdm(total=output_size, desc = "Knock out MRMR", position=0, leave=True)
     # Memoization, only for mean and std
-    # If we memoize the scaled series, memory footprint will still be huge
-    mean_std = df_local.lazy().select(
+    # If we memoize the scaled series, memory footprint will be too big
+    mean_std = df.lazy().select(
         pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0))
-        for c in nums
+        for c in cols
     ).collect().row(0)
-    memo:dict[str, Tuple[float, float]] = dict(zip(nums, mean_std))
+    memo:dict[str, Tuple[float, float]] = dict(zip(cols, mean_std))
     # Run the knock outs
     for i, _ in scores:
         if surviving_indices[i]:
-            feat = nums[i]
+            feat = cols[i]
             selected.append(feat)
-            feat_expr = pl.col(feat) - memo[feat][0] 
-            low_corr = df_local.lazy().select(
+            feat_mean, feat_std = memo[feat]
+            feat_expr = pl.col(feat) - feat_mean
+            low_corr = df.lazy().select(
                 (
-                    (feat_expr.dot(pl.col(x) - memo[x][0])).truediv(pl.count()).lt(
-                        corr_threshold * memo[feat][1] * memo[x][1]
+                    (feat_expr.dot(pl.col(x) - memo[x][0])).abs().truediv(pl.count()).lt(
+                        corr_threshold * feat_std * memo[x][1]
                     )
                 ).alias(x)
-                for x in nums
+                for x in cols
             ).collect().to_numpy()[0, :]
+            if verbose:
+                high_corr_cols = [cols[i] for i, is_low in enumerate(low_corr) if not is_low][:20]
+                logger.info(f"Knock out round {i+1} is done. The feature selected is {feat}")
+                logger.info(f"The following features are knocked out:\n{high_corr_cols}")
+
             surviving_indices &= low_corr
             pbar.update(1)
         if len(selected) >= output_size:
@@ -764,46 +708,107 @@ def knock_out_mrmr(
 
     pbar.close()
     if len(selected) < k:
-        print(f"Found only {len(selected)}/{k} number of values because most of them are highly correlated and the knock out "
-              "rule eliminates most of them.")
+        logger.info(f"Found only {len(selected)}/{k} number of values because most of them "
+                    "are highly correlated and the knock out rule eliminated most of them.")
 
-    print("Output is sorted in order of selection (max relevance min redundancy).")
+    logger.info("Output is sorted in order of selection (max relevance min redundancy).")
     return selected
 
-def knock_out_mrmr_selector(
-    df:PolarsFrame
-    , target:str
-    , top_k:int 
-    , corr_threshold:float = 0.7
-    , strategy:MRMRStrategy = "fscore"
-) -> PolarsFrame:
+def mrmr_engine(
+    df: PolarsFrame
+    , k: int
+    , relevance: dict[str, float]
+    , strategy: MRMRSelectStrategy = "weighted_accum_corr"
+    , **kwargs
+) -> list[str]:
     '''
-    Keeps only the top_k (first k) features selected by MRMR and the ones that cannot be processed by the algorithm.
+    A customizable MRMR Engine that runs the MRMR feature selection algorithm.
 
     Parameters
     ----------
     df
-        Either an eager or lazy Polars dataframe. If lazy, it will be collected
+        Either a lazy or eager Polars DataFrame
+    k
+        The number of features you want to select
+    relevance
+        A dictionary with keys being column names, values being relevance value of the
+        feature.
+    strategy
+        How do you want the MRMR selection to be run? Valid strategies are `knock_out`,
+        `accum_corr`, `weighted_accum_corr` or `custom`. Currently `custom` is not implemented
+    
+    kwargs
+    ------
+    If `strategy` is knock_out, you may optionally supply a corr_threshold keyword argument. The default
+    value is 0.75 
+
+    All builtin strategy has an optional verbose keyword argument for more details in the selection
+    process.
+    '''
+    
+    if len(relevance) == 0:
+        return []
+    
+    cols = list(relevance.keys()) # Python dict is ordered.
+    scores = np.array([v for v in relevance.values()])
+    if (scores < 0).any():
+        raise ValueError("Feature relevance scores must be all positive.")
+    
+    df_local = df.select(cols)
+    if strategy == "accum_corr":
+        return _accum_corr_mrmr(df_local, k, cols, scores, False, **kwargs)
+    elif strategy == "weighted_accum_corr":
+        return _accum_corr_mrmr(df_local, k, cols, scores, True, **kwargs)
+    elif strategy == "knock_out":
+        if "corr_threshold" not in kwargs:
+            logger.warn("Found `corr_threshold` is None. Set to 0.75 by default.")
+            kwargs["corr_threshold"] = 0.75
+        
+        return _knock_out_mrmr(df_local, k, cols, scores, **kwargs)
+    elif strategy == "custom":
+        return NotImplemented
+    else:
+        raise TypeError(f"The strategy {strategy} is not a valid MRMRSelectStrategy.")
+    
+def mrmr(
+    df: PolarsFrame
+    , target: str
+    , k: int
+    , cols: Optional[list[str]] = None
+    , relevance: MRMRRelevance = "f"
+    , mrmr_strategy: MRMRSelectStrategy = "weighted_accum_corr"
+    , **kwargs
+) -> list[str]:
+    '''
+    Run MRMR with builtin options.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe. Note for most options, df will be collected internally.
     target
         The target column
-    top_k
-        The top_k features will ke kept
-    corr_threshold
-        The threshold above which correlation is considered too high. This means if A has high correlation to B, then
-        B will not be selected if A is
-    strategy
-        One of 'f', 'mis', 'lgbm'. It will use the corresponding method to compute feature relevance
+    k
+        The number of features to output
+    cols
+        The columns to select from. If not given, all numerical ones will be used.
+    relevance
+        Oen of `f`, `lgbm`, `mis`, or `ks`. Right now only binary target is supported.
+    mrmr_strategy
+        How to run MRMR. One of `knock_out`, `accum_corr`, `weighted_accum_corr`    
     '''
-    nums = get_numeric_cols(df)
-    complement = [f for f in df.columns if f not in nums]
-    s = clean_strategy_str(strategy)
-    to_select = knock_out_mrmr(df, target, top_k, nums, s, corr_threshold)
-    print(f"Selected {len(to_select)} features. There are {len(complement)} columns the "
-          "algorithm cannot process. They are also returned.")
     
-    return _dsds_select(df, to_select + complement, persist=True)
+    if cols is None:
+        nums = get_numeric_cols(df, exclude=[target])
+    else:
+        _ = type_checker(df, cols, "numeric", "mrmr")
+        nums = [c for c in cols if c != target]
 
-# Selectors for the methods below are not yet implemented
+    rel_dict = _mrmr_relevance(df, target, nums, relevance)
+    return mrmr_engine(df, k, rel_dict, mrmr_strategy, **kwargs)
+
+# -------------------------------------- End of MRMR -------------------------------------------
+
 
 def woe_iv(
     df:PolarsFrame

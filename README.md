@@ -1,20 +1,20 @@
 # Welcome to the DSDS
 
-This package is in pre-alpha stage. Please read CONTRIBUTING.md if you are a developer interested in contributing to this package.
+This package is in pre-alpha stage. There is currently no documentation webpage. Only docstrings and github. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) if you are a developer interested in contributing to this package.
 
 A general purpose traditional data science package for large and scalable data operations. It aims to be an improvement over a subset of functionalities in other packages like Scikit-learn, category_encoders, or feature engine, etc. The primary focus right now is:
 
-0. Treating dataframes as first-class citizen, using Rust, NumPy, SciPy as tools to support. No more other core dependency. Will rely more on Rust as time goes. Python side dependency should be minimized. 
+0. Treating dataframes as first-class citizen, using Rust, NumPy to support. The only other core dependency is SciPy and NumPy. Will rely more on Rust as time goes. Python side dependency should be minimized. 
 1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, over time report etc.)
 2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, mutual_info_score, better feature extraction and engineering, etc. Currently, DSDS provides MRMR with more than 90% speed up than the most popular MRMR package on github. For model details, see [here](./FEATURE_SELECTION.md)
 3. Cleaner pipeline construction and management, much easier to create custom "transformers" (All Polars Expressions are acceptable as "transformers".)
-4. Consistent API with intuitive argument names and extensive docstring and examples. No function side effect. Always return one type of output.
+4. Consistent API with intuitive argument names and extensive docstring and examples. No function side effect. 
 5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. Just Polars.
-6. Better performance and faster iteration and less reliance on expensive VMs
+6. Better performance and faster iteration
 
 At this moment, it will not include traditional data science models, like SVM, random forest, etc. This may change once in the future when the Rust side of data science models catch up.
 
-DSDS is built around your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
+DSDS is built upon your favorite: [Polars Dataframe](https://github.com/pola-rs/polars)
 
 [Here is why in my opinion data scientists, analysts and engineers should switch to Polars!](https://medium.com/@tq9695/all-that-polars-that-make-you-forget-pandas-3dc0fdfaefbe)
 
@@ -156,7 +156,7 @@ Originally I choose the name DSDS because it stands for Dark Side of Data Scienc
 
 # Why is this package dependent on Sklearn?
 
-As of 0.0.34, the package does not explicitly rely on Scikit-learn any more. The only modelled "feature_importance" the package will accept is LightGBM, which is an optional dependency.
+As of 0.0.34, the package does not explicitly rely on Scikit-learn any more. The only model-dependent "feature_importance" the package will use is LightGBM, which is an optional dependency.
 
 # Why not write more in Rust?
 

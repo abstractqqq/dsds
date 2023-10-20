@@ -1,12 +1,15 @@
 import pytest
 import polars as pl
 import pandas as pd
+import os
+import dsds
 import dsds.sample as sa
 import dsds.metrics as me
 import dsds.transform as t
 import dsds.fs as fs
 import dsds.encoders as enc
 import numpy as np
+import logging
 from polars.testing import assert_frame_equal
 from dsds.type_alias import PolarsFrame
 from sklearn.model_selection import train_test_split
@@ -15,11 +18,17 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn import set_config
 from sklearn.datasets import fetch_openml, make_classification
-from category_encoders import TargetEncoder, OneHotEncoder, WOEEncoder
+from category_encoders import TargetEncoder, WOEEncoder
 from mrmr import mrmr_classif
 # from category_encoders import target_encoder, WOEEncoder, OneHotEncoder
 
 set_config(transform_output = "pandas")
+
+dsds.CHECK_COL_TYPES = False
+dsds.THREADS = os.cpu_count()
+
+for logger in (logging.getLogger(name) for name in logging.root.manager.loggerDict):
+    logger.setLevel(logging.CRITICAL)
 
 def dsds_train_test_split(df: PolarsFrame, train_frac:float = 0.75) -> tuple[pl.DataFrame, pl.DataFrame]:
     return sa.train_test_split(df, train_frac=train_frac)
@@ -317,7 +326,7 @@ def test_target_encoding_74k_category_encoders(encoder_test, benchmark):
 
 @pytest.fixture
 def mrmr_pl_df() -> pl.DataFrame:
-    orig_x, orig_y = make_classification(n_samples = 50_000, n_features = 300, n_informative = 60, n_redundant = 240)
+    orig_x, orig_y = make_classification(n_samples = 10_000, n_features = 500, n_informative = 60, n_redundant = 440)
     df_pl = pl.from_numpy(orig_x).insert_at_idx(0, pl.Series("target", orig_y))
     return df_pl
 
@@ -333,7 +342,7 @@ def mrmr_package(df:pd.DataFrame, target:str, k:int) -> list[str]:
 def test_mrmr_dsds(mrmr_pl_df, benchmark):
     
     result = benchmark(
-        fs.mrmr, mrmr_pl_df, "target", 50
+        fs.mrmr, mrmr_pl_df, "target", 50, mrmr_strategy = "accum_corr"
     )
     result2 = mrmr_package(mrmr_pl_df.to_pandas(), "target", 50)
     assert result == result2

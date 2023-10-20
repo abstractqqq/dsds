@@ -103,5 +103,5 @@ def suggest_b_lgbm_hyperparams(
 
     study.optimize(objective, n_trials=max_trials, n_jobs=dsds.THREADS, timeout=timeout, gc_after_trial=True)
     trial = study.best_trial
-    print(f"Best params: {trial.params}.\nFound at trial: {trial.number}.\nTime took: {trial.duration}")
+    print(f"Best params: {trial.params}.\nFound at trial: {trial.number}.\nTime took: {trial.duration.seconds}s.")
     return study.best_params, study

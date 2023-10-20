@@ -14,11 +14,13 @@ if sys.version_info >= (3, 10):
     P = ParamSpec('P')
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[Concatenate[PolarsFrame, P], PolarsFrame]
+    MRMRCustomSelector = Callable[Concatenate[PolarsFrame, P], list[str]]
 
 else: # 3.9
     from typing_extensions import TypeAlias
     PolarsFrame:TypeAlias = Union[pl.DataFrame, pl.LazyFrame]
     PipeFunction = Callable[..., PolarsFrame]
+    MRMRCustomSelector = Callable[..., list[str]]
 
 import numpy as np
 
@@ -28,7 +30,8 @@ POLARS_NUMERICAL_TYPES:Final[Tuple[pl.DataType]] = (pl.UInt8, pl.UInt16, pl.UInt
 POLARS_DATETIME_TYPES:Final[Tuple[pl.DataType]] = (pl.Datetime, pl.Date)
 
 # --- Strategies ---
-MRMRStrategy:TypeAlias = Literal["fscore", "f", "f_score", "ks","mis", "mutual_info_score", "lgbm", "lightgbm"]
+MRMRRelevance:TypeAlias = Literal["f", "ks", "mis", "lgbm"]
+MRMRSelectStrategy: TypeAlias = Literal["knock_out", "accum_corr", "weighted_accum_corr", "custom"]
 ScalingStrategy:TypeAlias = Literal["standard", "min_max", "const", "constant", "robust", "max_abs"]
 ScaleByStrategy:TypeAlias = Literal["standard", "min_max", "robust", "max_abs", "mean", "median", "max"]
 SimpleImputeStrategy:TypeAlias = Literal["mean", "avg", "median", "const", 
