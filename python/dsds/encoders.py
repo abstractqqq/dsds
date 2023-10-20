@@ -649,8 +649,7 @@ def quantile_binning(
 ) -> PolarsFrame:
     '''
     Bin a continuous variable into categories, based on quantile. Null values will be its own category. The same binning
-    rule will be applied to all columns in cols. If you want different n_bins for different columns, chain another 
-    quantile_binning with different cols and n_bins.
+    rule will be applied to all columns in cols.
 
     This will be remembered by blueprint by default.
 
@@ -659,8 +658,7 @@ def quantile_binning(
     df
         Either a lazy or eager Polars dataframe
     cols
-        A list of numeric columns. This has to be supplied by the user because it is not recommended
-        to bin all numerical variables
+        A list of numeric columns.
     n_bins
         The number of desired bins. If n_bins = 4, the quantile cuts will be [0.25,0.5,0.74], and 4 
         categories will be created, which represent values ranging from (-inf, 0.25 quantile value],
@@ -701,17 +699,7 @@ def quantile_binning(
     └───────────┘
     '''
     _ = type_checker(df, cols, "numeric", "quantile_binning")
-    if isinstance(df, pl.LazyFrame):
-        cuts = df.select(
-            pl.col(cols).qcut(quantiles=n_bins).unique().cast(pl.Utf8).str.extract(r"\((.*?),")
-            .cast(pl.Float64).sort().tail(n_bins)
-        ).collect()
-        exprs = [
-            pl.col(c).cut(cuts.drop_in_place(c).to_list()).cast(pl.Utf8).suffix(suffix) for c in cols
-        ]
-    else: # Eager frame
-        exprs = [pl.col(cols).qcut(quantiles=n_bins).cast(pl.Utf8).suffix(suffix)]
-
+    exprs = [pl.col(cols).qcut(quantiles=n_bins).cast(pl.Utf8).suffix(suffix)]
     return _dsds_with_columns(df, exprs)
 
 def woe_cat_encode(

@@ -85,3 +85,26 @@ def test_selective_one_hot(df:pl.DataFrame, selected:dict[str, list[str]], res:p
         , res
     )
 
+
+@pytest.mark.parametrize("df, cols, n_bins, res", [
+    (
+        pl.DataFrame({
+            "a": range(5)
+        })
+        , ["a"]
+        , 4
+        , pl.DataFrame({
+            "a":pl.Series("a_A", ["(-inf, 1]","(-inf, 1]","(1, 2]","(2, 3]","(3, inf]"], dtype=pl.Utf8),
+        })
+    )
+])
+def test_quantile_binning(df:pl.DataFrame, cols:list[str], n_bins:int, res:pl.DataFrame):
+    assert_frame_equal(
+        enc.quantile_binning(df, cols, n_bins)
+        , res
+    )
+    assert_frame_equal(
+        enc.quantile_binning(df.lazy(), cols, n_bins).collect()
+        , res
+    )
+
