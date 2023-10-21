@@ -13,8 +13,8 @@ CHECK_COL_TYPES: bool = True
 FETCH_ROW_NUM: int = 10
 # For all functions that expect binary target, should we do a safeguard?
 
-# Progress bar. Print progress bar or not? Not implemented yet.
-PROGRESS_BAR = True
+# Progress bar. Print progress bar or not?
+NO_PROGRESS_BAR = False
 
 # Number of threads to use by default in non-Polars settings.
 THREADS:int = os.cpu_count() - 1

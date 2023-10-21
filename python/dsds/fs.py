@@ -234,7 +234,7 @@ def mutual_info(
 
     estimates = []
     psi_n_and_k = psi(n) + psi(n_neighbors)
-    pbar = tqdm(total = len(conti_cols), desc = "Mutual Info")
+    pbar = tqdm(total = len(conti_cols), desc = "Mutual Info", disable=dsds.NO_PROGRESS_BAR)
     for col in df.select(conti_cols).get_columns():
         c = col.drop_nulls().cast(pl.Float64).to_numpy(zero_copy_only=True)
         # Add random noise here because if inpute data is too big, then adding
@@ -519,6 +519,7 @@ def _mrmr_relevance(
     , cols:list[str]
     , relevance:MRMRRelevance
 ) -> dict[str, float]:
+    
     use_cols = cols if target in cols else cols + [target]
     logger.info(f"Running {relevance} to determine feature relevance...")
     if relevance == "f":
@@ -598,14 +599,14 @@ def _accum_corr_mrmr(
     logger.info(f"Found {len(cols)} total features to select from. Proceeding to select top {output_size} features.")
     acc_abs_corr = np.zeros(len(cols)) # For each feature at index i, we keep an accumulating abs corr
     selected = [cols[int(np.argmax(scores))]]
-    pbar = tqdm(total=output_size, desc = "MRMR", position=0, leave=True)
+    pbar = tqdm(total=output_size, desc = "MRMR", position=0, leave=True, disable=dsds.NO_PROGRESS_BAR)
     pbar.update(1)
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will still be huge
     mean_std = df.lazy().select(
-        pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0))
-        for c in cols
+        pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0)) for c in cols
     ).collect().row(0)
+    # dict[str, pl.Series]
     memo:dict[str, Tuple[float, float]] = dict(zip(cols, mean_std))
     for j in range(1, output_size):
         last = selected[-1]
@@ -624,10 +625,11 @@ def _accum_corr_mrmr(
         nan_or_inf = (np.isnan(abs_corrs) | np.isinf(abs_corrs))
         abs_corrs[nan_or_inf] = 1.0 # Punish by setting |corr| to 1 if NaN of Inf. 
         # Add to accumulated abs correlation
-        acc_abs_corr += (1 - kw * j/k)  * abs_corrs
+        acc_abs_corr += np.multiply(1 - kw * j/k,  abs_corrs)
 
         # Compute the scaled score (the relative score)
-        new_score = j * scores / acc_abs_corr # Selected ones will have negative values, so won't affect argmax 
+        new_score = np.divide(j*scores, acc_abs_corr)
+        # Selected ones will have negative values, so won't affect argmax 
         
         if verbose:
             top = sorted(zip(cols, new_score, acc_abs_corr), key = lambda x:x[1], reverse=True)[:20]
@@ -636,7 +638,9 @@ def _accum_corr_mrmr(
                         f"the accumulated correlation are the following:\n{top}")
             logger.info(f"The selected feature is {top[0][0]}")
 
-        selected.append(cols[int(np.argmax(new_score))])
+        chosen_idx = int(np.argmax(new_score))
+        scores[chosen_idx] = 0.
+        selected.append(cols[chosen_idx])
         pbar.update(1)
     pbar.close()
     print("Output is sorted in order of selection (max relevance min redundancy).")
@@ -673,7 +677,7 @@ def _knock_out_mrmr(
     scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
     output_size = min(k, len(cols))
-    pbar = tqdm(total=output_size, desc = "Knock out MRMR", position=0, leave=True)
+    pbar = tqdm(total=output_size, desc = "Knock out MRMR", position=0, leave=True, disable=dsds.NO_PROGRESS_BAR)
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will be too big
     mean_std = df.lazy().select(
@@ -990,7 +994,7 @@ def ebfs(
     features = get_numeric_cols(df, exclude=[target])
     fi = {f:[] for f in features}
     records = []
-    pbar = tqdm(total=math.comb(len(features), n_comb), desc="Combinations")
+    pbar = tqdm(total=math.comb(len(features), n_comb), desc="Combinations", disable=dsds.NO_PROGRESS_BAR)
     df_keep = df.select(features + [target])
     for comb in combinations(features, r = n_comb):
         train, test = train_test_split(df_keep, train_frac)
@@ -1096,7 +1100,7 @@ def permutation_importance(
     X, y = df[features], df[target].to_numpy()
     estimator.fit(X, y)
     score = me.roc_auc(y, estimator.predict_proba(X)[:, -1])
-    pbar = tqdm(total=len(features), desc="Permuting Features")
+    pbar = tqdm(total=len(features), desc="Permuting Features", disable=dsds.NO_PROGRESS_BAR)
     imp = np.zeros(shape=len(features))
     with ThreadPoolExecutor(max_workers=dsds.THREADS) as ex:
         futures = (

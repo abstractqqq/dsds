@@ -1702,7 +1702,7 @@ def _ks_compare(
     , pair:Tuple[str, str]
     , alt:Alternatives="two-sided"
 ) -> Tuple[Tuple[str, str], float, float]:
-    res = ks_2samp(df[pair[0]], df[pair[1]], alt)
+    res = ks_2samp(df[pair[0]].drop_nulls(), df[pair[1]].drop_nulls(), alt)
     return (pair, res.statistic, res.pvalue)
 
 def ks_compare(
@@ -1757,7 +1757,7 @@ def ks_compare(
     last = min(skip + max_comp, n_c2)
     results = []
     to_test = enumerate(combinations(nums, 2))
-    pbar = tqdm(total=min(max_comp, n_c2 - skip), desc="Comparisons")
+    pbar = tqdm(total=min(max_comp, n_c2 - skip), desc="Comparisons", disable=dsds.NO_PROGRESS_BAR)
     with ThreadPoolExecutor(max_workers = dsds.THREADS) as ex:
         for f in as_completed(ex.submit(_ks_compare, df_test, pair, alt) 
                               for i, pair in to_test if i < last and i > skip):
@@ -1788,7 +1788,7 @@ def dist_test(
         df_test = df.select(nums).sample(fraction=smaple_frac)
 
     results = []
-    pbar = tqdm(total=len(nums), desc="Comparisons")
+    pbar = tqdm(total=len(nums), desc="Comparisons", disable=dsds.NO_PROGRESS_BAR)
     with ThreadPoolExecutor(max_workers = dsds.THREADS) as ex:
         for f in as_completed(ex.submit(_dist_inferral, df_test, c, which_dist) for c in nums):
             results.append(f.result())
