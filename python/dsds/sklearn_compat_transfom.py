@@ -1,7 +1,9 @@
 from typing import Union
 import polars as pl
 import logging
+
 logger = logging.getLogger(__name__)
+
 try:
     from sklearn.base import BaseEstimator, TransformerMixin
     import pandas as pd

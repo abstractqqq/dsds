@@ -600,7 +600,8 @@ def _accum_corr_mrmr(
     acc_abs_corr = np.zeros(len(cols), dtype=np.float64) # For each feature at index i, we keep an accumulating abs corr
     selected = [cols[int(np.argmax(scores))]]
 
-    pbar = tqdm(total=output_size, desc = "MRMR", position=0, leave=True, disable=dsds.NO_PROGRESS_BAR)
+    no_pbar = dsds.NO_PROGRESS_BAR | verbose
+    pbar = tqdm(total=output_size, desc = "MRMR", position=0, leave=True, disable=no_pbar)
     pbar.update(1)
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will still be huge
@@ -674,7 +675,8 @@ def _knock_out_mrmr(
     scores = sorted(enumerate(scores), key=lambda x:x[1], reverse=True)
     selected = []
     output_size = min(k, len(cols))
-    pbar = tqdm(total=output_size, desc = "Knock out MRMR", position=0, leave=True, disable=dsds.NO_PROGRESS_BAR)
+    no_pbar = dsds.NO_PROGRESS_BAR | verbose
+    pbar = tqdm(total=output_size, desc = "Knock out MRMR", position=0, leave=True, disable=no_pbar)
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will be too big
     mean_std = df.lazy().select(

@@ -1,6 +1,6 @@
 import polars as pl
 import graphviz
-# import polars.selectors as cs
+import polars.selectors as cs
 import logging
 import math
 
@@ -178,7 +178,7 @@ def dependency_detection(
     if len(use_cols) == 0:
         logger.info("No available column. Either there is no string in the dataframe, or there is no column "
                     "provided by the user, or all columns are constant. Nothing is done.")
-        return pl.DataFrame(), None
+        return pl.DataFrame(schema=["dependent", "depends_on", "CE"]), None
     
     frames = (
         _cond_entropy(df_local, x, y) for x, y in combinations(use_cols, 2)
@@ -210,3 +210,53 @@ def dependency_detection(
     else:
         return out_table, None
 
+
+def str_len_outliers(
+    df: PolarsFrame
+    , quantile_range:Tuple[float, float] = (0.05, 0.95)
+) -> Optional[pl.DataFrame]:
+    '''
+    Find outlier strings records by the length of the strings. If df has no string columns, None
+    will be returned.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe. It is highly recommended that the dataframe is loaded into
+        memory.
+    quantile_range
+        The upper and lower bounds for the length quantiles to identify anomalies.
+    '''
+    df_str = df.lazy().select(cs.string())
+    if len(df_str.columns) == 0:
+        return None
+    
+    str_cols = df_str.columns
+    q1, q2 = quantile_range
+    _q1, _q2 = round(q1 * 100, 1), round(q2 * 100, 1)
+    output = [
+        df.lazy().select(
+            pl.lit(c).alias("Feature"),
+            pl.col(c).n_unique().alias('Total Unique Values'),
+            (pl.col(c).null_count() > 0).alias('Has Null'),
+            pl.col(c).str.len_bytes().quantile(q1).cast(pl.UInt32).alias(f"{_q1:.1f}-Percentile Length"),
+            pl.col(c).str.len_bytes().quantile(q2).cast(pl.UInt32).alias(f"{_q2:.1f}-Percentile Length"),
+            pl.col(c).str.len_bytes().mean().alias("Avg Length"),
+            pl.col(c).str.len_bytes().median().cast(pl.UInt32).alias("Median Length"),
+            pl.col(c).filter(
+                pl.any_horizontal(
+                    pl.col(c).str.len_bytes() < pl.col(c).str.len_bytes().quantile(q1).cast(pl.UInt32),
+                    pl.col(c).str.len_bytes() > pl.col(c).str.len_bytes().quantile(q2).cast(pl.UInt32),
+            )).unique().implode().alias("Outliers")
+        )
+        for c in str_cols
+    ]
+
+    out = pl.concat(pl.collect_all(output)).filter(
+        pl.col("Outliers").list.len() > 0
+    ).with_columns(
+        pl.col("Outliers").list.len().alias("Outlier Count")
+    )
+
+    return out
+    

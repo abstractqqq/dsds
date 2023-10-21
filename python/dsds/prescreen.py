@@ -1698,18 +1698,20 @@ def shrink_dtype(
 #----------------------------------------------------------------------------------------------#
 
 def _ks_compare(
-    df:pl.DataFrame
-    , pair:Tuple[str, str]
+    c1: pl.Series
+    , c2: pl.Series
     , alt:Alternatives="two-sided"
 ) -> Tuple[Tuple[str, str], float, float]:
-    res = ks_2samp(df[pair[0]].drop_nulls(), df[pair[1]].drop_nulls(), alt)
-    return (pair, res.statistic, res.pvalue)
+    
+    res = ks_2samp(c1.drop_nulls().to_numpy(zero_copy_only=True)
+                   , c2.drop_nulls().to_numpy(zero_copy_only=True)
+                   , alt)
+    return ((c1.name, c2.name), res.statistic, res.pvalue)
 
 def ks_compare(
     df:PolarsFrame
     , test_cols:Optional[list[str]] = None
     , alt: Alternatives = "two-sided"
-    , smaple_frac:float = 0.75
     , skip:int = 0
     , max_comp:int = 1000
 ) -> pl.DataFrame:
@@ -1734,8 +1736,6 @@ def ks_compare(
         List of numeric columns which we want to test. If none, will use all non-discrete numeric columns.
     alt
         The alternative for the statistic test. One of `two-sided`, `greater` or `less`
-    sample_frac
-        Sampling fraction to run the test.
     skip
         The number of comparisons to skip
     max_comp
@@ -1748,49 +1748,43 @@ def ks_compare(
         nums = test_cols
 
     nums.sort()
-    if isinstance(df, pl.LazyFrame):
-        df_test = lazy_sample(df.select(nums).lazy(), sample_frac=smaple_frac).collect()
-    else:
-        df_test = df.select(nums).sample(fraction=smaple_frac)
-
     n_c2 = comb(len(nums), 2)
     last = min(skip + max_comp, n_c2)
     results = []
-    to_test = enumerate(combinations(nums, 2))
+    comb_enum = enumerate(combinations(nums, 2))
+    df_local = df.lazy().select(nums).collect()
     pbar = tqdm(total=min(max_comp, n_c2 - skip), desc="Comparisons", disable=dsds.NO_PROGRESS_BAR)
     with ThreadPoolExecutor(max_workers = dsds.THREADS) as ex:
-        for f in as_completed(ex.submit(_ks_compare, df_test, pair, alt) 
-                              for i, pair in to_test if i < last and i > skip):
+
+        for f in as_completed(ex.submit(_ks_compare, df_local[pair[0]], df_local[pair[1]], alt) 
+                              for i, pair in comb_enum if i < last and i > skip
+        ):
             results.append(f.result())
             pbar.update(1)
 
     pbar.close()
     return pl.from_records(results, schema=["combination", "ks-stats", "p-value"])
 
-def _dist_inferral(df:pl.DataFrame, c:str, dist:CommonContiDist) -> Tuple[str, float, float]:
-    res = kstest(df[c], dist)
-    return (c, res.statistic, res.pvalue)
+def _dist_inferral(c:pl.Series, dist:CommonContiDist) -> Tuple[str, float, float]:
+    res = kstest(c.drop_nulls().to_numpy(zero_copy_only=True), dist)
+    return (c.name, res.statistic, res.pvalue)
 
 def dist_test(
     df: PolarsFrame
     , which_dist:CommonContiDist
-    , smaple_frac:float = 0.75
 ) -> pl.DataFrame:
     '''
     Tests if the numeric columns follow the given distribution by using the KS test. The null 
-    hypothesis is that the columns follow the given distribution. We sample 75% of data because 
-    ks test is relatively expensive.
+    hypothesis is that the columns follow the given distribution.
     '''
     nums = get_numeric_cols(df)
-    if isinstance(df, pl.LazyFrame):
-        df_test = lazy_sample(df.select(nums).lazy(), sample_frac=smaple_frac).collect()
-    else:
-        df_test = df.select(nums).sample(fraction=smaple_frac)
-
     results = []
+    df_local = df.lazy().select(nums).collect()
     pbar = tqdm(total=len(nums), desc="Comparisons", disable=dsds.NO_PROGRESS_BAR)
     with ThreadPoolExecutor(max_workers = dsds.THREADS) as ex:
-        for f in as_completed(ex.submit(_dist_inferral, df_test, c, which_dist) for c in nums):
+        for f in as_completed(
+            ex.submit(_dist_inferral, c, which_dist) for c in df_local.get_columns()
+        ):
             results.append(f.result())
             pbar.update(1)
 
@@ -1799,14 +1793,18 @@ def dist_test(
 
 def suggest_normal(
     df:PolarsFrame
-
     , threshold:float = 0.05
 ) -> list[str]:
     '''
     Suggests which columns are normally distributed. This takes the columns for which the null hypothesis
-    cannot be rejected in the dist_test (KS test).
+    cannot be rejected in the dist_test (KS test). This function will standard scale all numeric features 
+    before passing to KS-test. 
     '''
-    return dist_test(df, "norm").filter(pl.col("p_value") > threshold)["feature"].to_list()
+    nums = get_numeric_cols(df)
+    df_local = df.lazy().select(
+        (pl.col(nums) - pl.col(nums).mean()).truediv(pl.col(nums).std())
+    )
+    return dist_test(df_local, "norm").filter(pl.col("p_value") > threshold)["feature"].to_list()
 
 def suggest_uniform(
     df:PolarsFrame
@@ -1814,27 +1812,11 @@ def suggest_uniform(
 ) -> list[str]:
     '''
     Suggests which columns are uniformly distributed. This takes the columns for which the null hypothesis
-    cannot be rejected in the dist_test (KS test).
+    cannot be rejected in the dist_test (KS test). This function will min-max scale all numeric features 
+    before passing to KS-test. 
     '''
-    return dist_test(df, "uniform").filter(pl.col("p_value") > threshold)["feature"].to_list()
-
-def suggest_lognormal(
-    df:PolarsFrame
-    , threshold:float = 0.05
-) -> list[str]:
-    '''
-    Suggests which columns are log-normally distributed. This takes the columns which the null hypothesis
-    cannot be rejected in the dist_test (KS test).
-    '''
-    return dist_test(df, "lognorm").filter(pl.col("p_value") > threshold)["feature"].to_list()
-
-def suggest_dist(
-    df:PolarsFrame
-    , threshold:float = 0.05
-    , dist: CommonContiDist = "norm"
-) -> list[str]:
-    '''
-    Suggests which columns follow the given distribution. This returns the columns which the null hypothesis
-    cannot be rejected in the dist_test (KS test).
-    '''
-    return dist_test(df, dist).filter(pl.col("p_value") > threshold)["feature"].to_list()
+    nums = get_numeric_cols(df)
+    df_local = df.lazy().select(
+        (pl.col(nums) - pl.col(nums).min()).truediv(pl.col(nums).max() - pl.col(nums).min())
+    )
+    return dist_test(df_local, "uniform").filter(pl.col("p_value") > threshold)["feature"].to_list()
