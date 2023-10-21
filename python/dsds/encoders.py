@@ -22,7 +22,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 def missing_indicator(
     df: PolarsFrame
     , cols: Optional[list[str]] = None
@@ -115,9 +114,7 @@ def reverse_one_hot_encode(
     , separator:str = "_"
 ) -> PolarsFrame:
     '''
-    Reverses one-hot-encoded columns.
-
-    This will be remembered by blueprint by default.
+    Reverses one-hot-encoded columns. This will not be remembered by the blueprint.
 
     Paramters
     ---------
@@ -171,7 +168,7 @@ def reverse_one_hot_encode(
         )
         to_drop.extend(columns)
 
-    return _dsds_with_columns_and_drop(df, exprs, to_drop)
+    return df.with_columns(exprs).drop(to_drop)
 
 def selective_one_hot_encode(
     df:PolarsFrame,
@@ -223,7 +220,8 @@ def selective_one_hot_encode(
     exprs = []
     for c, vals in selected.items(): # Python's dict is ordered.
         exprs.extend(
-            pl.col(c).eq(v).fill_null(False).cast(pl.UInt8).alias(c+separator+v) for v in vals if v is not None
+            pl.col(c).eq(v).fill_null(False).cast(pl.UInt8).alias(c+separator+v) 
+            for v in vals if v is not None
         )
     return _dsds_with_columns_and_drop(df, exprs, str_cols)
 

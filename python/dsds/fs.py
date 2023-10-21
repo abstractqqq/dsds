@@ -598,9 +598,14 @@ def _accum_corr_mrmr(
     output_size = min(k, len(cols))
     logger.info(f"Found {len(cols)} total features to select from. Proceeding to select top {output_size} features.")
     acc_abs_corr = np.zeros(len(cols)) # For each feature at index i, we keep an accumulating abs corr
-    selected = [cols[int(np.argmax(scores))]]
+    chosen_idx = int(np.argmax(scores))
+    selected_bool = np.full(shape=(len(cols),), fill_value=False)
+    selected_bool[chosen_idx] = True
+    selected = [cols[chosen_idx]]
+
     pbar = tqdm(total=output_size, desc = "MRMR", position=0, leave=True, disable=dsds.NO_PROGRESS_BAR)
     pbar.update(1)
+    
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will still be huge
     mean_std = df.lazy().select(
@@ -612,21 +617,18 @@ def _accum_corr_mrmr(
         last = selected[-1]
         last_mean, last_std = memo[last]        
         last_col: pl.Expr = pl.col(last) - last_mean
-        all_exprs = (
-            pl.lit(-k).alias(x)
-            if x in selected else 
-            last_col.dot(pl.col(x) - memo[x][0]).abs().truediv(pl.count() * memo[x][1] * last_std).alias(x)
-            for x in cols 
-        ) # x: candidate
         # Compute all abs correlation that we need
         abs_corrs = df.lazy().select(
-            all_exprs
+            pl.lit(-k).alias(cols[i])
+            if s else 
+            last_col.dot(pl.col(cols[i]) - memo[cols[i]][0]).abs()
+            .truediv(pl.count() * memo[cols[i]][1] * last_std).alias(cols[i])
+            for i, s in enumerate(selected_bool) # x: candidate
         ).collect().to_numpy()[0, :]
-        nan_or_inf = (np.isnan(abs_corrs) | np.isinf(abs_corrs))
-        abs_corrs[nan_or_inf] = 1.0 # Punish by setting |corr| to 1 if NaN of Inf. 
+        # Punish by setting |corr| to 1 if NaN of Inf. 
+        abs_corrs[(np.isnan(abs_corrs) | np.isinf(abs_corrs))] = 1.0 
         # Add to accumulated abs correlation
         acc_abs_corr += np.multiply(1 - kw * j/k,  abs_corrs)
-
         # Compute the scaled score (the relative score)
         new_score = np.divide(j*scores, acc_abs_corr)
         # Selected ones will have negative values, so won't affect argmax 
@@ -639,8 +641,9 @@ def _accum_corr_mrmr(
             logger.info(f"The selected feature is {top[0][0]}")
 
         chosen_idx = int(np.argmax(new_score))
-        scores[chosen_idx] = 0.
         selected.append(cols[chosen_idx])
+        selected_bool[chosen_idx] = True
+        scores[chosen_idx] = 0.
         pbar.update(1)
     pbar.close()
     print("Output is sorted in order of selection (max relevance min redundancy).")
@@ -681,8 +684,7 @@ def _knock_out_mrmr(
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will be too big
     mean_std = df.lazy().select(
-        pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0))
-        for c in cols
+        pl.concat_list(pl.col(c).mean(), pl.col(c).std(ddof=0)) for c in cols
     ).collect().row(0)
     memo:dict[str, Tuple[float, float]] = dict(zip(cols, mean_std))
     # Run the knock outs
@@ -693,12 +695,11 @@ def _knock_out_mrmr(
             feat_mean, feat_std = memo[feat]
             feat_expr = pl.col(feat) - feat_mean
             low_corr = df.lazy().select(
-                (
-                    (feat_expr.dot(pl.col(x) - memo[x][0])).abs().truediv(pl.count()).lt(
-                        corr_threshold * feat_std * memo[x][1]
-                    )
-                ).alias(x)
-                for x in cols
+                feat_expr.dot(pl.col(x) - memo[x][0]).abs().truediv(pl.count())
+                .lt(corr_threshold * feat_std * memo[x][1]).alias(x)
+                if surviving_indices[j] else
+                pl.lit(False, dtype=pl.Boolean)
+                for j, x in enumerate(cols)
             ).collect().to_numpy()[0, :]
             if verbose:
                 high_corr_cols = [cols[i] for i, is_low in enumerate(low_corr) if not is_low][:20]
