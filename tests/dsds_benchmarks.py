@@ -335,7 +335,7 @@ def mrmr_package(df:pd.DataFrame, target:str, k:int) -> list[str]:
     features.remove(target)
     X = df[features]
     y = df[target]
-    output = mrmr_classif(X, y, K = k)
+    output = mrmr_classif(X, y, K = k, show_progress=False)
     return output
 
 @pytest.mark.benchmark(group="MRMR")

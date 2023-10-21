@@ -597,15 +597,11 @@ def _accum_corr_mrmr(
     kw = int(k_weighted)
     output_size = min(k, len(cols))
     logger.info(f"Found {len(cols)} total features to select from. Proceeding to select top {output_size} features.")
-    acc_abs_corr = np.zeros(len(cols)) # For each feature at index i, we keep an accumulating abs corr
-    chosen_idx = int(np.argmax(scores))
-    selected_bool = np.full(shape=(len(cols),), fill_value=False)
-    selected_bool[chosen_idx] = True
-    selected = [cols[chosen_idx]]
+    acc_abs_corr = np.zeros(len(cols), dtype=np.float64) # For each feature at index i, we keep an accumulating abs corr
+    selected = [cols[int(np.argmax(scores))]]
 
     pbar = tqdm(total=output_size, desc = "MRMR", position=0, leave=True, disable=dsds.NO_PROGRESS_BAR)
     pbar.update(1)
-    
     # Memoization, only for mean and std
     # If we memoize the scaled series, memory footprint will still be huge
     mean_std = df.lazy().select(
@@ -619,16 +615,16 @@ def _accum_corr_mrmr(
         last_col: pl.Expr = pl.col(last) - last_mean
         # Compute all abs correlation that we need
         abs_corrs = df.lazy().select(
-            pl.lit(-k).alias(cols[i])
-            if s else 
-            last_col.dot(pl.col(cols[i]) - memo[cols[i]][0]).abs()
-            .truediv(pl.count() * memo[cols[i]][1] * last_std).alias(cols[i])
-            for i, s in enumerate(selected_bool) # x: candidate
+            pl.lit(-k).alias(x)
+            if x in selected else 
+            last_col.dot(pl.col(x) - memo[x][0]).abs().truediv(pl.count() * memo[x][1] * last_std).alias(x)
+            for x in cols # x: candidate
         ).collect().to_numpy()[0, :]
-        # Punish by setting |corr| to 1 if NaN of Inf. 
-        abs_corrs[(np.isnan(abs_corrs) | np.isinf(abs_corrs))] = 1.0 
+        # Punish by setting |corr| to 1 if NaN of Inf.
+        bad = np.isnan(abs_corrs) | np.isinf(abs_corrs)
+        abs_corrs[bad] = 1.0 
         # Add to accumulated abs correlation
-        acc_abs_corr += np.multiply(1 - kw * j/k,  abs_corrs)
+        acc_abs_corr += np.multiply(1 - kw * j / k,  abs_corrs)
         # Compute the scaled score (the relative score)
         new_score = np.divide(j*scores, acc_abs_corr)
         # Selected ones will have negative values, so won't affect argmax 
@@ -642,11 +638,9 @@ def _accum_corr_mrmr(
 
         chosen_idx = int(np.argmax(new_score))
         selected.append(cols[chosen_idx])
-        selected_bool[chosen_idx] = True
         scores[chosen_idx] = 0.
         pbar.update(1)
     pbar.close()
-    print("Output is sorted in order of selection (max relevance min redundancy).")
     return selected
 
 def _knock_out_mrmr(
@@ -716,7 +710,6 @@ def _knock_out_mrmr(
         logger.info(f"Found only {len(selected)}/{k} number of values because most of them "
                     "are highly correlated and the knock out rule eliminated most of them.")
 
-    logger.info("Output is sorted in order of selection (max relevance min redundancy).")
     return selected
 
 def mrmr_engine(
@@ -755,7 +748,7 @@ def mrmr_engine(
         return []
     
     cols = list(relevance.keys()) # Python dict is ordered.
-    scores = np.array([v for v in relevance.values()])
+    scores = np.fromiter((v for v in relevance.values()), dtype=np.float64)
     if (scores < 0).any():
         raise ValueError("Feature relevance scores must be all positive.")
     
