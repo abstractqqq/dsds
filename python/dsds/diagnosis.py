@@ -222,7 +222,7 @@ def str_len_outliers(
     Parameters
     ----------
     df
-        Either a lazy or eager Polars dataframe. It is highly recommended that the dataframe is loaded into
+        Either a lazy or eager Polars dataframe. It is recommended that the dataframe is loaded into
         memory.
     quantile_range
         The upper and lower bounds for the length quantiles to identify anomalies.
@@ -260,3 +260,30 @@ def str_len_outliers(
 
     return out
     
+
+def str_pattern_outliers(
+    df: PolarsFrame
+    , c: str
+    , pattern: str 
+) -> list[str]:
+    '''
+    Find out all records that do not follow the given pattern. The pattern has to be a regex that begins
+    with ^ and ends with $.
+
+    Parameters
+    ----------
+    df
+        Either a lazy or eager Polars dataframe.
+    c
+        Column name
+    pattern
+        The regex pattern
+    '''
+    if len(pattern) < 2:
+        raise ValueError(f"Input pattern {pattern} is not a valid a regex pattern.")
+    elif (pattern[0] != '^') | (pattern[-1] != '$'):
+        raise ValueError("Input pattern must start with '^' and end with '$'.")
+    
+    return df.filter(
+        pl.col(c).str.contains(pattern, literal=False).not_()
+    ).get_column(c).to_list()

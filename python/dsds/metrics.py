@@ -145,7 +145,7 @@ def _tp_fp_frame(
         (pl.lit(n) - pl.col("cnt").cumsum() + pl.col("cnt")).alias("predicted_positive")
         , (
             all_positives - pl.col("pos_cnt_at_threshold").cumsum()
-        ).shift_and_fill(fill_value=all_positives, periods=1).alias("tp")
+        ).shift(1, fill_value=all_positives).alias("tp")
     ).select(
         pl.col("threshold")
         , pl.col("cnt")
