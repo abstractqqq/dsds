@@ -18,6 +18,8 @@ DSDS is built upon your favorite: [Polars Dataframe](https://github.com/pola-rs/
 
 [Here is why in my opinion data scientists, analysts and engineers should switch to Polars!](https://medium.com/@tq9695/all-that-polars-that-make-you-forget-pandas-3dc0fdfaefbe)
 
+If you are interested in Polars powered Time Series Feature Extraction, please check out [functime](https://github.com/neocortexdb/functime) (I am also a contributor to that project)
+
 ## Usage
 
 Practical Feature Prescreen and Data 

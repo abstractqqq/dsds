@@ -9,17 +9,17 @@ name = "_dsds_rust"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = {version = "0.19.2", features = ["extension-module"]}
-pyo3-polars = {version = "0.7.0", features = ["derive"]}
+pyo3 = {version = "*", features = ["extension-module"]}
+pyo3-polars = {version = "*", features = ["derive"]}
 polars = {version = "*", features = ["fmt", "performant", "chunked_ids", "lazy", "zip_with", "random"]}
 polars-core = "*"
 polars-lazy = "*"
-rayon = "1.7.0"
 ndarray = {version = "0.15.6", features = ["rayon", "matrixmultiply-threading"]}
 numpy = "*"
 rand = "0.8.5"
 chrono = "0.4.31"
 num = "0.4.1"
+rayon = "1.8.0"
 # faer = {version = "0.12.0", features = ["polars", "ndarray", "nalgebra"]}
 # faer-core = "0.12.0"
 # rustfft = "6.1.0"

@@ -308,24 +308,32 @@ pub fn rs_lempel_ziv_complexity(
     sub_strings.len()
 }
 
-// #[polars_expr(output_type=UInt32)]
-// fn pl_lempel_ziv_complexity(inputs: &[Series]) -> PolarsResult<Series>  {
+
+#[polars_expr(output_type=UInt32)]
+fn pl_lempel_ziv_complexity(inputs: &[Series]) -> PolarsResult<Series>  {
     
-//     let input: &Series = &inputs[0];
-//     let name = input.name();
-//     let bytes: Vec<u8> = match input.dtype() {
-//         DataType::Boolean => {
-//             let ca = input.bool()?;
-//             ca.into_iter().map(
-//                 |x| (x.unwrap_or(false) as u8)
-//             ).collect()
-//         }
-//         , _ => {
-//             return Err(
-//                 PolarsError::ComputeError("Input series must be bool.".into())
-//             )
-//         }
-//     };
-//     let c: usize = rs_lempel_ziv_complexity(&bytes);
-//     Ok(Series::new(name, [c as u32]))
-// }
+    let input: &Series = &inputs[0];
+    let name = input.name();
+    let ca = input.bool()?;
+    let bits: Vec<bool> = ca.into_iter().map(
+        |x| x.unwrap_or(false)
+    ).collect();
+
+    let mut ind:usize = 0;
+    let mut inc:usize = 1;
+
+    let mut sub_strings: HashSet<&[bool]> = HashSet::new();
+    while ind + inc <= bits.len() {
+        let subseq: &[bool] = &bits[ind..ind+inc];
+        if sub_strings.contains(subseq) {
+            inc += 1;
+        } else {
+            sub_strings.insert(subseq);
+            ind += inc;
+            inc = 1;
+        }
+    }
+    let c = sub_strings.len();
+    Ok(Series::new(name, [c as u32]))
+
+}

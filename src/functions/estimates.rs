@@ -1,7 +1,7 @@
 use ndarray::Array1;
+use rayon::prelude::*;
 use rand::thread_rng;
 use rand::seq::SliceRandom;
-use rayon::prelude::*; 
 
 // Sample pool for the Generalized Coupon Collector's problem.
 fn _gcc_sample_pooled(

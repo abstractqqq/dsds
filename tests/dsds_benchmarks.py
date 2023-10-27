@@ -326,7 +326,7 @@ def test_target_encoding_74k_category_encoders(encoder_test, benchmark):
 
 @pytest.fixture
 def mrmr_pl_df() -> pl.DataFrame:
-    orig_x, orig_y = make_classification(n_samples = 50_000, n_features = 500, n_informative = 60, n_redundant = 440)
+    orig_x, orig_y = make_classification(n_samples = 50_000, n_features = 50, n_informative = 20, n_redundant = 30)
     df_pl = pl.from_numpy(orig_x).insert_at_idx(0, pl.Series("target", orig_y))
     return df_pl
 
@@ -342,7 +342,7 @@ def mrmr_package(df:pd.DataFrame, target:str, k:int) -> list[str]:
 def test_mrmr_dsds(mrmr_pl_df, benchmark):
     
     result = benchmark(
-        fs.mrmr, mrmr_pl_df, "target", 50, None, "f", "accum_corr"
+        fs.mrmr, mrmr_pl_df, "target", 20, None, "f", "accum_corr"
     )
     result2 = mrmr_package(mrmr_pl_df.to_pandas(), "target", 50)
     assert result == result2
@@ -352,6 +352,6 @@ def test_mrmr_package(mrmr_pl_df, benchmark):
 
     df_pd = mrmr_pl_df.to_pandas()
     _ = benchmark(
-        mrmr_package, df_pd, "target", 50
+        mrmr_package, df_pd, "target", 20
     )
     assert True
