@@ -344,7 +344,7 @@ def test_mrmr_dsds(mrmr_pl_df, benchmark):
     result = benchmark(
         fs.mrmr, mrmr_pl_df, "target", 20, None, "f", "accum_corr"
     )
-    result2 = mrmr_package(mrmr_pl_df.to_pandas(), "target", 50)
+    result2 = mrmr_package(mrmr_pl_df.to_pandas(), "target", 20)
     assert result == result2
 
 @pytest.mark.benchmark(group="MRMR")

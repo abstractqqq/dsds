@@ -2,6 +2,8 @@
 
 This package is in pre-alpha stage. There is currently no documentation webpage. Only docstrings and github. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) if you are a developer interested in contributing to this package.
 
+!!! Restructure Warning: Polars Extension Submodule is going to be an independent package !!!
+
 A general purpose traditional data science package for large and scalable data operations. It aims to be an improvement over a subset of functionalities in other packages like Scikit-learn, category_encoders, or feature engine, etc. The primary focus right now is:
 
 0. Treating dataframes as first-class citizen, using Rust, NumPy to support. The only other core dependency is SciPy and NumPy. Will rely more on Rust as time goes. Python side dependency should be minimized. 
@@ -136,9 +138,9 @@ shape: (3, 8)
 └────────────┴────────────┴────────────┴───────────┴───────────┴───────────┴───────────┴───────────┘
 ```
 
-Benchmarks:
+Benchmarks (All done on Linux):
 
-![Screenshot](./pics/benches.PNG)
+![Screenshot](./pics/bench.png)
 
 DSDS currently provides Polars plugins but the API is subject to change.
 
