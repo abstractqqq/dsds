@@ -2,15 +2,15 @@
 
 This package is in pre-alpha stage. There is currently no documentation webpage. Only docstrings and github. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) if you are a developer interested in contributing to this package.
 
-!!! Restructure Warning: Polars Extension Submodule is going to be an independent package !!!
+!!! Restructure Warning: Polars Extension Submodule is going to be an independent package and is the main focus of development right now. See [here](https://github.com/abstractqqq/polars_ds_extension) !!!
 
 A general purpose traditional data science package for large and scalable data operations. It aims to be an improvement over a subset of functionalities in other packages like Scikit-learn, category_encoders, or feature engine, etc. The primary focus right now is:
 
-0. Treating dataframes as first-class citizen, using Rust, NumPy to support. The only other core dependency is SciPy and NumPy. Will rely more on Rust as time goes. Python side dependency should be minimized. 
+0. Treating dataframes as first-class citizen, using Rust, NumPy to support. The only other core dependency is SciPy and NumPy. Will rely more on Rust as time goes. Python side dependency should be minimized.
 1. Providing practical feature prescreen (immediate detection and removal of useless featuers, data profiling, over time report etc.)
 2. Fast and furious feature selection and engineering using simple methods. It has significantly faster F-score, mutual_info_score, better feature extraction and engineering, etc. Currently, DSDS provides MRMR with more than 90% speed up than the most popular MRMR package on github. For more details, see [here](./FEATURE_SELECTION.md)
-3. Cleaner pipeline construction and management, much easier to create custom "transformers" (All Polars Expressions are acceptable as "transformers".)
-4. Consistent API with intuitive argument names and extensive docstring and examples. No function side effect. 
+3. Cleaner pipeline construction and management, much easier to create custom "transformers" (All Polars Expressions are acceptable as "transformers". The current blueprint module probably needs an overhaul)
+4. Consistent API with intuitive argument names and extensive docstring and examples. 
 5. Functional interface and fully typed functions for a better developer experience. No mixins, no multiple inheritance. No classes. Just Polars.
 6. Better performance and faster iteration
 
